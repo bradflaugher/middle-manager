@@ -201,6 +201,8 @@ class TestAgents(unittest.TestCase):
             )
             self.assertEqual(res.returncode, 0)
             self.assertIn("hello_from_tmux", res.stdout)
+            import subprocess
+            subprocess.run(["tmux", "kill-session", "-t", "mm-test-session"], capture_output=True)
 
     def test_loop_task_auto_checkoff_logic(self):
         from middle_manager.config import LoopConfig

@@ -136,6 +136,8 @@ def build_command(
     if agent not in AGENT_SPECS:
         raise ValueError(f"Unknown agent {agent!r}. Choose from: {', '.join(AGENT_NAMES)}")
 
+    env = os.environ.copy()
+
     spec = AGENT_SPECS[agent]
     binary = binary_override or spec.binary
     cmd: list[str] = [binary]
@@ -166,7 +168,16 @@ def build_command(
             cmd.extend([spec.model_flag, model])
         if spec.cwd_flag:
             cmd.extend([spec.cwd_flag, str(cwd)])
-        return AgentRun(agent=agent, command=cmd, prompt=prompt, cwd=cwd, model=model, yolo=yolo, extra_args=list(extras))
+        return AgentRun(
+            agent=agent,
+            command=cmd,
+            prompt=prompt,
+            cwd=cwd,
+            model=model,
+            yolo=yolo,
+            extra_args=list(extras),
+            env=env,
+        )
 
     use_prompt_file = prompt_file and spec.prompt_file_flag and spec.prompt_mode != "print_flag"
 
@@ -195,7 +206,6 @@ def build_command(
 
     cmd.extend(extras)
 
-    env = os.environ.copy()
     if agent == "claude" and yolo and spec.yolo_flag and spec.yolo_flag not in cmd:
         cmd.append(spec.yolo_flag)
 
@@ -514,13 +524,21 @@ def run_command_monitored(
         script_path.chmod(0o755)
 
         # Start tmux session
+        cols, rows = shutil.get_terminal_size(fallback=(120, 40))
+        cols = max(cols, 80)
+        rows = max(rows, 24)
+
         tmux_cmd = [
             "tmux", "new-session", "-d",
             "-s", session_name,
+            "-x", str(cols),
+            "-y", str(rows),
             "-c", str(cwd),
             f"/bin/bash -c 'sleep 0.1; {script_path}; echo $? > {exit_path}'"
         ]
         subprocess.run(tmux_cmd, check=True)
+        # Set remain-on-exit so the pane doesn't close and TUI scrollback is preserved
+        subprocess.run(["tmux", "set-option", "-t", session_name, "remain-on-exit", "on"], capture_output=True)
 
         # Start piping pane output to log_path
         subprocess.run([
@@ -681,13 +699,10 @@ def run_command_monitored(
                 changed_files=changed_files,
                 last_printed_lines_cnt=last_printed_lines,
                 last_line=last_line,
-                tmux_session=None
+                tmux_session=session_name
             )
         else:
             print(Colors.colored(f"  │ [{elapsed_str}] Final status: {status_str}", Colors.CYAN))
-
-        # Cleanup tmux session
-        subprocess.run(["tmux", "kill-session", "-t", session_name], capture_output=True)
 
         return subprocess.CompletedProcess(
             cmd_list,

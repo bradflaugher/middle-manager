@@ -156,7 +156,7 @@ class MiddleManagerLoop:
         if mem.exists():
             return mem.read_text(encoding="utf-8")
         # Fallbacks
-        for name in ("AGENTS.md", "AGENT.md", "CLAUDE.md"):
+        for name in ("AGENTS.md", "CLAUDE.md"):
             fallback_file = self.cfg.repo / name
             if fallback_file.exists():
                 return fallback_file.read_text(encoding="utf-8")

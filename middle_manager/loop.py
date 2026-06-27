@@ -403,4 +403,59 @@ class MiddleManagerLoop:
     def run(self) -> int:
         result = self.run_until_complete()
         self.log("Loop finished.")
+        if not result.success:
+            from .colors import Colors
+            import subprocess
+            
+            # Get current git branch
+            branch_name = "unknown"
+            if repo_is_git(self.cfg.repo):
+                try:
+                    branch_name = subprocess.check_output(
+                        ["git", "rev-parse", "--abbrev-ref", "HEAD"], 
+                        cwd=self.cfg.repo, 
+                        text=True
+                    ).strip()
+                except Exception:
+                    pass
+            
+            print()
+            print(Colors.colored("┌────────────────────────────────────────────────────────┐", Colors.YELLOW + Colors.BOLD))
+            print(Colors.colored("│                ⚠️  LOOP ABANDONED / FAILED             │", Colors.YELLOW + Colors.BOLD))
+            print(Colors.colored("├────────────────────────────────────────────────────────┤", Colors.YELLOW + Colors.BOLD))
+            print(Colors.colored(f"│  Reason: {result.reason:<46}│", Colors.YELLOW))
+            print(Colors.colored(f"│  Branch: {branch_name:<46}│", Colors.YELLOW))
+            print(Colors.colored("└────────────────────────────────────────────────────────┘", Colors.YELLOW + Colors.BOLD))
+            print()
+            
+            sc = self.cfg.step_for("execute")
+            err_log = self.read_text(self.error_log_path)
+            err_summary = "See error_log.txt for details."
+            if err_log:
+                lines = [l.strip() for l in err_log.splitlines() if l.strip()]
+                for line in lines:
+                    if any(w in line.lower() for w in ("error", "fail", "exception", "timeout")):
+                        err_summary = line[:60]
+                        break
+                else:
+                    if lines:
+                        err_summary = lines[0][:60]
+            
+            prompt_msg = (
+                f"The last task '{self.top_plan_item()[:50]}' failed verification. "
+                f"Error: {err_summary}. Please debug and fix this issue."
+            )
+            
+            agent_cmd = f"{sc.agent} -p \"{prompt_msg}\""
+            if sc.agent == "grok":
+                agent_cmd = f"grok --cwd {self.cfg.repo} -p \"{prompt_msg}\""
+            elif sc.agent == "claude":
+                agent_cmd = f"claude -p \"{prompt_msg}\""
+            elif sc.agent == "crush":
+                agent_cmd = f"crush run \"{prompt_msg}\" -c {self.cfg.repo}"
+            
+            print(Colors.colored("💡 To launch an interactive session with your programmer agent, run:", Colors.CYAN))
+            print(Colors.colored(f"   {agent_cmd}", Colors.GREEN + Colors.BOLD))
+            print()
+            
         return 0 if result.success else 1

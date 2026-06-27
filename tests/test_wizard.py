@@ -45,3 +45,18 @@ class TestWizard(unittest.TestCase):
         self.assertEqual(cfg.mission, 'some mission')
         self.assertTrue(cfg.yolo)
         self.assertFalse(cfg.dry_run)
+
+    @patch('middle_manager.wizard._tty', return_value=True)
+    @patch('middle_manager.wizard._prompt', side_effect=['', 'some mission', 'y', '10'])
+    @patch('middle_manager.wizard._choose', return_value='feature')
+    @patch('middle_manager.wizard._yes_no', side_effect=[False, True, False, False, True, True, True])
+    @patch('middle_manager.wizard.load_last_config', return_value={'repo': '/some/old/path'})
+    @patch('middle_manager.wizard.save_last_config')
+    @patch('middle_manager.wizard.repo_is_git', return_value=True)
+    @patch('pathlib.Path.exists', return_value=True)
+    def test_run_wizard_defaults_to_cwd(self, mock_exists, mock_git, mock_save, mock_load, mock_yes_no, mock_choose, mock_prompt, mock_tty):
+        import os
+        cfg = run_wizard()
+        self.assertIsNotNone(cfg)
+        self.assertEqual(str(cfg.repo), os.getcwd())
+

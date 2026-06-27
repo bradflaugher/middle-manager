@@ -140,7 +140,7 @@ def run_wizard(argv_repo: Path | None = None, mission: str | None = None) -> Loo
     print()
 
     last = load_last_config()
-    default_repo = str(last.get("repo", os.getcwd()))
+    default_repo = os.getcwd()
     if argv_repo:
         default_repo = str(argv_repo.resolve())
 

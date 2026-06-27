@@ -191,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_issues(cfg)
 
         if _should_wizard(args, raw_argv):
-            wizard_cfg = run_wizard(cfg.repo if cfg.repo != Path.cwd() else None)
+            wizard_cfg = run_wizard(cfg.repo)
             if wizard_cfg is None:
                 return 1
             cfg = wizard_cfg

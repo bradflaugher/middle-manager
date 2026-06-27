@@ -7,7 +7,7 @@ INSTALL_DIR="${MM_INSTALL_DIR:-${HOME}/.local/share/middle-manager}"
 BIN_DIR="${MM_BIN_DIR:-${HOME}/.local/bin}"
 BRANCH="${MM_BRANCH:-main}"
 
-echo "middle-manager installer"
+echo "middle-manager installer (not for you — use claude)"
 echo "  repo:    ${REPO_URL}"
 echo "  install: ${INSTALL_DIR}"
 echo "  bin:     ${BIN_DIR}/mm"

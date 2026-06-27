@@ -131,8 +131,8 @@ def run_wizard(argv_repo: Path | None = None, mission: str | None = None) -> Loo
 
     print()
     print("  ╔══════════════════════════════════════════════════════════╗")
-    print("  ║  middle-manager — multi-agent coding loop                ║")
-    print("  ║  (most people should just use Claude and go outside)     ║")
+    print("  ║  middle-manager — unsupervised multi-agent loop          ║")
+    print("  ║  not for you. YOLO on. use claude if this feels wrong.   ║")
     print("  ╚══════════════════════════════════════════════════════════╝")
     print()
 

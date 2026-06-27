@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""middle-manager — multi-agent YOLO coding loop."""
+"""middle-manager — unsupervised multi-agent loop. Not for you."""
 
 from middle_manager.cli import main
 

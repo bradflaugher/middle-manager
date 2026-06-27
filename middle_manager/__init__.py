@@ -1,3 +1,3 @@
-"""middle-manager: a multi-agent coding loop for people who should probably use Claude."""
+"""middle-manager: unsupervised multi-agent loop. Not for you."""
 
 __version__ = "0.1.0"

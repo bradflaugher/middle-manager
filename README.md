@@ -1,12 +1,17 @@
 # middle-manager
 
-A multi-agent coding loop that probably should be fired.
+Unsupervised multi-agent coding loop. YOLO on by default.
 
-**If you are a normal human:** close this tab and use [Claude Code](https://code.claude.com). Seriously. One agent. One subscription. It works. Leave Brad alone.
+**Not for you.** Use [Claude Code](https://code.claude.com). One agent. Stop reading.
 
-**If you are a true nerd / CTO / agent polygamist:** welcome. This is a pure-Python (stdlib only), configurable, YOLO-bash-driven loop that chains modern coding CLIs through a 3- or 4-step pipeline to chew through GitHub issues or auto-discover and repair codebase problems.
+**Agent polygamists:** pure Python, no dependencies, chains Grok / Claude / Codex / Crush / OpenCode / Agy through a 4-step pipeline. It edits your repo, runs shell commands without permission prompts, pushes branches, opens PRs, and closes GitHub issues. You point it at a mission and leave.
 
-Inspired by the Ralph Wiggum "pipe prompts into a while loop" technique, Open SWE's planner/builder split, and the Karpathy "verify before you ship" backpressure method — but turned up to 11.
+```bash
+mm quick "add feature XYZ"          # 3 agents, your prompt, no hand-holding
+mm --author @someuser --close-issues   # drain their issue queue, auto-close on success
+```
+
+Ralph Wiggum loop meets Open SWE's planner/builder split. Verify before ship. None of the safety.
 
 ## The loop
 
@@ -203,7 +208,7 @@ middle-manager passes the right permission-skipping flag per CLI when `--yolo` i
 | **opencode** | `opencode` | `--dangerously-skip-permissions` | `opencode run PROMPT --dangerously-skip-permissions --dir DIR` |
 | **agy** | `agy` | `--dangerously-skip-permissions` | `agy --print PROMPT --dangerously-skip-permissions` |
 
-Not all agents are installed on every box. That's fine — `python mm.py agents` shows what's available. Override binaries with `--binary claude=/path/to/claude`.
+Not all agents are installed on every box. `mm agents` shows what you have. Override with `--binary claude=/path/to/claude`.
 
 ## Per-step configuration
 
@@ -282,18 +287,18 @@ middle_manager/
   config.py      # defaults + argparse
   loop.py        # the while-loop
   git_ops.py     # git/gh helpers
-  interactive.py # CTO sanity pause button
+  interactive.py # pause before each step (-i)
   prompts/       # discover, execute, verify, commit
 mm.py            # entry point
 config.default.json
 ```
 
-## For the love of god
+## Not for you
 
-Most people should use Claude. This repo exists because some of us run Grok for discovery, Claude for building, Codex for verification, Crush because it's glamorous, OpenCode because it's hip, and Agy because why not — all in one unhinged bash loop.
+One agent is the correct number of agents. This repo is for people who run Grok to plan, Claude to build, Codex to verify, and three others because they have a problem.
 
-If that sentence made you tired: **use Claude**. We're not mad. We're just tired too.
+You enabled `--yolo`. That was your choice.
 
 ---
 
-MIT. PRs welcome but Brad might merge them with another agent loop out of spite.
+MIT. No warranty.

@@ -129,11 +129,12 @@ def run_wizard(argv_repo: Path | None = None, mission: str | None = None) -> Loo
     if not _tty():
         return None
 
+    from .colors import Colors
     print()
-    print("  ╔══════════════════════════════════════════════════════════╗")
-    print("  ║  middle-manager — unsupervised multi-agent loop          ║")
-    print("  ║  not for you. YOLO on. use claude if this feels wrong.   ║")
-    print("  ╚══════════════════════════════════════════════════════════╝")
+    print(Colors.colored("  ╔══════════════════════════════════════════════════════════╗", Colors.CYAN))
+    print(Colors.colored("  ║  middle-manager — unsupervised multi-agent loop          ║", Colors.CYAN + Colors.BOLD))
+    print(Colors.colored("  ║  not for you. YOLO on. use claude if this feels wrong.   ║", Colors.CYAN))
+    print(Colors.colored("  ╚══════════════════════════════════════════════════════════╝", Colors.CYAN))
     print()
 
     last = load_last_config()
@@ -144,10 +145,10 @@ def run_wizard(argv_repo: Path | None = None, mission: str | None = None) -> Loo
     repo_raw = _prompt("Repository path", default_repo)
     repo = _expand_path(repo_raw)
     if not repo.exists():
-        print(f"  ✗ Path does not exist: {repo}")
+        print(Colors.colored(f"  ✗ Path does not exist: {repo}", Colors.RED))
         return None
     if not repo_is_git(repo):
-        print(f"  ⚠ {repo} is not a git repo — continuing anyway")
+        print(Colors.colored(f"  ⚠ {repo} is not a git repo — continuing anyway", Colors.YELLOW))
 
     if mission:
         mode = "feature"
@@ -286,7 +287,7 @@ def run_wizard(argv_repo: Path | None = None, mission: str | None = None) -> Loo
     if steps == 3:
         cfg.commit.enabled = False
 
-    print("\n  ── Summary ──")
+    print(Colors.colored("\n  ── Summary ──", Colors.CYAN + Colors.BOLD))
     print(f"  Repo:     {cfg.repo}")
     print(f"  Mode:     {cfg.mode}")
     if cfg.mission:
@@ -295,7 +296,7 @@ def run_wizard(argv_repo: Path | None = None, mission: str | None = None) -> Loo
     for step in cfg.active_steps():
         sc = cfg.step_for(step)
         print(f"    {step:10} {sc.agent}")
-    print(f"  YOLO:     {cfg.yolo} | dry-run: {cfg.dry_run}")
+    print(f"  YOLO:     {Colors.colored(str(cfg.yolo), Colors.GREEN if cfg.yolo else Colors.YELLOW)} | dry-run: {Colors.colored(str(cfg.dry_run), Colors.YELLOW if cfg.dry_run else Colors.GREEN)}")
     if cfg.issue_queue:
         q = cfg.issue_queue
         parts = [f"state={q.state}", f"limit={q.limit}"]
@@ -307,7 +308,7 @@ def run_wizard(argv_repo: Path | None = None, mission: str | None = None) -> Loo
     elif cfg.issue:
         print(f"  Issue:    {cfg.issue}")
 
-    if not _yes_no("\nStart the loop?", default=True):
+    if not _yes_no(Colors.colored("\nStart the loop?", Colors.BOLD + Colors.CYAN), default=True):
         print("  Aborted.")
         return None
 

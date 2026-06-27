@@ -18,12 +18,21 @@ class IssueQueueRunner:
         self.queue = cfg.issue_queue
         self.log_path = cfg.state_path() / "queue.log"
 
-    def log(self, msg: str) -> None:
-        line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n"
-        print(line, end="")
+    def log(self, msg: str, color: str | None = None) -> None:
+        from .colors import Colors
+        raw_line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
+        if color:
+            print_line = Colors.colored(raw_line, color)
+        else:
+            print_line = raw_line
+        print(print_line)
+        # Strip ANSI codes for the log file
+        import re
+        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+        clean_line = ansi_escape.sub('', raw_line) + "\n"
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         with self.log_path.open("a", encoding="utf-8") as f:
-            f.write(line)
+            f.write(clean_line)
 
     def reset_issue_state(self, issue: dict[str, str]) -> None:
         """Fresh fix_plan and iteration counter per issue."""
@@ -48,19 +57,20 @@ class IssueQueueRunner:
         self.cfg.max_iterations = self.cfg.max_iterations  # per-issue budget
 
     def run(self) -> int:
+        from .colors import Colors
         issues = list_issues(self.cfg.repo, self.queue)
         if not issues:
-            self.log("No matching issues in queue.")
+            self.log("No matching issues in queue.", Colors.YELLOW)
             return 0
 
-        self.log(f"Queue: {len(issues)} issue(s) — label={self.queue.label!r} author={self.queue.author!r}")
+        self.log(f"Queue: {len(issues)} issue(s) — label={self.queue.label!r} author={self.queue.author!r}", Colors.CYAN)
 
         succeeded = 0
         failed = 0
 
         for idx, issue in enumerate(issues, start=1):
             number = issue["number"]
-            self.log(f"=== Queue {idx}/{len(issues)}: Issue #{number} — {issue['title'][:60]} ===")
+            self.log(f"=== Queue {idx}/{len(issues)}: Issue #{number} — {issue['title'][:60]} ===", Colors.CYAN + Colors.BOLD)
 
             if repo_is_git(self.cfg.repo) and not self.cfg.dry_run:
                 checkout_default_branch(self.cfg.repo)
@@ -71,7 +81,7 @@ class IssueQueueRunner:
 
             if result.success:
                 succeeded += 1
-                self.log(f"Issue #{number} done.")
+                self.log(f"Issue #{number} done.", Colors.GREEN)
                 if self.queue.close_on_success:
                     comment = self.queue.close_comment
                     if result.pr_url:
@@ -84,7 +94,7 @@ class IssueQueueRunner:
                     )
             else:
                 failed += 1
-                self.log(f"Issue #{number} incomplete: {result.reason}")
+                self.log(f"Issue #{number} incomplete: {result.reason}", Colors.RED)
 
-        self.log(f"Queue finished: {succeeded} succeeded, {failed} incomplete.")
+        self.log(f"Queue finished: {succeeded} succeeded, {failed} incomplete.", Colors.GREEN if failed == 0 else Colors.RED)
         return 0 if failed == 0 else 1

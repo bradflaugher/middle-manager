@@ -65,13 +65,12 @@ AGENT_SPECS: dict[str, AgentSpec] = {
     "crush": AgentSpec(
         name="crush",
         binary="crush",
-        yolo_flag="-y",
-        yolo_position="before_subcommand",
+        yolo_flag="",  # crush run does not accept global -y flag in headless mode
         prompt_mode="arg",
         subcommand=("run",),
         model_flag="-m",
         cwd_flag="-c",
-        notes="Global flag before subcommand: crush -y run PROMPT -c DIR",
+        notes="crush run PROMPT -c DIR (no YOLO flag needed for run command)",
     ),
     "opencode": AgentSpec(
         name="opencode",
@@ -143,12 +142,14 @@ def build_command(
     extras = list(extra_args or [])
 
     if yolo and spec.yolo_position == "before_subcommand":
-        cmd.append(spec.yolo_flag)
+        if spec.yolo_flag:
+            cmd.append(spec.yolo_flag)
 
     cmd.extend(spec.subcommand)
 
     if yolo and spec.yolo_position in ("after_binary", "before_prompt"):
-        cmd.append(spec.yolo_flag)
+        if spec.yolo_flag:
+            cmd.append(spec.yolo_flag)
 
     if spec.yolo_position == "extra" and yolo:
         cmd.extend(spec.extra_yolo)
@@ -185,16 +186,17 @@ def build_command(
         cmd.extend([spec.cwd_flag, str(cwd)])
 
     if yolo and spec.yolo_position not in ("before_subcommand", "after_binary", "before_prompt", "extra"):
-        cmd.append(spec.yolo_flag)
+        if spec.yolo_flag:
+            cmd.append(spec.yolo_flag)
 
     # opencode/crush: yolo often works as trailing flag too
-    if yolo and agent == "opencode" and spec.yolo_flag not in cmd:
+    if yolo and agent == "opencode" and spec.yolo_flag and spec.yolo_flag not in cmd:
         cmd.append(spec.yolo_flag)
 
     cmd.extend(extras)
 
     env = os.environ.copy()
-    if agent == "claude" and yolo and spec.yolo_flag not in cmd:
+    if agent == "claude" and yolo and spec.yolo_flag and spec.yolo_flag not in cmd:
         cmd.append(spec.yolo_flag)
 
     return AgentRun(
@@ -210,8 +212,11 @@ def build_command(
 
 
 def run_agent(run: AgentRun, *, dry_run: bool = False, stream: bool = True) -> subprocess.CompletedProcess[str]:
+    from .colors import Colors
     display = " ".join(_quote(a) for a in run.command)
-    print(f"\n{'[dry-run] ' if dry_run else ''}▶ {run.agent}: {display}\n")
+    prefix = f"{Colors.colored('▶ ' + run.agent + ':', Colors.MAGENTA + Colors.BOLD)}"
+    dry_prefix = Colors.colored("[dry-run] ", Colors.YELLOW) if dry_run else ""
+    print(f"\n{dry_prefix}{prefix} {display}\n")
 
     if dry_run:
         return subprocess.CompletedProcess(run.command, 0, stdout="", stderr="")

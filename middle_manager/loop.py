@@ -45,11 +45,20 @@ class MiddleManagerLoop:
         self.session_log = self.state / "session.log"
         self.last_pr_url: str | None = None
 
-    def log(self, msg: str) -> None:
-        line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n"
-        print(line, end="")
+    def log(self, msg: str, color: str | None = None) -> None:
+        from .colors import Colors
+        raw_line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
+        if color:
+            print_line = Colors.colored(raw_line, color)
+        else:
+            print_line = raw_line
+        print(print_line)
+        # Strip ANSI codes for the session log file
+        import re
+        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+        clean_line = ansi_escape.sub('', raw_line) + "\n"
         with self.session_log.open("a", encoding="utf-8") as f:
-            f.write(line)
+            f.write(clean_line)
 
     def read_iteration(self) -> int:
         if self.iteration_path.exists():
@@ -140,16 +149,16 @@ class MiddleManagerLoop:
         ctx["issue_number"] = issue_data.get("number", "")
         return render_prompt(template, **ctx)
 
-    def run_step(self, step: str, iteration: int, issue_data: dict[str, str]) -> int:
+    def run_step(self, step: str, iteration: int, issue_data: dict[str, str]) -> subprocess.CompletedProcess[str]:
         sc: StepConfig = self.cfg.step_for(step)
         if not sc.enabled:
             self.log(f"Skipping disabled step: {step}")
-            return 0
+            return subprocess.CompletedProcess([], 0, "", "")
 
         binary = self.cfg.binary_overrides.get(sc.agent)
         if not agent_available(sc.agent, binary) and not self.cfg.dry_run:
             self.log(f"Agent {sc.agent} not found on PATH — skipping {step}")
-            return 127
+            return subprocess.CompletedProcess([], 127, "", "")
 
         prompt = self.prompt_for_step(step, iteration, issue_data)
         prompt_file = self.state / f"{step}_prompt.md"
@@ -168,7 +177,7 @@ class MiddleManagerLoop:
         )
         result = run_agent(run, dry_run=self.cfg.dry_run)
         self.log(f"{step} finished with exit code {result.returncode}")
-        return result.returncode
+        return result
 
     def maybe_commit_and_pr(self, iteration: int, issue_data: dict[str, str]) -> None:
         if self.cfg.steps < 4 or not self.cfg.step_for("commit").enabled:
@@ -178,8 +187,8 @@ class MiddleManagerLoop:
                     self.log("Committed changes (3-step mode, no PR agent)")
             return
 
-        code = self.run_step("commit", iteration, issue_data)
-        if code != 0:
+        result = self.run_step("commit", iteration, issue_data)
+        if result.returncode != 0:
             self.log("Commit step failed; leaving working tree as-is")
             return
 
@@ -206,12 +215,78 @@ class MiddleManagerLoop:
                 self.last_pr_url = url
                 self.log(f"PR created: {url}")
 
+    def _parse_verifier_updates(self, stdout: str) -> tuple[str, list[str]]:
+        import re
+        verdict = "UNKNOWN"
+        m = re.search(r"VERDICT:\s*(PASS|FAIL)", stdout, re.IGNORECASE)
+        if m:
+            verdict = m.group(1).upper()
+            
+        updates = []
+        lines = stdout.splitlines()
+        in_updates = False
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if re.match(r"(?:FIX[-_]PLAN[-_]UPDATES|PLAN[-_]UPDATES):", stripped, re.IGNORECASE):
+                in_updates = True
+                continue
+            if in_updates:
+                if stripped.startswith("-"):
+                    task = stripped
+                    if not task.startswith("- [ ]") and not task.startswith("- [x]"):
+                        task = "- [ ] " + task[1:].strip()
+                    updates.append(task)
+                elif stripped.startswith("VERDICT:") or stripped.startswith("SUMMARY:") or stripped.startswith("ISSUES:"):
+                    in_updates = False
+                elif stripped.startswith("```"):
+                    pass
+                else:
+                    if updates:
+                        in_updates = False
+        return verdict, updates
+
+    def add_tasks_to_plan(self, new_tasks: list[str]) -> None:
+        if not new_tasks:
+            return
+        text = self.read_text(self.fix_plan_path)
+        lines = text.splitlines()
+        
+        tasks_index = -1
+        for i, line in enumerate(lines):
+            if line.strip().startswith("## Tasks") or line.strip().startswith("## Task"):
+                tasks_index = i
+                break
+                
+        if tasks_index != -1:
+            insert_index = tasks_index + 1
+            while insert_index < len(lines):
+                line_strip = lines[insert_index].strip()
+                if line_strip and not line_strip.startswith("-") and not line_strip.startswith("*") and not line_strip.startswith("#"):
+                    break
+                insert_index += 1
+            
+            for task in reversed(new_tasks):
+                lines.insert(insert_index, task)
+            self.log(f"Added {len(new_tasks)} task(s) suggested by verifier to fix_plan.md")
+        else:
+            lines.append("\n## Tasks")
+            lines.extend(new_tasks)
+            self.log(f"Appended {len(new_tasks)} task(s) suggested by verifier to end of fix_plan.md")
+            
+        self.write_text(self.fix_plan_path, "\n".join(lines) + "\n")
+
     def run_once(self, iteration: int) -> bool:
         """Run one full loop iteration. Returns False to stop the outer loop."""
-        self.log(f"=== Iteration {iteration} ===")
+        from .colors import Colors
+        self.log(f"=== Iteration {iteration} ===", Colors.CYAN + Colors.BOLD)
 
         issue_data = fetch_issue(self.cfg.repo, self.cfg.issue or "0")
         self.ensure_fix_plan_seed(issue_data)
+
+        verifier_passed = True
+        verifier_stdout = ""
 
         for step in ("discover", "execute", "verify"):
             if step not in self.cfg.active_steps():
@@ -223,14 +298,39 @@ class MiddleManagerLoop:
                 if action == "skip":
                     self.log(f"Skipped step: {step}")
                     continue
-            code = self.run_step(step, iteration, issue_data)
-            if code != 0 and step == "verify":
-                self.log("Verifier reported failure — will loop back")
+            result = self.run_step(step, iteration, issue_data)
+            if step == "verify":
+                verifier_stdout = result.stdout
+                if result.returncode != 0:
+                    self.log("Verifier reported CLI error/failure", Colors.RED)
+                    verifier_passed = False
+
+        if "verify" in self.cfg.active_steps() and verifier_passed:
+            import re
+            verdict = "UNKNOWN"
+            m = re.search(r"VERDICT:\s*(PASS|FAIL)", verifier_stdout, re.IGNORECASE)
+            if m:
+                verdict = m.group(1).upper()
+            
+            self.log(f"Verifier verdict: {verdict}", Colors.GREEN if verdict == "PASS" else Colors.RED)
+            if verdict == "FAIL":
+                verifier_passed = False
+                self.log("Verifier reported failure — will loop back", Colors.YELLOW)
+                existing_err = self.read_text(self.error_log_path)
+                header = f"\n=== VERIFIER FEEDBACK (Iteration {iteration}) ===\n"
+                self.write_text(self.error_log_path, header + verifier_stdout + "\n" + existing_err)
+
+            _, plan_updates = self._parse_verifier_updates(verifier_stdout)
+            if plan_updates:
+                self.add_tasks_to_plan(plan_updates)
+
+        if not verifier_passed:
+            return True
 
         ok, test_out = self.run_tests()
         self.write_text(self.verify_log_path, test_out)
         if not ok:
-            self.log("Tests failed — error_log updated for next discover pass")
+            self.log("Tests failed — error_log updated for next discover pass", Colors.RED)
             return True
 
         if "commit" in self.cfg.active_steps():

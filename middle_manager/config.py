@@ -289,6 +289,19 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, LoopC
             name, path = item.split("=", 1)
             cfg.binary_overrides[name] = path
 
+    # Autodetect step agents if defaults are missing and no explicit CLI flags were provided
+    from .agents import agent_available, autodetect_agent
+    for step in ("discover", "execute", "verify", "commit"):
+        cmd_arg_agent = getattr(args, f"{step}_agent")
+        sc = cfg.step_for(step)
+        if not cmd_arg_agent:
+            binary = cfg.binary_overrides.get(sc.agent)
+            if not agent_available(sc.agent, binary):
+                detected = autodetect_agent(step, cfg.binary_overrides, fallback=sc.agent)
+                if detected != sc.agent:
+                    sc.agent = detected
+                    sc.model = None  # Clear default model from different agent
+
     return args, cfg
 
 

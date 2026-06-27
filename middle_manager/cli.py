@@ -74,17 +74,22 @@ def _should_wizard(args, argv: list[str] | None) -> bool:
 
 
 def cmd_agents(cfg: LoopConfig) -> int:
+    from .colors import Colors
     rows = list_agents_status(cfg.binary_overrides)
-    print(f"{'AGENT':<10} {'AVAILABLE':<10} {'BINARY':<24} YOLO FLAG")
-    print("-" * 72)
+    print(Colors.colored(f"{'AGENT':<10} {'AVAILABLE':<10} {'BINARY':<24} YOLO FLAG", Colors.CYAN + Colors.BOLD))
+    print(Colors.colored("-" * 72, Colors.CYAN))
     for row in rows:
-        print(f"{row['agent']:<10} {row['available']:<10} {row['binary']:<24} {row['yolo']}")
+        agent_pad = Colors.colored(row['agent'].ljust(10), Colors.BOLD)
+        avail_color = Colors.GREEN if row['available'] == 'yes' else Colors.RED
+        avail_pad = Colors.colored(row['available'].ljust(10), avail_color)
+        print(f"{agent_pad} {avail_pad} {row['binary']:<24} {row['yolo']}")
         if row["notes"]:
-            print(f"           {row['notes']}")
+            print(Colors.colored(f"           {row['notes']}", Colors.YELLOW))
     return 0
 
 
 def cmd_init(cfg: LoopConfig) -> int:
+    from .colors import Colors
     state = cfg.state_path()
     templates = ["fix_plan.md", "AGENT.md"]
     for name in templates:
@@ -100,20 +105,51 @@ def cmd_init(cfg: LoopConfig) -> int:
                 "Add build commands, conventions, and things agents keep forgetting.\n",
                 encoding="utf-8",
             )
-        print(f"created: {dest}")
+        print(Colors.colored(f"created: {dest}", Colors.GREEN))
     print(f"State dir: {state}")
     return 0
 
 
 def cmd_status(cfg: LoopConfig) -> int:
+    from .colors import Colors
     state = cfg.state_path()
-    print(f"Repo: {cfg.repo}")
-    print(f"Git: {'yes' if repo_is_git(cfg.repo) else 'no'}")
-    print(f"Mode: {cfg.mode}")
+    print(Colors.colored(f"Repo:  {cfg.repo}", Colors.BOLD))
+    print(f"Git:   {'yes' if repo_is_git(cfg.repo) else 'no'}")
+    print(f"Mode:  {cfg.mode}")
     print(f"State: {state}")
-    for name in ("fix_plan.md", "error_log.txt", "verify_log.txt", "iteration.txt", "queue.log"):
+    print()
+    
+    plan_path = state / "fix_plan.md"
+    if plan_path.exists():
+        print(Colors.colored("Current Plan:", Colors.BOLD + Colors.CYAN))
+        plan_text = plan_path.read_text(encoding="utf-8")
+        has_tasks = False
+        for line in plan_text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("- [ ]"):
+                task = stripped[5:].strip()
+                print(f"  [ ] {Colors.colored(task, Colors.YELLOW)}")
+                has_tasks = True
+            elif stripped.startswith("- [x]"):
+                task = stripped[5:].strip()
+                print(f"  [x] {Colors.colored(task, Colors.GREEN)}")
+                has_tasks = True
+            elif stripped.startswith("- ") and not stripped.startswith("- ["):
+                task = stripped[2:].strip()
+                print(f"  [ ] {Colors.colored(task, Colors.YELLOW)}")
+                has_tasks = True
+        if not has_tasks:
+            print("  (no active tasks in fix_plan.md)")
+        print()
+    else:
+        print("Plan:  No fix_plan.md found (run 'mm init' or start a loop)")
+        print()
+        
+    print(Colors.colored("Logs & State Files:", Colors.BOLD + Colors.CYAN))
+    for name in ("error_log.txt", "verify_log.txt", "iteration.txt", "queue.log"):
         p = state / name
-        print(f"  {name}: {'yes' if p.exists() else 'no'}")
+        status = Colors.colored("exists", Colors.GREEN) if p.exists() else Colors.colored("missing", Colors.YELLOW)
+        print(f"  {name:<16}: {status}")
     return 0
 
 

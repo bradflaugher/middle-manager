@@ -369,6 +369,12 @@ def calculate_cpu_percent(pid: int, last_ticks: float | None, last_time: float) 
     return cpu_percent, current_ticks, current_time
 
 
+def strip_ansi(text: str) -> str:
+    import re
+    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+    return ansi_escape.sub('', text)
+
+
 def draw_status_block(
     agent_name: str,
     status_str: str,
@@ -395,11 +401,12 @@ def draw_status_block(
         lines.append(Colors.colored(f"  │  Attach Session:  tmux attach-session -t {tmux_session}", Colors.GREEN + Colors.BOLD))
 
     if last_line:
+        cleaned_last_line = strip_ansi(last_line)
         max_len = 62
-        if len(last_line) > max_len:
-            truncated = last_line[:max_len-3] + "..."
+        if len(cleaned_last_line) > max_len:
+            truncated = cleaned_last_line[:max_len-3] + "..."
         else:
-            truncated = last_line
+            truncated = cleaned_last_line
         lines.append(Colors.colored(f"  │  Last Output:   \"{truncated}\"", Colors.YELLOW))
 
     if changed_files:
@@ -499,8 +506,11 @@ def run_command_monitored(
                 for k, v in env.items():
                     safe_v = v.replace("'", "'\\''")
                     f.write(f"export {k}='{safe_v}'\n")
-            cmd_escaped = " ".join(_quote(a) for a in cmd_list)
-            f.write(f"{cmd_escaped}\n")
+            if isinstance(command, str):
+                f.write(f"{command}\n")
+            else:
+                cmd_escaped = " ".join(_quote(a) for a in command)
+                f.write(f"{cmd_escaped}\n")
         script_path.chmod(0o755)
 
         # Start tmux session
@@ -508,9 +518,15 @@ def run_command_monitored(
             "tmux", "new-session", "-d",
             "-s", session_name,
             "-c", str(cwd),
-            f"/bin/bash -c '{script_path} 2>&1 | tee {log_path}; echo $? > {exit_path}'"
+            f"/bin/bash -c 'sleep 0.1; {script_path}; echo $? > {exit_path}'"
         ]
         subprocess.run(tmux_cmd, check=True)
+
+        # Start piping pane output to log_path
+        subprocess.run([
+            "tmux", "pipe-pane", "-t", session_name,
+            f"cat > {log_path}"
+        ], capture_output=True, check=False)
         
         # We need a process-like object or pid to monitor.
         # Find pane_pid of the newly created session.

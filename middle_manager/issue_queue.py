@@ -95,6 +95,9 @@ class IssueQueueRunner:
             else:
                 failed += 1
                 self.log(f"Issue #{number} incomplete: {result.reason}", Colors.RED)
+                if result.reason == "Stopped by user":
+                    self.log("Queue execution stopped by user request.", Colors.YELLOW)
+                    break
 
         self.log(f"Queue finished: {succeeded} succeeded, {failed} incomplete.", Colors.GREEN if failed == 0 else Colors.RED)
         return 0 if failed == 0 else 1

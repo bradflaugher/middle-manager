@@ -15,7 +15,7 @@ You are the **Spec & Plan** agent in a middle-manager coding loop.
 - Body:
 {issue_body}
 
-## Repository Memory (AGENT.md / CLAUDE.md)
+## Repository Memory (AGENTS.md / CLAUDE.md)
 {agent_memory}
 
 ## Current fix_plan.md
@@ -27,7 +27,7 @@ You are the **Spec & Plan** agent in a middle-manager coding loop.
 2. **Update `fix_plan.md`** in `.middle-manager/fix_plan.md` (or the repo root if instructed) with prioritized `- [ ]` tasks. One discrete item per line.
 3. **Do not implement fixes yet** — planning only.
 4. If GitHub issue context exists, map issue requirements to concrete repo tasks.
-5. Note build/test commands the loop should use in AGENT.md if missing.
+5. Note build/test commands the loop should use in AGENTS.md if missing.
 
 ## Rules
 - Tight scope. Small tasks that fit one execution loop.

@@ -241,7 +241,7 @@ mm --mode repair --test-command "npm run test:ci" --max-iterations 5
 
 ```bash
 mm agents                              # what's installed on this machine
-mm init --repo .                       # seed AGENT.md + .middle-manager/
+mm init --repo .                       # seed AGENTS.md + .middle-manager/
 mm status --repo .                     # fix_plan, logs, iteration count
 mm quick "add feature X" --dry-run     # print agent commands, run nothing
 ```
@@ -293,7 +293,7 @@ mm quick "add resume link to index.html" \
 | `mm quick "…"` | 3-agent feature preset |
 | `mm "…"` | Shorthand for `mm quick "…"` |
 | `mm agents` | Show installed agents + YOLO flags |
-| `mm init --repo PATH` | Seed `.middle-manager/` and AGENT.md |
+| `mm init --repo PATH` | Seed `.middle-manager/` and AGENTS.md |
 | `mm status --repo PATH` | Show loop state |
 | `mm issues --author @user` | Issue queue batch mode |
 | `mm install-path` | Print PATH export for installer |

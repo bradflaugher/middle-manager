@@ -19,7 +19,7 @@ You are the **Ship** agent. Persist learnings and commit verified work.
 
 ## Your job
 
-1. Update `{agent_memory}` (AGENT.md or CLAUDE.md) with anything the next loop iteration must remember (build commands, gotchas, conventions discovered).
+1. Update `{agent_memory}` (AGENTS.md or CLAUDE.md) with anything the next loop iteration must remember (build commands, gotchas, conventions discovered).
 2. `git add` only relevant files. **Do not** `git push --force` or merge PRs.
 3. Commit with message: `middle-manager: {top_item}` (truncate to 72 chars).
 4. Push the current branch to origin.

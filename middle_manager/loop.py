@@ -36,6 +36,8 @@ class LoopResult:
 
 class MiddleManagerLoop:
     def __init__(self, cfg: LoopConfig):
+        import uuid
+        self.run_id = uuid.uuid4().hex[:8]
         self.cfg = cfg
         self.state = cfg.state_path()
         self.fix_plan_path = self.state / "fix_plan.md"
@@ -202,7 +204,7 @@ class MiddleManagerLoop:
             prompt_file=prompt_file if sc.agent != "agy" else None,
             interactive=self.cfg.interactive and step == "execute",
         )
-        result = run_agent(run, dry_run=self.cfg.dry_run, stream=self.cfg.stream_output, step=step)
+        result = run_agent(run, dry_run=self.cfg.dry_run, stream=self.cfg.stream_output, step=step, tmux=self.cfg.tmux, run_id=self.run_id)
         
         # Write agent output to state directory for user inspectability/visibility
         output_file = self.state / f"{step}_output.txt"

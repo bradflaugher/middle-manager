@@ -928,8 +928,9 @@ def run_command_monitored(
         )
 
 
-def run_agent(run: AgentRun, *, dry_run: bool = False, stream: bool = True, step: str | None = None, tmux: bool = False) -> subprocess.CompletedProcess[str]:
+def run_agent(run: AgentRun, *, dry_run: bool = False, stream: bool = True, step: str | None = None, tmux: bool = False, run_id: str | None = None) -> subprocess.CompletedProcess[str]:
     label = f"{step.upper()} STEP ({run.agent.upper()})" if step else f"AGENT: {run.agent.upper()}"
+    suffix = f"-{run_id}" if run_id else ""
     return run_command_monitored(
         command=run.command,
         cwd=run.cwd,
@@ -939,7 +940,7 @@ def run_agent(run: AgentRun, *, dry_run: bool = False, stream: bool = True, step
         label=label,
         dry_run=dry_run,
         tmux=tmux,
-        tmux_session=f"mm-{step}" if step else f"mm-agent"
+        tmux_session=f"mm-{step}{suffix}" if step else f"mm-agent{suffix}"
     )
 
 

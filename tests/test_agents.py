@@ -165,3 +165,21 @@ class TestAgents(unittest.TestCase):
                 "No actionable item in fix_plan.md — add `- [ ] task` lines."
             )
 
+    def test_run_command_monitored_tmux(self):
+        import shutil
+        from pathlib import Path
+        from middle_manager.agents import run_command_monitored
+        
+        if shutil.which("tmux"):
+            res = run_command_monitored(
+                command="echo hello_from_tmux",
+                cwd=Path("/tmp"),
+                stream=False,
+                label="TEST TMUX",
+                tmux=True,
+                tmux_session="mm-test-session"
+            )
+            self.assertEqual(res.returncode, 0)
+            self.assertIn("hello_from_tmux", res.stdout)
+
+

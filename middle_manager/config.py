@@ -60,6 +60,7 @@ class LoopConfig:
     agent_memory_file: str = "AGENT.md"
     fix_unrelated_tests: bool = False
     stream_output: bool = False
+    tmux: bool = False
 
     def step_for(self, name: str) -> StepConfig:
         return getattr(self, name)
@@ -83,6 +84,7 @@ DEFAULTS: dict[str, Any] = {
 
     "fix_unrelated_tests": False,
     "stream_output": False,
+    "tmux": False,
     "discover": {"agent": "grok", "model": None, "extra_args": ["--check"]},
     "execute": {"agent": "claude", "model": "claude-sonnet-4-20250514"},
     "verify": {"agent": "codex", "model": "o4-mini"},
@@ -140,6 +142,7 @@ def config_from_dict(data: dict[str, Any], repo: Path) -> LoopConfig:
         agent_memory_file=str(data.get("agent_memory_file", "AGENT.md")),
         fix_unrelated_tests=bool(data.get("fix_unrelated_tests", False)),
         stream_output=bool(data.get("stream_output", False)),
+        tmux=bool(data.get("tmux", False)),
     )
 
 
@@ -190,6 +193,7 @@ Examples:
     p.add_argument("--state-dir", type=Path)
     p.add_argument("--fix-unrelated-tests", action="store_true", help="Allow agents to modify tests or other files to fix unrelated failures.")
     p.add_argument("--stream-output", action="store_true", help="Stream raw agent stdout/stderr to console instead of using the monitor")
+    p.add_argument("--tmux", action="store_true", help="Run agent commands inside a tmux session you can attach to")
 
     for step in ("discover", "execute", "verify", "commit"):
         p.add_argument(f"--{step}-agent", choices=AGENT_NAMES)
@@ -280,6 +284,8 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, LoopC
         cfg.fix_unrelated_tests = True
     if args.stream_output:
         cfg.stream_output = True
+    if args.tmux:
+        cfg.tmux = True
 
     for step in ("discover", "execute", "verify", "commit"):
         agent = getattr(args, f"{step}_agent")

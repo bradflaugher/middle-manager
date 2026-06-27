@@ -441,6 +441,8 @@ def run_command_monitored(
     stream: bool = False,
     label: str = "COMMAND",
     dry_run: bool = False,
+    tmux: bool = False,
+    tmux_session: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     import sys
     import time
@@ -461,6 +463,216 @@ def run_command_monitored(
 
     if dry_run:
         return subprocess.CompletedProcess(cmd_list, 0, stdout="", stderr="")
+
+    if tmux and not shutil.which("tmux"):
+        print(Colors.colored("  ⚠ tmux not found on PATH — running agent normally without tmux", Colors.YELLOW))
+        tmux = False
+
+    if tmux:
+        session_name = tmux_session or "mm-agent"
+        # Kill existing session if any
+        subprocess.run(["tmux", "kill-session", "-t", session_name], capture_output=True)
+
+        mm_dir = cwd / ".middle-manager"
+        mm_dir.mkdir(parents=True, exist_ok=True)
+        log_path = mm_dir / f"tmux_{session_name}.log"
+        exit_path = mm_dir / f"tmux_{session_name}.exit"
+        script_path = mm_dir / f"tmux_{session_name}.sh"
+
+        # Remove old files
+        for p in (log_path, exit_path, script_path):
+            if p.exists():
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
+
+        # Write execution script
+        with open(script_path, "w", encoding="utf-8") as f:
+            f.write("#!/usr/bin/env bash\n")
+            f.write("set -e\n")
+            if env:
+                for k, v in env.items():
+                    safe_v = v.replace("'", "'\\''")
+                    f.write(f"export {k}='{safe_v}'\n")
+            cmd_escaped = " ".join(_quote(a) for a in cmd_list)
+            f.write(f"{cmd_escaped}\n")
+        script_path.chmod(0o755)
+
+        # Start tmux session
+        tmux_cmd = [
+            "tmux", "new-session", "-d",
+            "-s", session_name,
+            "-c", str(cwd),
+            f"/bin/bash -c '{script_path} 2>&1 | tee {log_path}; echo $? > {exit_path}'"
+        ]
+        subprocess.run(tmux_cmd, check=True)
+        
+        # We need a process-like object or pid to monitor.
+        # Find pane_pid of the newly created session.
+        pane_pid = None
+        for _ in range(10): # retry for up to 1 second
+            res = subprocess.run(["tmux", "list-panes", "-t", session_name, "-F", "#{pane_pid}"], capture_output=True, text=True)
+            if res.returncode == 0 and res.stdout.strip().isdigit():
+                pane_pid = int(res.stdout.strip())
+                break
+            time.sleep(0.1)
+        if not pane_pid:
+            # fallback
+            pane_pid = os.getpid()
+
+        # Monitoring loop variables
+        output_parts = []
+        start_time = time.time()
+        last_cpu_time = start_time
+        last_ticks = get_process_tree_cpu_ticks(pane_pid)
+        cpu_percent = 0.0
+        last_git_check = 0.0
+        changed_files = []
+        last_printed_lines = 0
+        step_counter = 0
+        SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        last_log_time = start_time
+        known_changed_files = set()
+
+        log_file = None
+        returncode = 0
+
+        # Notify user they can attach
+        attach_msg = f"  💡 Attach to this session: tmux attach-session -t {session_name}"
+        print(Colors.colored(attach_msg, Colors.GREEN + Colors.BOLD))
+
+        try:
+            while True:
+                # Check exit condition
+                if exit_path.exists():
+                    # Wait a tiny bit for tee to flush
+                    time.sleep(0.2)
+                    try:
+                        returncode = int(exit_path.read_text(encoding="utf-8").strip())
+                    except Exception:
+                        returncode = 0
+                    break
+
+                # Read new output logs
+                if log_path.exists() and log_file is None:
+                    log_file = open(log_path, "r", encoding="utf-8", errors="ignore")
+                if log_file:
+                    chunk = log_file.read()
+                    if chunk:
+                        output_parts.append(chunk)
+
+                now = time.time()
+                # CPU check
+                if now - last_cpu_time >= 0.5:
+                    cpu_val, last_ticks, last_cpu_time = calculate_cpu_percent(pane_pid, last_ticks, last_cpu_time)
+                    if cpu_val is not None:
+                        cpu_percent = cpu_val
+
+                # Git status check
+                if now - last_git_check >= 1.5:
+                    changed_files = get_changed_files_with_status(cwd)
+                    last_git_check = now
+
+                elapsed = now - start_time
+                mins, secs = divmod(int(elapsed), 60)
+                elapsed_str = f"{mins:02d}:{secs:02d}"
+
+                accumulated = "".join(output_parts)
+                cpu_str = f"{cpu_percent:.1f}%"
+
+                if sys.stdout.isatty():
+                    spinner_char = SPINNER[step_counter % len(SPINNER)]
+                    status_line = f"{spinner_char} RUNNING IN TMUX ({session_name})..."
+                    last_line = ""
+                    for line in reversed(accumulated.splitlines()):
+                        cleaned = line.strip()
+                        if cleaned:
+                            last_line = cleaned
+                            break
+                    active_procs, active_sockets = get_process_tree_stats(pane_pid)
+                    last_printed_lines = draw_status_block(
+                        agent_name=label,
+                        status_str=status_line,
+                        elapsed_str=elapsed_str,
+                        cpu_str=cpu_str,
+                        active_procs=active_procs,
+                        active_sockets=active_sockets,
+                        changed_files=changed_files,
+                        last_printed_lines_cnt=last_printed_lines,
+                        last_line=last_line
+                    )
+                else:
+                    new_files_set = set(changed_files)
+                    added_changes = new_files_set - known_changed_files
+                    for f in added_changes:
+                        print(Colors.colored(f"  │ [{elapsed_str}] File changed: {f}", Colors.GREEN))
+                    known_changed_files = new_files_set
+                    if now - last_log_time >= 10.0:
+                        active_procs, active_sockets = get_process_tree_stats(pane_pid)
+                        print(Colors.colored(f"  │ [{elapsed_str}] CPU: {cpu_percent:.1f}% | Procs: {active_procs} | Sockets: {active_sockets}", Colors.CYAN))
+                        last_log_time = now
+
+                time.sleep(0.1)
+                step_counter += 1
+
+        except KeyboardInterrupt:
+            # kill the tmux session on Ctrl+C to clean up
+            subprocess.run(["tmux", "kill-session", "-t", session_name], capture_output=True)
+            raise
+        finally:
+            if log_file:
+                try:
+                    log_file.close()
+                except Exception:
+                    pass
+
+        # Final draw after completion
+        elapsed = time.time() - start_time
+        mins, secs = divmod(int(elapsed), 60)
+        elapsed_str = f"{mins:02d}:{secs:02d}"
+        changed_files = get_changed_files_with_status(cwd)
+
+        # Read any remaining output
+        if log_path.exists():
+            try:
+                content = log_path.read_text(encoding="utf-8", errors="ignore")
+                output_parts = [content]
+            except Exception:
+                pass
+        accumulated = "".join(output_parts)
+        status_str = "✅ COMPLETED" if returncode == 0 else f"❌ FAILED (exit code {returncode})"
+
+        if sys.stdout.isatty():
+            last_line = ""
+            for line in reversed(accumulated.splitlines()):
+                cleaned = line.strip()
+                if cleaned:
+                    last_line = cleaned
+                    break
+            draw_status_block(
+                agent_name=label,
+                status_str=status_str,
+                elapsed_str=elapsed_str,
+                cpu_str="0.0% (stopped)",
+                active_procs=0,
+                active_sockets=0,
+                changed_files=changed_files,
+                last_printed_lines_cnt=last_printed_lines,
+                last_line=last_line
+            )
+        else:
+            print(Colors.colored(f"  │ [{elapsed_str}] Final status: {status_str}", Colors.CYAN))
+
+        # Cleanup tmux session
+        subprocess.run(["tmux", "kill-session", "-t", session_name], capture_output=True)
+
+        return subprocess.CompletedProcess(
+            cmd_list,
+            returncode,
+            stdout=accumulated,
+            stderr=""
+        )
 
     if stream:
         print(Colors.colored(f"  ┌── {label} Output ──────────────────────────────────────────────────────────", Colors.MAGENTA))
@@ -708,7 +920,7 @@ def run_command_monitored(
         )
 
 
-def run_agent(run: AgentRun, *, dry_run: bool = False, stream: bool = True, step: str | None = None) -> subprocess.CompletedProcess[str]:
+def run_agent(run: AgentRun, *, dry_run: bool = False, stream: bool = True, step: str | None = None, tmux: bool = False) -> subprocess.CompletedProcess[str]:
     label = f"{step.upper()} STEP ({run.agent.upper()})" if step else f"AGENT: {run.agent.upper()}"
     return run_command_monitored(
         command=run.command,
@@ -718,6 +930,8 @@ def run_agent(run: AgentRun, *, dry_run: bool = False, stream: bool = True, step
         stream=stream,
         label=label,
         dry_run=dry_run,
+        tmux=tmux,
+        tmux_session=f"mm-{step}" if step else f"mm-agent"
     )
 
 

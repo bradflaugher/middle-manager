@@ -10,9 +10,11 @@ Unsupervised multi-agent coding loop that orchestrates your favorite coding CLIs
 
 ## Install (One-Liner)
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/bradflaugher/middle-manager/main/install.sh | bash
-```
+* **Pure Python 3.10+** (zero dependencies, no pip requirements)
+* **Install command**:
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/bradflaugher/middle-manager/main/install.sh | bash
+  ```
 
 This installs `mm` to `~/.local/bin/mm` and clones the repo to `~/.local/share/middle-manager`.
 
@@ -237,23 +239,6 @@ mm quick "add resume link to index.html" \
   --test-command "npm test"
 ```
 </details>
-
----
-
-## Agent YOLO flags
-
-middle-manager passes the right permission-skipping flag per CLI when `--yolo` is on (default):
-
-| Agent | Binary | YOLO flag | Headless invocation |
-|-------|--------|-----------|---------------------|
-| **[Grok](https://docs.x.ai/docs/grok-cli)** | `grok` | `--yolo` (alias: `--always-approve`) | `grok -p PROMPT --yolo --cwd DIR` |
-| **[Claude Code](https://code.claude.com)** | `claude` | `--dangerously-skip-permissions` | `claude -p PROMPT --dangerously-skip-permissions` |
-| **[Codex](https://developers.openai.com/codex/cli)** | `codex` | `--yolo` | `codex exec PROMPT --yolo` |
-| **[Crush](https://github.com/charmbracelet/crush)** | `crush` | None | `crush run PROMPT -c DIR` |
-| **[OpenCode](https://opencode.ai)** | `opencode` | `--dangerously-skip-permissions` | `opencode run PROMPT --dangerously-skip-permissions --dir DIR` |
-| **[Agy](https://antigravity.google/docs/cli-install)** | `agy` | `--dangerously-skip-permissions` | `agy --print PROMPT --dangerously-skip-permissions` |
-
-Not all agents are installed on every box. `mm agents` shows what you have. Override with `--binary claude=/path/to/claude`.
 
 ---
 

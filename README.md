@@ -4,7 +4,7 @@ Unsupervised multi-agent coding loop. YOLO on by default.
 
 **Not for you.** Use [Claude Code](https://code.claude.com). One agent. Stop reading.
 
-**Agent polygamists:** pure Python, no dependencies, chains Grok / Claude / Codex / Crush / OpenCode / Agy through a 4-step pipeline. It edits your repo, runs shell commands without permission prompts, pushes branches, opens PRs, and closes GitHub issues. You point it at a mission and leave.
+**Agent polygamists:** pure Python, no dependencies, chains [Grok](https://docs.x.ai/docs/grok-cli) / [Claude Code](https://code.claude.com) / [Codex](https://developers.openai.com/codex/cli) / [Crush](https://github.com/charmbracelet/crush) / [OpenCode](https://opencode.ai) / [Agy](https://antigravity.google/docs/cli-install) through a 4-step pipeline. It edits your repo, runs shell commands without permission prompts, pushes branches, opens PRs, and closes GitHub issues. You point it at a mission and leave.
 
 ```bash
 mm quick "add feature XYZ"          # 3 agents, your prompt, no hand-holding
@@ -27,12 +27,14 @@ Ralph Wiggum loop meets Open SWE's planner/builder split. Verify before ship. No
 
 | Step | Default agent | Job |
 |------|---------------|-----|
-| 1. Discover | `grok` | Scan repo + issues, maintain `fix_plan.md` |
-| 2. Execute | `claude` | Implement **exactly one** plan item |
-| 3. Verify | `codex` | Critic / backpressure on tests + diff |
-| 4. Commit | `agy` | Update AGENT.md, commit, push, open PR (**never merge**) |
+| 1. Discover | [Grok](https://docs.x.ai/docs/grok-cli) | Scan repo + issues, maintain `fix_plan.md` |
+| 2. Execute | [Claude Code](https://code.claude.com) | Implement **exactly one** plan item |
+| 3. Verify | [Codex](https://developers.openai.com/codex/cli) | Critic / backpressure on tests + diff |
+| 4. Commit | [Agy](https://antigravity.google/docs/cli-install) | Update AGENT.md, commit, push, open PR (**never merge**) |
 
 Use `--steps 3` to skip the commit agent (git steps run inline instead).
+
+**Supported CLIs:** [Grok](https://docs.x.ai/docs/grok-cli) · [Claude Code](https://code.claude.com) · [Codex](https://developers.openai.com/codex/cli) · [Crush](https://github.com/charmbracelet/crush) · [OpenCode](https://opencode.ai) · [Agy](https://antigravity.google/docs/cli-install) (Google Antigravity)
 
 ## Install (one-liner)
 
@@ -201,12 +203,12 @@ middle-manager passes the right permission-skipping flag per CLI when `--yolo` i
 
 | Agent | Binary | YOLO flag | Headless invocation |
 |-------|--------|-----------|---------------------|
-| **grok** | `grok` | `--yolo` (alias: `--always-approve`) | `grok -p PROMPT --yolo --cwd DIR` |
-| **claude** | `claude` | `--dangerously-skip-permissions` | `claude -p PROMPT --dangerously-skip-permissions` |
-| **codex** | `codex` | `--yolo` | `codex exec PROMPT --yolo` |
-| **crush** | `crush` | `-y` / `--yolo` (global, before `run`) | `crush -y run PROMPT -c DIR` |
-| **opencode** | `opencode` | `--dangerously-skip-permissions` | `opencode run PROMPT --dangerously-skip-permissions --dir DIR` |
-| **agy** | `agy` | `--dangerously-skip-permissions` | `agy --print PROMPT --dangerously-skip-permissions` |
+| **[Grok](https://docs.x.ai/docs/grok-cli)** | `grok` | `--yolo` (alias: `--always-approve`) | `grok -p PROMPT --yolo --cwd DIR` |
+| **[Claude Code](https://code.claude.com)** | `claude` | `--dangerously-skip-permissions` | `claude -p PROMPT --dangerously-skip-permissions` |
+| **[Codex](https://developers.openai.com/codex/cli)** | `codex` | `--yolo` | `codex exec PROMPT --yolo` |
+| **[Crush](https://github.com/charmbracelet/crush)** | `crush` | `-y` / `--yolo` (global, before `run`) | `crush -y run PROMPT -c DIR` |
+| **[OpenCode](https://opencode.ai)** | `opencode` | `--dangerously-skip-permissions` | `opencode run PROMPT --dangerously-skip-permissions --dir DIR` |
+| **[Agy](https://antigravity.google/docs/cli-install)** | `agy` | `--dangerously-skip-permissions` | `agy --print PROMPT --dangerously-skip-permissions` |
 
 Not all agents are installed on every box. `mm agents` shows what you have. Override with `--binary claude=/path/to/claude`.
 
@@ -295,7 +297,7 @@ config.default.json
 
 ## Not for you
 
-One agent is the correct number of agents. This repo is for people who run Grok to plan, Claude to build, Codex to verify, and three others because they have a problem.
+One agent is the correct number of agents. This repo is for people who run [Grok](https://docs.x.ai/docs/grok-cli) to plan, [Claude](https://code.claude.com) to build, [Codex](https://developers.openai.com/codex/cli) to verify, and [Crush](https://github.com/charmbracelet/crush) / [OpenCode](https://opencode.ai) / [Agy](https://antigravity.google/docs/cli-install) because they have a problem.
 
 You enabled `--yolo`. That was your choice.
 

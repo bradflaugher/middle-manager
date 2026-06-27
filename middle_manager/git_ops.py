@@ -7,6 +7,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from .config import IssueQueueConfig
+
 
 def run_git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -83,6 +85,102 @@ def fetch_issue(repo: Path, issue_ref: str) -> dict[str, str]:
         "body": data.get("body", ""),
         "url": data.get("url", issue_ref),
     }
+
+
+def list_issues(repo: Path, queue: IssueQueueConfig) -> list[dict[str, str]]:
+    """List GitHub issues matching label/author filters via gh CLI."""
+    if not gh_available():
+        return []
+
+    args = [
+        "gh",
+        "issue",
+        "list",
+        "--state",
+        queue.state,
+        "--json",
+        "number,title,body,url,labels,author",
+        "--limit",
+        str(queue.limit),
+    ]
+    if queue.label:
+        args.extend(["--label", queue.label])
+    if queue.author:
+        author = queue.author.lstrip("@")
+        args.extend(["--author", author])
+
+    proc = subprocess.run(args, cwd=repo, capture_output=True, text=True)
+    if proc.returncode != 0:
+        print(proc.stderr or proc.stdout)
+        return []
+
+    items = json.loads(proc.stdout or "[]")
+    rows: list[dict[str, str]] = []
+    for item in items:
+        rows.append(
+            {
+                "number": str(item.get("number", "")),
+                "title": item.get("title", ""),
+                "body": item.get("body", "") or "",
+                "url": item.get("url", ""),
+                "author": (item.get("author") or {}).get("login", ""),
+            }
+        )
+    return rows
+
+
+def close_issue(
+    repo: Path,
+    number: str,
+    *,
+    comment: str | None = None,
+    dry_run: bool = False,
+) -> bool:
+    if dry_run:
+        print(f"[dry-run] gh issue close {number}" + (f" --comment {comment!r}" if comment else ""))
+        return True
+    if not gh_available():
+        print("gh CLI not available; cannot close issue")
+        return False
+    args = ["gh", "issue", "close", number]
+    if comment:
+        args.extend(["--comment", comment])
+    proc = subprocess.run(args, cwd=repo, capture_output=True, text=True)
+    if proc.returncode != 0:
+        print(proc.stderr or proc.stdout)
+        return False
+    return True
+
+
+def ensure_issue_branch(repo: Path, prefix: str, issue_number: str) -> str:
+    branch = f"{prefix}/issue-{issue_number}"
+    branches = run_git(repo, "branch", "--list", branch, check=False).stdout
+    if branch in branches or f"* {branch}" in branches:
+        run_git(repo, "checkout", branch)
+    else:
+        run_git(repo, "checkout", "-b", branch)
+    return branch
+
+
+def checkout_default_branch(repo: Path) -> None:
+    for candidate in ("main", "master"):
+        proc = run_git(repo, "rev-parse", "--verify", candidate, check=False)
+        if proc.returncode == 0:
+            run_git(repo, "checkout", candidate)
+            return
+
+
+def plan_is_complete(plan_text: str) -> bool:
+    pending = False
+    for line in plan_text.splitlines():
+        s = line.strip()
+        if s.startswith("- [ ]"):
+            pending = True
+            break
+    if not pending:
+        # No unchecked items — done if there's at least one checked or any content
+        return bool(plan_text.strip())
+    return False
 
 
 def create_pr(

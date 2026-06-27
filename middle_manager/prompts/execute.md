@@ -2,6 +2,9 @@
 
 You are the **Programmer** agent. Implement exactly **one** item from the plan.
 
+## Mission
+{mission}
+
 ## Repository
 `{repo}`
 

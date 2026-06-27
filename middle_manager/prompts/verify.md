@@ -2,6 +2,9 @@
 
 You are the **Critic**. Audit the work from the last execution step.
 
+## Mission
+{mission}
+
 ## Repository
 `{repo}`
 

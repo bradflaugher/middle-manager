@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from .agents import agent_available, build_command, run_agent
@@ -13,13 +14,23 @@ from .git_ops import (
     create_pr,
     current_branch,
     ensure_branch,
+    ensure_issue_branch,
     fetch_issue,
     has_changes,
+    plan_is_complete,
     push_branch,
     repo_is_git,
 )
 from .interactive import pause
 from .prompts import build_context, load_prompt, render_prompt
+
+
+@dataclass
+class LoopResult:
+    success: bool
+    reason: str = ""
+    pr_url: str | None = None
+    iterations: int = 0
 
 
 class MiddleManagerLoop:
@@ -31,6 +42,7 @@ class MiddleManagerLoop:
         self.verify_log_path = self.state / "verify_log.txt"
         self.iteration_path = self.state / "iteration.txt"
         self.session_log = self.state / "session.log"
+        self.last_pr_url: str | None = None
 
     def log(self, msg: str) -> None:
         line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n"
@@ -110,6 +122,7 @@ class MiddleManagerLoop:
             test_output=self.read_text(self.error_log_path),
             error_log=self.read_text(self.error_log_path),
             iteration=iteration,
+            mission=self.cfg.mission,
         )
         ctx["issue_title"] = issue_data.get("title", "")
         ctx["issue_body"] = issue_data.get("body", "")
@@ -179,6 +192,7 @@ class MiddleManagerLoop:
                 dry_run=self.cfg.dry_run,
             )
             if url:
+                self.last_pr_url = url
                 self.log(f"PR created: {url}")
 
     def run_once(self, iteration: int) -> bool:
@@ -210,12 +224,18 @@ class MiddleManagerLoop:
 
         if "commit" in self.cfg.active_steps():
             if repo_is_git(self.cfg.repo):
-                ensure_branch(self.cfg.repo, self.cfg.branch_prefix, iteration)
+                if self.cfg.issue and self.cfg.issue.isdigit():
+                    ensure_issue_branch(self.cfg.repo, self.cfg.branch_prefix, self.cfg.issue)
+                else:
+                    ensure_branch(self.cfg.repo, self.cfg.branch_prefix, iteration)
             self.maybe_commit_and_pr(iteration, issue_data)
 
         # Mark top item done if tests passed and we have a plan
         self._check_off_top_item()
         return True
+
+    def is_complete(self) -> bool:
+        return plan_is_complete(self.read_text(self.fix_plan_path))
 
     def _check_off_top_item(self) -> None:
         text = self.read_text(self.fix_plan_path)
@@ -229,21 +249,33 @@ class MiddleManagerLoop:
         if changed:
             self.write_text(self.fix_plan_path, "\n".join(lines) + "\n")
 
-    def run(self) -> int:
+    def run_until_complete(self) -> LoopResult:
         if not self.cfg.repo.exists():
-            print(f"Repo not found: {self.cfg.repo}")
-            return 1
+            return LoopResult(False, f"Repo not found: {self.cfg.repo}")
 
         self.log(f"Target repo: {self.cfg.repo}")
+        if self.cfg.mission:
+            self.log(f"Mission: {self.cfg.mission[:80]}")
         self.log(f"Steps: {self.cfg.steps} ({', '.join(self.cfg.active_steps())})")
         self.log(f"YOLO: {self.cfg.yolo} | dry-run: {self.cfg.dry_run}")
+        if self.cfg.issue:
+            self.log(f"Issue: {self.cfg.issue}")
 
         iteration = self.read_iteration()
+        ran = 0
         for _ in range(self.cfg.max_iterations):
             if not self.run_once(iteration):
-                break
+                return LoopResult(False, "Stopped by user", self.last_pr_url, ran)
+            ran += 1
             iteration += 1
             self.write_iteration(iteration)
+            if self.is_complete():
+                self.log("Plan complete — all tasks checked off.")
+                return LoopResult(True, "plan complete", self.last_pr_url, ran)
 
+        return LoopResult(False, f"Max iterations ({self.cfg.max_iterations}) reached", self.last_pr_url, ran)
+
+    def run(self) -> int:
+        result = self.run_until_complete()
         self.log("Loop finished.")
-        return 0
+        return 0 if result.success else 1

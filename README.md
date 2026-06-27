@@ -29,18 +29,72 @@ Inspired by the Ralph Wiggum "pipe prompts into a while loop" technique, Open SW
 
 Use `--steps 3` to skip the commit agent (git steps run inline instead).
 
-## Quick start
+## Install (one-liner)
 
 ```bash
-cd middle-manager
-python mm.py agents          # see what's installed on your box
-python mm.py init --repo ~/your-project
-python mm.py --repo ~/your-project --dry-run
-python mm.py --repo ~/your-project --issue 42
-python mm.py --repo ~/your-project -i   # interactive pauses between steps
+curl -fsSL https://raw.githubusercontent.com/bradflaugher/middle-manager/main/install.sh | bash
 ```
 
-State lives in `<repo>/.middle-manager/` (`fix_plan.md`, logs, iteration counter).
+Then run `mm` from anywhere. The installer puts it in `~/.local/bin/mm` and clones to `~/.local/share/middle-manager`.
+
+Add to PATH if needed:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+# or: mm install-path
+```
+
+## Quick start
+
+**Interactive (recommended):** just run `mm` — it walks you through repo, agents, mission prompt, and mode.
+
+```bash
+mm                           # interactive wizard → loop
+mm agents                    # see what's installed
+mm init --repo ~/your-project
+mm --repo ~/your-project --dry-run
+mm --repo ~/your-project --issue 42
+mm --label bug --author @dependabot --close-issues   # issue queue mode
+```
+
+Non-interactive:
+
+```bash
+python mm.py --repo ~/your-project --mission "fix all the maps tests" --dry-run
+python mm.py issues --repo ~/project --label enhancement --close-issues
+```
+
+State lives in `<repo>/.middle-manager/` (`fix_plan.md`, logs, iteration counter). Issue queue state is per-issue under `.middle-manager/issues/<number>/`.
+
+## Interactive wizard
+
+Running `mm` with no arguments starts the wizard:
+
+1. **Repository** — path to your git repo (defaults to cwd)
+2. **Mode** — codebase repair, single issue, or filtered issue queue
+3. **Mission prompt** — free-text goals injected into every agent step
+4. **Agents** — autodetected from what's on your PATH; customize per step if you want
+5. **Options** — 3/4 steps, YOLO, dry-run, test command, PRs, close issues
+
+Last choices are saved to `~/.config/middle-manager/last.json`.
+
+## Issue queue (batch mode)
+
+Drain open GitHub issues matching a filter, one at a time:
+
+```bash
+mm --repo ~/myapp --label bug --author @someuser --close-issues
+mm issues --repo ~/myapp --label "good first issue" --issue-limit 10
+```
+
+Or pick **queue** in the interactive wizard. For each issue middle-manager:
+
+1. Checks out `mm/issue-<number>`
+2. Seeds a per-issue `fix_plan.md` from the issue body
+3. Runs the full discover → execute → verify → commit loop
+4. Closes the issue on success (unless `--no-close-issues`)
+
+Requires `gh` CLI authenticated against the repo.
 
 ## Agent YOLO flags
 

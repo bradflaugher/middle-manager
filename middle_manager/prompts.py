@@ -35,6 +35,7 @@ def build_context(
     test_output: str,
     error_log: str,
     iteration: int,
+    mission: str | None = None,
 ) -> dict[str, str]:
     return {
         "repo": str(repo),
@@ -45,4 +46,5 @@ def build_context(
         "test_output": test_output,
         "error_log": error_log,
         "iteration": str(iteration),
+        "mission": mission or "(no mission prompt — use repo context and issue body)",
     }

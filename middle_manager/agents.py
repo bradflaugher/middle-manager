@@ -262,3 +262,33 @@ def list_agents_status(binary_overrides: dict[str, str] | None = None) -> list[d
             }
         )
     return rows
+
+
+# Preference order per step when autodetecting installed agents.
+STEP_AGENT_PRIORITY: dict[str, tuple[str, ...]] = {
+    "discover": ("grok", "claude", "crush", "opencode", "agy", "codex"),
+    "execute": ("claude", "grok", "opencode", "crush", "agy", "codex"),
+    "verify": ("codex", "grok", "claude", "opencode", "crush", "agy"),
+    "commit": ("agy", "grok", "claude", "opencode", "crush", "codex"),
+}
+
+
+def available_agents(binary_overrides: dict[str, str] | None = None) -> list[str]:
+    overrides = binary_overrides or {}
+    return [name for name in AGENT_NAMES if agent_available(name, overrides.get(name))]
+
+
+def autodetect_agent(
+    step: str,
+    binary_overrides: dict[str, str] | None = None,
+    fallback: str = "grok",
+) -> str:
+    overrides = binary_overrides or {}
+    for name in STEP_AGENT_PRIORITY.get(step, AGENT_NAMES):
+        if agent_available(name, overrides.get(name)):
+            return name
+    return fallback
+
+
+def autodetect_step_agents(binary_overrides: dict[str, str] | None = None) -> dict[str, str]:
+    return {step: autodetect_agent(step, binary_overrides) for step in STEP_AGENT_PRIORITY}

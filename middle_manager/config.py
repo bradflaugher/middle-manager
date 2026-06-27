@@ -16,6 +16,16 @@ DEFAULT_CONFIG_PATH = PACKAGE_DIR.parent / "config.default.json"
 
 
 @dataclass
+class IssueQueueConfig:
+    label: str | None = None
+    author: str | None = None
+    state: str = "open"
+    limit: int = 20
+    close_on_success: bool = True
+    close_comment: str = "Closed by middle-manager — fix verified and PR opened."
+
+
+@dataclass
 class StepConfig:
     agent: str
     model: str | None = None
@@ -33,6 +43,9 @@ class LoopConfig:
     dry_run: bool = False
     interactive: bool = False
     issue: str | None = None
+    mode: str = "repair"  # repair | issue | queue
+    mission: str | None = None
+    issue_queue: IssueQueueConfig | None = None
     branch_prefix: str = "mm"
     no_pr: bool = False
     no_merge: bool = True
@@ -136,12 +149,26 @@ Examples:
   python mm.py agents
         """,
     )
-    p.add_argument("command", nargs="?", default="run", choices=["run", "agents", "init", "status"])
+    p.add_argument(
+        "command",
+        nargs="?",
+        default=None,
+        choices=["run", "agents", "init", "status", "issues", "install-path"],
+    )
     p.add_argument("--repo", "-C", type=Path, default=Path.cwd(), help="Target repository")
     p.add_argument("--config", type=Path, help="JSON config file")
     p.add_argument("--steps", type=int, choices=[3, 4], help="3-step (no commit agent) or 4-step loop")
     p.add_argument("--max-iterations", type=int, help="Max loop iterations")
     p.add_argument("--issue", help="GitHub issue number or URL to focus on")
+    p.add_argument("--mission", "-m", help="Mission prompt injected into agent context")
+    p.add_argument("--mode", choices=["repair", "issue", "queue"], help="Run mode")
+    p.add_argument("--label", help="Issue queue: filter by label")
+    p.add_argument("--author", help="Issue queue: filter by author (@user)")
+    p.add_argument("--issue-limit", type=int, default=None, help="Issue queue: max issues")
+    p.add_argument("--close-issues", action="store_true", help="Close issues when queue item succeeds")
+    p.add_argument("--no-close-issues", action="store_true", help="Do not close issues after success")
+    p.add_argument("--wizard", action="store_true", help="Force interactive wizard")
+    p.add_argument("--no-wizard", action="store_true", help="Skip wizard even with no args")
     p.add_argument("--yolo", dest="yolo", action="store_true", default=None, help="Enable YOLO mode (default)")
     p.add_argument("--no-yolo", dest="yolo", action="store_false", help="Disable auto-approve flags")
     p.add_argument("--dry-run", action="store_true", help="Print commands without executing agents")
@@ -162,7 +189,11 @@ Examples:
 
 def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, LoopConfig]:
     parser = build_parser()
+    argv = list(argv) if argv is not None else None
     args = parser.parse_args(argv)
+
+    if args.command is None:
+        args.command = "run"
 
     file_cfg = merge_config(DEFAULTS, load_json_config(DEFAULT_CONFIG_PATH))
     if args.config:
@@ -178,6 +209,28 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, LoopC
         cfg.max_iterations = args.max_iterations
     if args.issue:
         cfg.issue = args.issue
+        cfg.mode = "issue"
+    if args.mode:
+        cfg.mode = args.mode
+    if args.mission:
+        cfg.mission = args.mission
+    if args.label or args.author or args.issue_limit is not None:
+        cfg.mode = "queue"
+        cfg.issue_queue = cfg.issue_queue or IssueQueueConfig()
+        if args.label:
+            cfg.issue_queue.label = args.label
+        if args.author:
+            cfg.issue_queue.author = args.author
+        if args.issue_limit is not None:
+            cfg.issue_queue.limit = args.issue_limit
+    if args.close_issues:
+        if cfg.issue_queue is None:
+            cfg.issue_queue = IssueQueueConfig()
+        cfg.issue_queue.close_on_success = True
+    if args.no_close_issues:
+        if cfg.issue_queue is None:
+            cfg.issue_queue = IssueQueueConfig()
+        cfg.issue_queue.close_on_success = False
     if args.yolo is not None:
         cfg.yolo = args.yolo
     if args.dry_run:

@@ -133,6 +133,9 @@ class MiddleManagerLoop:
         else:
             template_name = sc.prompt_file or step
         template = load_prompt(template_name.replace(".md", ""))
+        if step == "execute" and self.cfg.fix_unrelated_tests:
+            rule_addition = "\n6. **Fix unrelated test failures:** If the test suite is failing due to unrelated test failures or environment-specific issues that block verification of your changes, you are allowed and encouraged to modify the test files or unrelated files directly to fix the test failures so that they pass.\n"
+            template += rule_addition
         ctx = build_context(
             repo=self.cfg.repo,
             issue=self.cfg.issue or issue_data.get("url", ""),
@@ -164,6 +167,7 @@ class MiddleManagerLoop:
         prompt_file = self.state / f"{step}_prompt.md"
         self.write_text(prompt_file, prompt)
 
+        from .colors import Colors
         run = build_command(
             sc.agent,
             prompt,
@@ -176,7 +180,10 @@ class MiddleManagerLoop:
             interactive=self.cfg.interactive and step == "execute",
         )
         result = run_agent(run, dry_run=self.cfg.dry_run)
-        self.log(f"{step} finished with exit code {result.returncode}")
+        if result.returncode == 0:
+            self.log(f"✅ Step {step.upper()} ({sc.agent.upper()}) finished successfully (exit code 0).", Colors.GREEN)
+        else:
+            self.log(f"❌ Step {step.upper()} ({sc.agent.upper()}) failed (exit code {result.returncode}).", Colors.RED)
         return result
 
     def maybe_commit_and_pr(self, iteration: int, issue_data: dict[str, str]) -> None:
@@ -280,7 +287,7 @@ class MiddleManagerLoop:
     def run_once(self, iteration: int) -> bool:
         """Run one full loop iteration. Returns False to stop the outer loop."""
         from .colors import Colors
-        self.log(f"=== Iteration {iteration} ===", Colors.CYAN + Colors.BOLD)
+        self.log(f"🔄 ==================== ITERATION {iteration} ====================", Colors.CYAN + Colors.BOLD)
 
         issue_data = fetch_issue(self.cfg.repo, self.cfg.issue or "0")
         self.ensure_fix_plan_seed(issue_data)
@@ -291,6 +298,8 @@ class MiddleManagerLoop:
         for step in ("discover", "execute", "verify"):
             if step not in self.cfg.active_steps():
                 continue
+            sc = self.cfg.step_for(step)
+            self.log(f"⚡ [Step: {step.upper()}] Starting step with agent '{sc.agent.upper()}'...", Colors.CYAN + Colors.BOLD)
             if self.cfg.interactive:
                 action = pause(self.cfg, step)
                 if action == "quit":
@@ -302,7 +311,7 @@ class MiddleManagerLoop:
             if step == "verify":
                 verifier_stdout = result.stdout
                 if result.returncode != 0:
-                    self.log("Verifier reported CLI error/failure", Colors.RED)
+                    self.log("❌ Verifier reported CLI error/failure", Colors.RED)
                     verifier_passed = False
 
         if "verify" in self.cfg.active_steps() and verifier_passed:
@@ -312,10 +321,10 @@ class MiddleManagerLoop:
             if m:
                 verdict = m.group(1).upper()
             
-            self.log(f"Verifier verdict: {verdict}", Colors.GREEN if verdict == "PASS" else Colors.RED)
+            self.log(f"🔍 Verifier Verdict: {verdict}", Colors.GREEN if verdict == "PASS" else Colors.RED)
             if verdict == "FAIL":
                 verifier_passed = False
-                self.log("Verifier reported failure — will loop back", Colors.YELLOW)
+                self.log("⚠️ Verifier reported failure — will loop back", Colors.YELLOW)
                 existing_err = self.read_text(self.error_log_path)
                 header = f"\n=== VERIFIER FEEDBACK (Iteration {iteration}) ===\n"
                 self.write_text(self.error_log_path, header + verifier_stdout + "\n" + existing_err)
@@ -330,8 +339,10 @@ class MiddleManagerLoop:
         ok, test_out = self.run_tests()
         self.write_text(self.verify_log_path, test_out)
         if not ok:
-            self.log("Tests failed — error_log updated for next discover pass", Colors.RED)
+            self.log("❌ Tests failed — error_log updated for next discover pass", Colors.RED)
             return True
+        else:
+            self.log("✨ All tests passed successfully!", Colors.GREEN)
 
         if "commit" in self.cfg.active_steps():
             if repo_is_git(self.cfg.repo):

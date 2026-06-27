@@ -212,14 +212,21 @@ def build_command(
 
 
 def run_agent(run: AgentRun, *, dry_run: bool = False, stream: bool = True) -> subprocess.CompletedProcess[str]:
+    import sys
     from .colors import Colors
     display = " ".join(_quote(a) for a in run.command)
-    prefix = f"{Colors.colored('▶ ' + run.agent + ':', Colors.MAGENTA + Colors.BOLD)}"
-    dry_prefix = Colors.colored("[dry-run] ", Colors.YELLOW) if dry_run else ""
-    print(f"\n{dry_prefix}{prefix} {display}\n")
+    dry_prefix = Colors.colored("[DRY RUN] ", Colors.YELLOW) if dry_run else ""
+    
+    header = f"┌── {dry_prefix}RUNNING AGENT: {run.agent.upper()} ──────────────────────────────────────────────────"
+    print(Colors.colored(header, Colors.MAGENTA + Colors.BOLD))
+    print(Colors.colored(f"│ Cwd:     {run.cwd}", Colors.CYAN))
+    print(Colors.colored(f"│ Command: {display}", Colors.CYAN))
+    print(Colors.colored("└" + "─" * 78, Colors.MAGENTA + Colors.BOLD))
 
     if dry_run:
         return subprocess.CompletedProcess(run.command, 0, stdout="", stderr="")
+
+    print(Colors.colored("  ┌── Agent Output ──────────────────────────────────────────────────────────", Colors.MAGENTA))
 
     proc = subprocess.Popen(
         run.command,
@@ -232,11 +239,24 @@ def run_agent(run: AgentRun, *, dry_run: bool = False, stream: bool = True) -> s
     )
     output_lines: list[str] = []
     assert proc.stdout is not None
+    
+    start_of_line = True
     for line in proc.stdout:
         output_lines.append(line)
         if stream:
-            print(line, end="", flush=True)
+            for char in line:
+                if start_of_line:
+                    sys.stdout.write(Colors.colored("  │ ", Colors.MAGENTA))
+                    start_of_line = False
+                sys.stdout.write(char)
+                if char == "\n":
+                    start_of_line = True
+            sys.stdout.flush()
+
     proc.wait(timeout=run.timeout)
+    if not start_of_line:
+        print()
+    print(Colors.colored("  └── End of Agent Output ────────────────────────────────────────────────────", Colors.MAGENTA))
     return subprocess.CompletedProcess(
         run.command,
         proc.returncode or 0,

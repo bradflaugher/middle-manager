@@ -58,6 +58,7 @@ class LoopConfig:
     binary_overrides: dict[str, str] = field(default_factory=dict)
     state_dir: Path | None = None
     agent_memory_file: str = "AGENT.md"
+    fix_unrelated_tests: bool = False
 
     def step_for(self, name: str) -> StepConfig:
         return getattr(self, name)
@@ -79,6 +80,7 @@ DEFAULTS: dict[str, Any] = {
     "branch_prefix": "mm",
     "no_merge": True,
     "test_command": "npm test",
+    "fix_unrelated_tests": False,
     "discover": {"agent": "grok", "model": None, "extra_args": ["--check"]},
     "execute": {"agent": "claude", "model": "claude-sonnet-4-20250514"},
     "verify": {"agent": "codex", "model": "o4-mini"},
@@ -134,6 +136,7 @@ def config_from_dict(data: dict[str, Any], repo: Path) -> LoopConfig:
         commit=step_from_dict(data.get("commit", DEFAULTS["commit"])),
         binary_overrides=dict(data.get("binary_overrides", {})),
         agent_memory_file=str(data.get("agent_memory_file", "AGENT.md")),
+        fix_unrelated_tests=bool(data.get("fix_unrelated_tests", False)),
     )
 
 
@@ -182,6 +185,7 @@ Examples:
     p.add_argument("--branch-prefix", default=None)
     p.add_argument("--no-pr", action="store_true", help="Skip PR creation")
     p.add_argument("--state-dir", type=Path)
+    p.add_argument("--fix-unrelated-tests", action="store_true", help="Allow agents to modify tests or other files to fix unrelated failures.")
 
     for step in ("discover", "execute", "verify", "commit"):
         p.add_argument(f"--{step}-agent", choices=AGENT_NAMES)
@@ -269,6 +273,8 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, LoopC
         cfg.no_pr = True
     if args.state_dir:
         cfg.state_dir = args.state_dir
+    if args.fix_unrelated_tests:
+        cfg.fix_unrelated_tests = True
 
     for step in ("discover", "execute", "verify", "commit"):
         agent = getattr(args, f"{step}_agent")

@@ -2,7 +2,7 @@
 
 # middle-manager
 
-Unsupervised multi-agent coding loop that orchestrates your favorite coding CLIs. 
+Unsupervised multi-agent coding loop that orchestrates your favorite coding CLIs. **Pure Python 3.10+ — no external requirements or pip dependencies.**
 
 **Bring your own agents.** middle-manager dynamically chains **Grok**, **Claude Code**, **Crush**, **Agy**, **Codex**, and **OpenCode** into a tight 4-step software factory. It reads your codebase, maps out a task list, executes fixes, critiques its own work, runs tests, commits, and opens PRs—completely on autopilot.
 
@@ -269,26 +269,6 @@ Not all agents are installed on every box. `mm agents` shows what you have. Over
 | `mm status --repo PATH` | Show loop state |
 | `mm issues --author @user` | Issue queue batch mode |
 | `mm install-path` | Print PATH export for installer |
-
----
-
-## Architecture
-
-Pure Python 3.10+. No pip dependencies. Subprocesses to agent CLIs. Prompt templates in `middle_manager/prompts/`.
-
-```
-middle_manager/
-  agents.py      # CLI command builders and YOLO settings
-  cli.py         # Entry point and subcommand routing
-  colors.py      # ANSI terminal formatting
-  config.py      # Argument parsing, agent autodetection, and defaults
-  git_ops.py     # Subprocess-based git and gh helpers
-  interactive.py # Interactive pause menu handler (-i)
-  issue_queue.py # Batch processor for GitHub issues
-  loop.py        # Pipeline workflow engine
-  prompts/       # Prompt templates (discover, execute, verify, commit)
-mm.py            # Executable runner script
-```
 
 ---
 

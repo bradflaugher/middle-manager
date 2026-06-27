@@ -25,6 +25,17 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ## Cookbook — copy/paste recipes
 
+### Interactive wizard (recommended)
+
+If you prefer interactive prompts instead of specifying CLI flags, run `mm` with no arguments. It will walk you through setting up your loop step-by-step:
+
+```bash
+mm                    # walks through repo → mode → mission → agents → start
+mm --wizard           # force the wizard even if other flags are provided
+```
+
+Your last chosen configuration options are saved to `~/.config/middle-manager/last.json` to make running subsequent loops extremely fast.
+
 ### Add a feature fast (most common)
 
 Three autodetected agents, your prompt, fresh state every run:
@@ -131,17 +142,6 @@ mm --mode repair
 mm --mode repair --mission "focus on Playwright failures only"
 mm --mode repair --test-command "npm run test:ci" --max-iterations 5
 ```
-
-### Interactive wizard
-
-When you want prompts instead of flags:
-
-```bash
-mm                    # walks through repo → mode → mission → agents → go
-mm --wizard           # force wizard even with other flags
-```
-
-Wizard defaults to feature mode + 3-step stack. Last choices saved to `~/.config/middle-manager/last.json`.
 
 ### Inspect before you YOLO
 

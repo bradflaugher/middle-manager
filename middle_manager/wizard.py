@@ -98,6 +98,7 @@ def save_last_config(cfg: LoopConfig, extra: dict | None = None) -> None:
         "mode": cfg.mode,
         "issue": cfg.issue,
         "issue_queue": _issue_queue_to_dict(cfg),
+        "fix_unrelated_tests": cfg.fix_unrelated_tests,
         "discover": _step_to_dict(cfg.discover),
         "execute": _step_to_dict(cfg.execute),
         "verify": _step_to_dict(cfg.verify),
@@ -238,6 +239,7 @@ def run_wizard(argv_repo: Path | None = None, mission: str | None = None) -> Loo
     yolo = _yes_no("YOLO mode (auto-approve agent permissions)?", default=True)
     dry_run = _yes_no("Dry-run (print commands only)?", default=False)
     pause_steps = _yes_no("Pause before each step?", default=False)
+    fix_unrelated = _yes_no("Allow agents to fix unrelated test failures?", default=last.get("fix_unrelated_tests", False))
 
     test_default = last.get("test_command") or "npm test"
     test_command = _prompt("Test command for backpressure", test_default)
@@ -269,6 +271,7 @@ def run_wizard(argv_repo: Path | None = None, mission: str | None = None) -> Loo
     cfg.interactive = pause_steps
     cfg.issue = issue
     cfg.no_pr = no_pr
+    cfg.fix_unrelated_tests = fix_unrelated
     cfg.mode = mode
     cfg.mission = mission or None
     if mode == "feature" and mission:
@@ -297,6 +300,7 @@ def run_wizard(argv_repo: Path | None = None, mission: str | None = None) -> Loo
         sc = cfg.step_for(step)
         print(f"    {step:10} {sc.agent}")
     print(f"  YOLO:     {Colors.colored(str(cfg.yolo), Colors.GREEN if cfg.yolo else Colors.YELLOW)} | dry-run: {Colors.colored(str(cfg.dry_run), Colors.YELLOW if cfg.dry_run else Colors.GREEN)}")
+    print(f"  Fix unrelated tests: {Colors.colored(str(cfg.fix_unrelated_tests), Colors.GREEN if cfg.fix_unrelated_tests else Colors.YELLOW)}")
     if cfg.issue_queue:
         q = cfg.issue_queue
         parts = [f"state={q.state}", f"limit={q.limit}"]

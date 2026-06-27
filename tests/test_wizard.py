@@ -32,7 +32,7 @@ class TestWizard(unittest.TestCase):
     @patch('middle_manager.wizard._tty', return_value=True)
     @patch('middle_manager.wizard._prompt', side_effect=['/tmp', 'some mission', 'y', '10'])
     @patch('middle_manager.wizard._choose', return_value='feature')
-    @patch('middle_manager.wizard._yes_no', side_effect=[False, True, False, False, True, True]) # customize agents, yolo, dry_run, pause, open prs, start loop
+    @patch('middle_manager.wizard._yes_no', side_effect=[False, True, False, False, True, True, True]) # customize agents, yolo, dry_run, pause, fix unrelated, open prs, start loop
     @patch('middle_manager.wizard.load_last_config', return_value={})
     @patch('middle_manager.wizard.save_last_config')
     @patch('middle_manager.wizard.repo_is_git', return_value=True)

@@ -84,3 +84,84 @@ class TestAgents(unittest.TestCase):
             )
             self.assertEqual(res.returncode, 0)
             self.assertEqual(res.stdout.strip(), "hello_from_shell")
+
+    def test_ensure_gitignore(self):
+        import tempfile
+        from pathlib import Path
+        from middle_manager.loop import MiddleManagerLoop
+        from middle_manager.config import LoopConfig
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            # Create a mock .git directory to satisfy repo_is_git
+            (tmppath / ".git").mkdir()
+            
+            cfg = LoopConfig(repo=tmppath)
+            loop = MiddleManagerLoop(cfg)
+            
+            # Case 1: .gitignore doesn't exist
+            loop.ensure_gitignore()
+            gitignore_path = tmppath / ".gitignore"
+            self.assertTrue(gitignore_path.exists())
+            self.assertIn(".middle-manager/", gitignore_path.read_text())
+            
+            # Case 2: .gitignore exists but does not ignore .middle-manager/
+            gitignore_path.write_text("node_modules/\n")
+            loop.ensure_gitignore()
+            self.assertIn(".middle-manager/", gitignore_path.read_text())
+            self.assertIn("node_modules/", gitignore_path.read_text())
+            
+            # Case 3: .gitignore already ignores .middle-manager/ (no duplicate added)
+            content_before = gitignore_path.read_text()
+            loop.ensure_gitignore()
+            content_after = gitignore_path.read_text()
+            self.assertEqual(content_before, content_after)
+
+    def test_top_plan_item(self):
+        import tempfile
+        from pathlib import Path
+        from middle_manager.loop import MiddleManagerLoop
+        from middle_manager.config import LoopConfig
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            cfg = LoopConfig(repo=tmppath)
+            loop = MiddleManagerLoop(cfg)
+            
+            # Case 1: normal plan with notes first, then tasks
+            plan_content = (
+                "# fix_plan.md\n\n"
+                "## Notes\n\n"
+                "- **Test command:** pytest\n"
+                "- **Placement:** root\n\n"
+                "## Tasks\n\n"
+                "- [x] Done task\n"
+                "- [ ] Actual top task\n"
+                "- [ ] Another pending task\n"
+            )
+            loop.write_text(loop.fix_plan_path, plan_content)
+            self.assertEqual(loop.top_plan_item(), "Actual top task")
+
+            # Case 2: no checkboxed tasks, fallback to loose tasks under ## Tasks section
+            plan_content = (
+                "# fix_plan.md\n\n"
+                "## Notes\n"
+                "- Not a task\n\n"
+                "## Tasks\n"
+                "- Loose task\n"
+            )
+            loop.write_text(loop.fix_plan_path, plan_content)
+            self.assertEqual(loop.top_plan_item(), "Loose task")
+
+            # Case 3: no tasks at all
+            plan_content = (
+                "# fix_plan.md\n\n"
+                "## Notes\n"
+                "- Just a note\n"
+            )
+            loop.write_text(loop.fix_plan_path, plan_content)
+            self.assertEqual(
+                loop.top_plan_item(),
+                "No actionable item in fix_plan.md — add `- [ ] task` lines."
+            )
+

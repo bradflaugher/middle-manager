@@ -60,6 +60,30 @@ class MiddleManagerLoop:
         with self.session_log.open("a", encoding="utf-8") as f:
             f.write(clean_line)
 
+    def ensure_gitignore(self) -> None:
+        if not repo_is_git(self.cfg.repo):
+            return
+        gitignore = self.cfg.repo / ".gitignore"
+        rule = ".middle-manager/"
+        if gitignore.exists():
+            try:
+                content = gitignore.read_text(encoding="utf-8")
+                lines = [line.strip() for line in content.splitlines()]
+                if rule not in lines and rule[:-1] not in lines:
+                    with gitignore.open("a", encoding="utf-8") as f:
+                        if content and not content.endswith("\n"):
+                            f.write("\n")
+                        f.write(f"\n# middle-manager state directory\n{rule}\n")
+                    self.log(f"Added {rule} to .gitignore")
+            except Exception as e:
+                self.log(f"Warning: Could not update .gitignore: {e}")
+        else:
+            try:
+                gitignore.write_text(f"# middle-manager state directory\n{rule}\n", encoding="utf-8")
+                self.log(f"Created .gitignore and added {rule}")
+            except Exception as e:
+                self.log(f"Warning: Could not create .gitignore: {e}")
+
     def read_iteration(self) -> int:
         if self.iteration_path.exists():
             try:
@@ -84,7 +108,17 @@ class MiddleManagerLoop:
             s = line.strip()
             if s.startswith("- [ ]"):
                 return s[5:].strip()
-            if s.startswith("- ") and not s.startswith("- [x]"):
+        
+        # Fallback to loose bullet points only if they are under a Tasks section
+        in_tasks_section = False
+        for line in text.splitlines():
+            s = line.strip()
+            if s.lower().startswith("## task"):
+                in_tasks_section = True
+                continue
+            if s.startswith("#") and not s.lower().startswith("## task"):
+                in_tasks_section = False
+            if in_tasks_section and s.startswith("- ") and not s.startswith("- [x]") and not s.startswith("- [ ]"):
                 return s[2:].strip()
         return "No actionable item in fix_plan.md — add `- [ ] task` lines."
 
@@ -214,6 +248,9 @@ class MiddleManagerLoop:
 
         branch = current_branch(self.cfg.repo)
         if not self.cfg.no_pr:
+            # Push branch to origin first to ensure PR creation succeeds
+            push_branch(self.cfg.repo, branch, dry_run=self.cfg.dry_run)
+            
             title = f"middle-manager: {self.top_plan_item()[:60]}"
             body = (
                 f"Automated PR from middle-manager loop iteration {iteration}.\n\n"
@@ -390,6 +427,7 @@ class MiddleManagerLoop:
         if self.cfg.fresh:
             reset_loop_state(self.cfg)
 
+        self.ensure_gitignore()
         self.log(f"Target repo: {self.cfg.repo}")
         if repo_is_git(self.cfg.repo):
             self.log(f"Git branch:  {current_branch(self.cfg.repo)}")

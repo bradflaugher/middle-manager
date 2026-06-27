@@ -378,7 +378,8 @@ def draw_status_block(
     active_sockets: int,
     changed_files: list[str],
     last_printed_lines_cnt: int = 0,
-    last_line: str = ""
+    last_line: str = "",
+    tmux_session: str | None = None
 ) -> int:
     import sys
     from .colors import Colors
@@ -389,6 +390,9 @@ def draw_status_block(
     lines.append(Colors.colored(f"  │  CPU Usage:     {cpu_str}", Colors.CYAN))
     lines.append(Colors.colored(f"  │  Active Processes: {active_procs}", Colors.CYAN))
     lines.append(Colors.colored(f"  │  Active Sockets:   {active_sockets}", Colors.CYAN))
+
+    if tmux_session:
+        lines.append(Colors.colored(f"  │  Attach Session:  tmux attach-session -t {tmux_session}", Colors.GREEN + Colors.BOLD))
 
     if last_line:
         max_len = 62
@@ -600,7 +604,8 @@ def run_command_monitored(
                         active_sockets=active_sockets,
                         changed_files=changed_files,
                         last_printed_lines_cnt=last_printed_lines,
-                        last_line=last_line
+                        last_line=last_line,
+                        tmux_session=session_name
                     )
                 else:
                     new_files_set = set(changed_files)
@@ -659,7 +664,8 @@ def run_command_monitored(
                 active_sockets=0,
                 changed_files=changed_files,
                 last_printed_lines_cnt=last_printed_lines,
-                last_line=last_line
+                last_line=last_line,
+                tmux_session=None
             )
         else:
             print(Colors.colored(f"  │ [{elapsed_str}] Final status: {status_str}", Colors.CYAN))
@@ -832,7 +838,8 @@ def run_command_monitored(
                         active_sockets=active_sockets,
                         changed_files=changed_files,
                         last_printed_lines_cnt=last_printed_lines,
-                        last_line=last_line
+                        last_line=last_line,
+                        tmux_session=None
                     )
                 else:
                     # Non-TTY logic
@@ -902,7 +909,8 @@ def run_command_monitored(
                 active_sockets=0,
                 changed_files=changed_files,
                 last_printed_lines_cnt=last_printed_lines,
-                last_line=last_line
+                last_line=last_line,
+                tmux_session=None
             )
         else:
             print(Colors.colored(f"  │ [{elapsed_str}] Final status: {status_str}", Colors.CYAN))

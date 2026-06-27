@@ -1,0 +1,21 @@
+{
+  "steps": 4,
+  "max_iterations": 3,
+  "test_command": "npm test",
+  "discover": {
+    "agent": "grok",
+    "extra_args": ["--check"]
+  },
+  "execute": {
+    "agent": "grok",
+    "extra_args": []
+  },
+  "verify": {
+    "agent": "grok",
+    "extra_args": ["--check"]
+  },
+  "commit": {
+    "agent": "agy",
+    "extra_args": []
+  }
+}

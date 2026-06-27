@@ -1,0 +1,29 @@
+{
+  "steps": 4,
+  "max_iterations": 10,
+  "yolo": true,
+  "branch_prefix": "mm",
+  "no_merge": true,
+  "test_command": "npm test",
+  "agent_memory_file": "AGENT.md",
+  "discover": {
+    "agent": "grok",
+    "model": null,
+    "extra_args": ["--check"]
+  },
+  "execute": {
+    "agent": "claude",
+    "model": "claude-sonnet-4-20250514",
+    "extra_args": []
+  },
+  "verify": {
+    "agent": "codex",
+    "model": "o4-mini",
+    "extra_args": []
+  },
+  "commit": {
+    "agent": "agy",
+    "model": null,
+    "extra_args": []
+  }
+}

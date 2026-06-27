@@ -272,16 +272,6 @@ Not all agents are installed on every box. `mm agents` shows what you have. Over
 
 ---
 
-## Rules of the road
-
-1. **One item per loop iteration.** Cramming the context window makes everything worse.
-2. **Don't merge PRs.** The commit step opens PRs; humans merge (or don't).
-3. **Maintain AGENT.md.** Agents are ghosts — repo memory is how they learn.
-4. **fix_plan.md is the source of truth.** Discover writes it; execute reads the top `- [ ]` item.
-5. **Tests are backpressure.** `test_command` runs after verify; failures feed the next discover pass.
-
----
-
 ## Architecture
 
 Pure Python 3.10+. No pip dependencies. Subprocesses to agent CLIs. Prompt templates in `middle_manager/prompts/`.

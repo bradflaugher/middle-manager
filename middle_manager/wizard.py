@@ -93,7 +93,6 @@ def save_last_config(cfg: LoopConfig, extra: dict | None = None) -> None:
         "steps": cfg.steps,
         "max_iterations": cfg.max_iterations,
         "yolo": cfg.yolo,
-        "test_command": cfg.test_command,
         "mission": cfg.mission,
         "mode": cfg.mode,
         "issue": cfg.issue,
@@ -242,8 +241,7 @@ def run_wizard(argv_repo: Path | None = None, mission: str | None = None) -> Loo
     pause_steps = _yes_no("Pause before each step?", default=False)
     fix_unrelated = _yes_no("Allow agents to fix unrelated test failures?", default=last.get("fix_unrelated_tests", False))
 
-    test_default = last.get("test_command") or "npm test"
-    test_command = _prompt("Test command for backpressure", test_default)
+
     max_iter_s = _prompt("Max iterations per issue/task", str(last.get("max_iterations", 10)))
     try:
         max_iterations = max(1, int(max_iter_s))
@@ -257,7 +255,7 @@ def run_wizard(argv_repo: Path | None = None, mission: str | None = None) -> Loo
     data["steps"] = steps
     data["max_iterations"] = max_iterations
     data["yolo"] = yolo
-    data["test_command"] = test_command or None
+
     data["mode"] = mode
     data["mission"] = mission or None
     for step in ("discover", "execute", "verify", "commit"):

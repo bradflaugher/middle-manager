@@ -149,22 +149,6 @@ class MiddleManagerLoop:
         seed += f"## Tasks\n\n- [ ] {task}\n"
         self.write_text(self.fix_plan_path, seed)
 
-    def run_tests(self) -> tuple[bool, str]:
-        cmd = self.cfg.test_command
-        if not cmd:
-            return True, "(no test_command configured)"
-        if self.cfg.dry_run:
-            return True, f"[dry-run] would run: {cmd}"
-        from .agents import run_command_monitored
-        result = run_command_monitored(
-            command=cmd,
-            cwd=self.cfg.repo,
-            stream=self.cfg.stream_output,
-            label="TEST SUITE",
-        )
-        self.write_text(self.error_log_path, result.stdout)
-        return result.returncode == 0, result.stdout
-
     def prompt_for_step(self, step: str, iteration: int, issue_data: dict[str, str]) -> str:
         sc = self.cfg.step_for(step)
         if step == "discover" and self.cfg.mode == "feature":
@@ -218,7 +202,7 @@ class MiddleManagerLoop:
             prompt_file=prompt_file if sc.agent != "agy" else None,
             interactive=self.cfg.interactive and step == "execute",
         )
-        result = run_agent(run, dry_run=self.cfg.dry_run, stream=self.cfg.stream_output)
+        result = run_agent(run, dry_run=self.cfg.dry_run, stream=self.cfg.stream_output, step=step)
         
         # Write agent output to state directory for user inspectability/visibility
         output_file = self.state / f"{step}_output.txt"
@@ -384,14 +368,6 @@ class MiddleManagerLoop:
 
         if not verifier_passed:
             return True
-
-        ok, test_out = self.run_tests()
-        self.write_text(self.verify_log_path, test_out)
-        if not ok:
-            self.log("❌ Tests failed — error_log updated for next discover pass", Colors.RED)
-            return True
-        else:
-            self.log("✨ All tests passed successfully!", Colors.GREEN)
 
         if "commit" in self.cfg.active_steps():
             if repo_is_git(self.cfg.repo):

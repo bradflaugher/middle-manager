@@ -1,7 +1,6 @@
 {
   "steps": 4,
   "max_iterations": 3,
-  "test_command": "npm test",
   "discover": {
     "agent": "grok",
     "extra_args": ["--check"]

@@ -4,7 +4,6 @@
   "yolo": true,
   "branch_prefix": "mm",
   "no_merge": true,
-  "test_command": "npm test",
   "agent_memory_file": "AGENT.md",
   "stream_output": false,
   "discover": {

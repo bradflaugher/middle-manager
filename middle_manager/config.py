@@ -50,7 +50,7 @@ class LoopConfig:
     branch_prefix: str = "mm"
     no_pr: bool = False
     no_merge: bool = True
-    test_command: str | None = None
+
     discover: StepConfig = field(default_factory=lambda: StepConfig("grok"))
     execute: StepConfig = field(default_factory=lambda: StepConfig("claude"))
     verify: StepConfig = field(default_factory=lambda: StepConfig("codex"))
@@ -80,7 +80,7 @@ DEFAULTS: dict[str, Any] = {
     "yolo": True,
     "branch_prefix": "mm",
     "no_merge": True,
-    "test_command": "npm test",
+
     "fix_unrelated_tests": False,
     "stream_output": False,
     "discover": {"agent": "grok", "model": None, "extra_args": ["--check"]},
@@ -131,7 +131,7 @@ def config_from_dict(data: dict[str, Any], repo: Path) -> LoopConfig:
         yolo=bool(data.get("yolo", True)),
         branch_prefix=str(data.get("branch_prefix", "mm")),
         no_merge=bool(data.get("no_merge", True)),
-        test_command=data.get("test_command"),
+
         discover=step_from_dict(data.get("discover", DEFAULTS["discover"])),
         execute=step_from_dict(data.get("execute", DEFAULTS["execute"])),
         verify=step_from_dict(data.get("verify", DEFAULTS["verify"])),
@@ -184,7 +184,7 @@ Examples:
     p.add_argument("--no-yolo", dest="yolo", action="store_false", help="Disable auto-approve flags")
     p.add_argument("--dry-run", action="store_true", help="Print commands without executing agents")
     p.add_argument("--interactive", "-i", action="store_true", help="Interactive menu between steps")
-    p.add_argument("--test-command", help="Shell command for verification backpressure")
+
     p.add_argument("--branch-prefix", default=None)
     p.add_argument("--no-pr", action="store_true", help="Skip PR creation")
     p.add_argument("--state-dir", type=Path)
@@ -269,8 +269,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, LoopC
         cfg.dry_run = True
     if args.interactive:
         cfg.interactive = True
-    if args.test_command:
-        cfg.test_command = args.test_command
+
     if args.branch_prefix:
         cfg.branch_prefix = args.branch_prefix
     if args.no_pr:

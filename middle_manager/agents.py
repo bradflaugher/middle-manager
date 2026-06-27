@@ -255,6 +255,58 @@ def get_process_tree_cpu_ticks(parent_pid: int) -> float | None:
         return None
 
 
+def get_process_tree_stats(parent_pid: int) -> tuple[int, int]:
+    import os
+    from pathlib import Path
+    try:
+        pids = []
+        for p in Path("/proc").iterdir():
+            if p.is_dir() and p.name.isdigit():
+                pids.append(int(p.name))
+
+        ppid_map = {}
+        for pid in pids:
+            try:
+                stat_path = Path(f"/proc/{pid}/stat")
+                content = stat_path.read_text(encoding="utf-8")
+                rpar_idx = content.rfind(")")
+                if rpar_idx == -1:
+                    continue
+                fields = content[rpar_idx + 2:].split()
+                ppid = int(fields[1])
+                ppid_map[pid] = ppid
+            except Exception:
+                pass
+
+        descendants = {parent_pid}
+        changed = True
+        while changed:
+            changed = False
+            for pid, ppid in ppid_map.items():
+                if ppid in descendants and pid not in descendants:
+                    descendants.add(pid)
+                    changed = True
+
+        total_sockets = 0
+        for pid in descendants:
+            fd_dir = Path(f"/proc/{pid}/fd")
+            if fd_dir.is_dir():
+                try:
+                    for fd_link in fd_dir.iterdir():
+                        try:
+                            target = os.readlink(fd_link)
+                            if target.startswith("socket:["):
+                                total_sockets += 1
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+        return len(descendants), total_sockets
+    except Exception:
+        return 1, 0
+
+
+
 def get_changed_files_with_status(repo: Path) -> list[str]:
     import subprocess
     from pathlib import Path
@@ -322,10 +374,11 @@ def draw_status_block(
     status_str: str,
     elapsed_str: str,
     cpu_str: str,
-    output_lines_cnt: int,
-    output_size_str: str,
+    active_procs: int,
+    active_sockets: int,
     changed_files: list[str],
-    last_printed_lines_cnt: int = 0
+    last_printed_lines_cnt: int = 0,
+    last_line: str = ""
 ) -> int:
     import sys
     from .colors import Colors
@@ -334,8 +387,17 @@ def draw_status_block(
     lines.append(Colors.colored(f"  │  Status:         {status_str}", Colors.CYAN))
     lines.append(Colors.colored(f"  │  Elapsed Time:  {elapsed_str}", Colors.CYAN))
     lines.append(Colors.colored(f"  │  CPU Usage:     {cpu_str}", Colors.CYAN))
-    lines.append(Colors.colored(f"  │  Agent Output:  {output_lines_cnt} lines ({output_size_str}) produced", Colors.CYAN))
-    
+    lines.append(Colors.colored(f"  │  Active Processes: {active_procs}", Colors.CYAN))
+    lines.append(Colors.colored(f"  │  Active Sockets:   {active_sockets}", Colors.CYAN))
+
+    if last_line:
+        max_len = 62
+        if len(last_line) > max_len:
+            truncated = last_line[:max_len-3] + "..."
+        else:
+            truncated = last_line
+        lines.append(Colors.colored(f"  │  Last Output:   \"{truncated}\"", Colors.YELLOW))
+
     if changed_files:
         lines.append(Colors.colored("  │  Files Changed:", Colors.CYAN))
         for f in changed_files[:5]:
@@ -540,15 +602,25 @@ def run_command_monitored(
                     spinner_char = SPINNER[step_counter % len(SPINNER)]
                     status_line = f"{spinner_char} RUNNING..."
                     
+                    last_line = ""
+                    for line in reversed(accumulated.splitlines()):
+                        cleaned = line.strip()
+                        if cleaned:
+                            last_line = cleaned
+                            break
+
+                    active_procs, active_sockets = get_process_tree_stats(proc.pid)
+
                     last_printed_lines = draw_status_block(
                         agent_name=label,
                         status_str=status_line,
                         elapsed_str=elapsed_str,
                         cpu_str=cpu_str,
-                        output_lines_cnt=out_lines,
-                        output_size_str=size_str,
+                        active_procs=active_procs,
+                        active_sockets=active_sockets,
                         changed_files=changed_files,
-                        last_printed_lines_cnt=last_printed_lines
+                        last_printed_lines_cnt=last_printed_lines,
+                        last_line=last_line
                     )
                 else:
                     # Non-TTY logic
@@ -559,7 +631,8 @@ def run_command_monitored(
                     known_changed_files = new_files_set
                     
                     if now - last_log_time >= 10.0:
-                        print(Colors.colored(f"  │ [{elapsed_str}] CPU: {cpu_percent:.1f}% | Output: {out_lines} lines ({size_str})", Colors.CYAN))
+                        active_procs, active_sockets = get_process_tree_stats(proc.pid)
+                        print(Colors.colored(f"  │ [{elapsed_str}] CPU: {cpu_percent:.1f}% | Procs: {active_procs} | Sockets: {active_sockets}", Colors.CYAN))
                         last_log_time = now
                         
                 time.sleep(0.1)
@@ -601,15 +674,23 @@ def run_command_monitored(
         status_str = "✅ COMPLETED" if proc.returncode == 0 else f"❌ FAILED (exit code {proc.returncode})"
         
         if sys.stdout.isatty():
+            last_line = ""
+            for line in reversed(accumulated.splitlines()):
+                cleaned = line.strip()
+                if cleaned:
+                    last_line = cleaned
+                    break
+
             draw_status_block(
                 agent_name=label,
                 status_str=status_str,
                 elapsed_str=elapsed_str,
                 cpu_str="0.0% (stopped)",
-                output_lines_cnt=out_lines,
-                output_size_str=size_str,
+                active_procs=0,
+                active_sockets=0,
                 changed_files=changed_files,
-                last_printed_lines_cnt=last_printed_lines
+                last_printed_lines_cnt=last_printed_lines,
+                last_line=last_line
             )
         else:
             print(Colors.colored(f"  │ [{elapsed_str}] Final status: {status_str}", Colors.CYAN))
@@ -627,14 +708,15 @@ def run_command_monitored(
         )
 
 
-def run_agent(run: AgentRun, *, dry_run: bool = False, stream: bool = True) -> subprocess.CompletedProcess[str]:
+def run_agent(run: AgentRun, *, dry_run: bool = False, stream: bool = True, step: str | None = None) -> subprocess.CompletedProcess[str]:
+    label = f"{step.upper()} STEP ({run.agent.upper()})" if step else f"AGENT: {run.agent.upper()}"
     return run_command_monitored(
         command=run.command,
         cwd=run.cwd,
         env=run.env,
         timeout=run.timeout,
         stream=stream,
-        label=f"AGENT: {run.agent.upper()}",
+        label=label,
         dry_run=dry_run,
     )
 

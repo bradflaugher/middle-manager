@@ -59,4 +59,3 @@ class TestWizard(unittest.TestCase):
         cfg = run_wizard()
         self.assertIsNotNone(cfg)
         self.assertEqual(str(cfg.repo), os.getcwd())
-

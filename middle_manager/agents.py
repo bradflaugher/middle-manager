@@ -330,7 +330,7 @@ def draw_status_block(
     import sys
     from .colors import Colors
     lines = []
-    lines.append(Colors.colored(f"  ┌── MONITORING AGENT: {agent_name.upper()} ──────────────────────────────────────────────", Colors.MAGENTA))
+    lines.append(Colors.colored(f"  ┌── MONITORING {agent_name.upper()} ──────────────────────────────────────────────", Colors.MAGENTA))
     lines.append(Colors.colored(f"  │  Status:         {status_str}", Colors.CYAN))
     lines.append(Colors.colored(f"  │  Elapsed Time:  {elapsed_str}", Colors.CYAN))
     lines.append(Colors.colored(f"  │  CPU Usage:     {cpu_str}", Colors.CYAN))
@@ -370,35 +370,48 @@ def read_available(stream) -> str:
         return ""
 
 
-def run_agent(run: AgentRun, *, dry_run: bool = False, stream: bool = True) -> subprocess.CompletedProcess[str]:
+def run_command_monitored(
+    command: list[str] | str,
+    *,
+    cwd: Path,
+    env: dict[str, str] | None = None,
+    timeout: int | None = None,
+    stream: bool = False,
+    label: str = "COMMAND",
+    dry_run: bool = False,
+) -> subprocess.CompletedProcess[str]:
     import sys
     import time
     import fcntl
     import os
     from .colors import Colors
-    display = " ".join(_quote(a) for a in run.command)
+    
+    cmd_list = [command] if isinstance(command, str) else command
+    cmd_str = " ".join(_quote(a) for a in cmd_list) if isinstance(command, list) else command
+    
     dry_prefix = Colors.colored("[DRY RUN] ", Colors.YELLOW) if dry_run else ""
     
-    header = f"┌── {dry_prefix}RUNNING AGENT: {run.agent.upper()} ──────────────────────────────────────────────────"
+    header = f"┌── {dry_prefix}RUNNING {label} ──────────────────────────────────────────────────"
     print(Colors.colored(header, Colors.MAGENTA + Colors.BOLD))
-    print(Colors.colored(f"│ Cwd:     {run.cwd}", Colors.CYAN))
-    print(Colors.colored(f"│ Command: {display}", Colors.CYAN))
+    print(Colors.colored(f"│ Cwd:     {cwd}", Colors.CYAN))
+    print(Colors.colored(f"│ Command: {cmd_str}", Colors.CYAN))
     print(Colors.colored("└" + "─" * 78, Colors.MAGENTA + Colors.BOLD))
 
     if dry_run:
-        return subprocess.CompletedProcess(run.command, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd_list, 0, stdout="", stderr="")
 
     if stream:
-        print(Colors.colored("  ┌── Agent Output ──────────────────────────────────────────────────────────", Colors.MAGENTA))
+        print(Colors.colored(f"  ┌── {label} Output ──────────────────────────────────────────────────────────", Colors.MAGENTA))
 
         proc = subprocess.Popen(
-            run.command,
-            cwd=run.cwd,
-            env=run.env,
+            command,
+            cwd=cwd,
+            env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            shell=isinstance(command, str),
         )
         output_lines: list[str] = []
         assert proc.stdout is not None
@@ -426,16 +439,16 @@ def run_agent(run: AgentRun, *, dry_run: bool = False, stream: bool = True) -> s
                     pass
             raise
 
-        proc.wait(timeout=run.timeout)
+        proc.wait(timeout=timeout)
         try:
             proc.stdout.close()
         except Exception:
             pass
         if not start_of_line:
             print()
-        print(Colors.colored("  └── End of Agent Output ────────────────────────────────────────────────────", Colors.MAGENTA))
+        print(Colors.colored(f"  └── End of {label} Output ────────────────────────────────────────────────────", Colors.MAGENTA))
         return subprocess.CompletedProcess(
-            run.command,
+            cmd_list,
             proc.returncode or 0,
             stdout="".join(output_lines),
             stderr="",
@@ -443,13 +456,14 @@ def run_agent(run: AgentRun, *, dry_run: bool = False, stream: bool = True) -> s
     else:
         # Monitoring mode (default)
         proc = subprocess.Popen(
-            run.command,
-            cwd=run.cwd,
-            env=run.env,
+            command,
+            cwd=cwd,
+            env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            shell=isinstance(command, str),
         )
         
         # Make stdout non-blocking
@@ -476,7 +490,7 @@ def run_agent(run: AgentRun, *, dry_run: bool = False, stream: bool = True) -> s
         known_changed_files = set()
         
         if not sys.stdout.isatty():
-            print(Colors.colored(f"  ┌── MONITORING AGENT: {run.agent.upper()} ──────────────────────────────────────────────", Colors.MAGENTA))
+            print(Colors.colored(f"  ┌── MONITORING {label} ──────────────────────────────────────────────", Colors.MAGENTA))
         
         try:
             while True:
@@ -503,7 +517,7 @@ def run_agent(run: AgentRun, *, dry_run: bool = False, stream: bool = True) -> s
                         
                 # Git Status check
                 if now - last_git_check >= 1.5:
-                    changed_files = get_changed_files_with_status(run.cwd)
+                    changed_files = get_changed_files_with_status(cwd)
                     last_git_check = now
                     
                 elapsed = now - start_time
@@ -527,7 +541,7 @@ def run_agent(run: AgentRun, *, dry_run: bool = False, stream: bool = True) -> s
                     status_line = f"{spinner_char} RUNNING..."
                     
                     last_printed_lines = draw_status_block(
-                        agent_name=run.agent,
+                        agent_name=label,
                         status_str=status_line,
                         elapsed_str=elapsed_str,
                         cpu_str=cpu_str,
@@ -562,7 +576,7 @@ def run_agent(run: AgentRun, *, dry_run: bool = False, stream: bool = True) -> s
                     pass
             raise
             
-        proc.wait(timeout=run.timeout)
+        proc.wait(timeout=timeout)
         try:
             proc.stdout.close()
         except Exception:
@@ -573,7 +587,7 @@ def run_agent(run: AgentRun, *, dry_run: bool = False, stream: bool = True) -> s
         mins, secs = divmod(int(elapsed), 60)
         elapsed_str = f"{mins:02d}:{secs:02d}"
         
-        changed_files = get_changed_files_with_status(run.cwd)
+        changed_files = get_changed_files_with_status(cwd)
         accumulated = "".join(output_parts)
         out_lines = len(accumulated.splitlines())
         out_bytes = len(accumulated.encode("utf-8", errors="ignore"))
@@ -588,7 +602,7 @@ def run_agent(run: AgentRun, *, dry_run: bool = False, stream: bool = True) -> s
         
         if sys.stdout.isatty():
             draw_status_block(
-                agent_name=run.agent,
+                agent_name=label,
                 status_str=status_str,
                 elapsed_str=elapsed_str,
                 cpu_str="0.0% (stopped)",
@@ -603,14 +617,26 @@ def run_agent(run: AgentRun, *, dry_run: bool = False, stream: bool = True) -> s
                 print(Colors.colored("  │ Final changed files:", Colors.CYAN))
                 for f in changed_files:
                     print(Colors.colored(f"  │   - {f}", Colors.GREEN))
-            print(Colors.colored("  └── End of Agent Run ──────────────────────────────────────────────────────", Colors.MAGENTA))
+            print(Colors.colored(f"  └── End of {label} Run ──────────────────────────────────────────────────────", Colors.MAGENTA))
             
         return subprocess.CompletedProcess(
-            run.command,
+            cmd_list,
             proc.returncode or 0,
             stdout="".join(output_parts),
             stderr="",
         )
+
+
+def run_agent(run: AgentRun, *, dry_run: bool = False, stream: bool = True) -> subprocess.CompletedProcess[str]:
+    return run_command_monitored(
+        command=run.command,
+        cwd=run.cwd,
+        env=run.env,
+        timeout=run.timeout,
+        stream=stream,
+        label=f"AGENT: {run.agent.upper()}",
+        dry_run=dry_run,
+    )
 
 
 def _quote(arg: str) -> str:

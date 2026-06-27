@@ -121,10 +121,15 @@ class MiddleManagerLoop:
             return True, "(no test_command configured)"
         if self.cfg.dry_run:
             return True, f"[dry-run] would run: {cmd}"
-        proc = subprocess.run(cmd, cwd=self.cfg.repo, shell=True, capture_output=True, text=True)
-        out = (proc.stdout or "") + (proc.stderr or "")
-        self.write_text(self.error_log_path, out)
-        return proc.returncode == 0, out
+        from .agents import run_command_monitored
+        result = run_command_monitored(
+            command=cmd,
+            cwd=self.cfg.repo,
+            stream=self.cfg.stream_output,
+            label="TEST SUITE",
+        )
+        self.write_text(self.error_log_path, result.stdout)
+        return result.returncode == 0, result.stdout
 
     def prompt_for_step(self, step: str, iteration: int, issue_data: dict[str, str]) -> str:
         sc = self.cfg.step_for(step)

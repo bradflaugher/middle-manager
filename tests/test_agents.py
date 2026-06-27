@@ -69,3 +69,18 @@ class TestAgents(unittest.TestCase):
             res = run_agent(run, dry_run=False, stream=False)
             self.assertEqual(res.returncode, 0)
             self.assertEqual(res.stdout.strip(), "hello")
+
+    def test_run_command_monitored_string(self):
+        from pathlib import Path
+        from middle_manager.agents import run_command_monitored
+        import shutil
+        echo_bin = shutil.which("echo")
+        if echo_bin:
+            res = run_command_monitored(
+                command=f"{echo_bin} hello_from_shell",
+                cwd=Path("/tmp"),
+                stream=False,
+                label="TEST SHELL",
+            )
+            self.assertEqual(res.returncode, 0)
+            self.assertEqual(res.stdout.strip(), "hello_from_shell")

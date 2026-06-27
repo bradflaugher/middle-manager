@@ -83,18 +83,19 @@ State lives in `<repo>/.middle-manager/`. Issue queue state is per-issue under `
 ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
 │  DISCOVER   │───▶│   EXECUTE   │───▶│   VERIFY    │───▶│   COMMIT    │
 │  plan/spec  │    │  one item   │    │   critic    │    │ PR + memory │
-│   (grok)    │    │  (claude)   │    │  (crush)    │    │   (agy)     │
 └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘
        ▲                                      │
        └──────── tests fail / verifier fail ──┘
 ```
 
-| Step | Default agent | Job |
-|------|---------------|-----|
-| 1. Discover | Grok | Scan repo + issues, maintain `fix_plan.md` |
-| 2. Execute | Claude Code | Implement **exactly one** plan item |
-| 3. Verify | Codex | Critic / backpressure on tests + diff |
-| 4. Commit | Agy | Update AGENT.md, commit, push, open PR (**never merge**) |
+middle-manager executes steps in the following order:
+
+1. **Discover**: Scans codebase/issues, scopes out tasks, and compiles the `fix_plan.md` list.
+2. **Execute**: Implements **exactly one** item from the active task list.
+3. **Verify**: Reviews the changes, runs tests, and applies critical backpressure on failure.
+4. **Commit**: Saves updates, registers context updates in memory, and submits pull requests (never merges directly).
+
+**Auto-detected Agents**: You don't need to configure these manually. middle-manager scans your machine, checks what agent CLIs are installed (Grok, Claude, Crush, Agy, Codex, OpenCode), and automatically coordinates them to use the best available stack.
 
 ---
 

@@ -11,7 +11,7 @@ mm quick "add feature XYZ"          # 3 agents, your prompt, no hand-holding
 mm --author @someuser --close-issues   # drain their issue queue, auto-close on success
 ```
 
-Ralph Wiggum loop meets Open SWE's planner/builder split. Verify before ship. None of the safety.
+The current agentic programming trend: specialized roles, tight loops, unsupervised execution. Plan, build, verify, ship — repeat until done or something breaks.
 
 ## The loop
 

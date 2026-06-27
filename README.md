@@ -19,29 +19,15 @@ Unsupervised multi-agent coding loop that orchestrates your favorite coding CLIs
 This installs `mm` to `~/.local/bin/mm` and clones the repo to `~/.local/share/middle-manager`.
 
 <details>
-<summary><b>Adding to PATH (if needed)</b></summary>
+<summary><b>Manual Installation & PATH Setup</b></summary>
 
-Make sure to add the bin directory to your shell configuration file (e.g., `~/.bashrc` or `~/.zshrc`):
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-```
-Then source it:
-```bash
-source ~/.bashrc  # or ~/.zshrc
-```
-</details>
-
-<details>
-<summary><b>Manual Installation</b></summary>
-
+### 1. Manual Installation
 If you prefer to install manually without the automatic script:
-
 1. **Clone the repository**:
    ```bash
    git clone https://github.com/bradflaugher/middle-manager.git ~/.local/share/middle-manager
    ```
-2. **Create the wrapper executable**:
-   Create a file at `~/.local/bin/mm`:
+2. **Create the wrapper executable** at `~/.local/bin/mm`:
    ```bash
    #!/usr/bin/env bash
    set -euo pipefail
@@ -56,6 +42,16 @@ If you prefer to install manually without the automatic script:
    ```bash
    mkdir -p ~/.config/middle-manager
    ```
+
+### 2. Adding to PATH (if needed)
+Make sure `~/.local/bin` is in your shell's `PATH`. If not, add this to your shell config (e.g., `~/.bashrc` or `~/.zshrc`):
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+Then reload your configuration:
+```bash
+source ~/.bashrc  # or ~/.zshrc
+```
 </details>
 
 ### Quick reference

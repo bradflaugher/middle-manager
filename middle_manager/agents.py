@@ -296,4 +296,40 @@ def autodetect_agent(
 
 
 def autodetect_step_agents(binary_overrides: dict[str, str] | None = None) -> dict[str, str]:
-    return {step: autodetect_agent(step, binary_overrides) for step in STEP_AGENT_PRIORITY}
+    overrides = binary_overrides or {}
+    installed = [name for name in AGENT_NAMES if agent_available(name, overrides.get(name))]
+    
+    if not installed:
+        return {
+            "discover": "grok",
+            "execute": "claude",
+            "verify": "codex",
+            "commit": "agy"
+        }
+        
+    assigned = {}
+    steps = ["discover", "execute", "verify", "commit"]
+    
+    for step in steps:
+        priority_list = STEP_AGENT_PRIORITY.get(step, AGENT_NAMES)
+        chosen = None
+        # First pass: try to pick an installed agent that has NOT been assigned to any other step yet
+        for name in priority_list:
+            if name in installed and name not in assigned.values():
+                chosen = name
+                break
+        
+        # Second pass: pick the highest priority installed agent regardless of duplicate assignment
+        if not chosen:
+            for name in priority_list:
+                if name in installed:
+                    chosen = name
+                    break
+                    
+        # Third pass: absolute fallback
+        if not chosen:
+            chosen = priority_list[0]
+            
+        assigned[step] = chosen
+        
+    return assigned

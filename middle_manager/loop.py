@@ -404,6 +404,21 @@ class MiddleManagerLoop:
 
         return LoopResult(False, f"Max iterations ({self.cfg.max_iterations}) reached", self.last_pr_url, ran)
 
+    def _build_interactive_command(self, agent: str, prompt: str) -> str:
+        if agent == "grok":
+            return f"grok --cwd {self.cfg.repo} -p \"{prompt}\""
+        elif agent == "claude":
+            return f"claude -p \"{prompt}\""
+        elif agent == "crush":
+            return f"crush run \"{prompt}\" -c {self.cfg.repo}"
+        elif agent == "opencode":
+            return f"opencode run \"{prompt}\" --dir {self.cfg.repo}"
+        elif agent == "codex":
+            return f"codex exec \"{prompt}\""
+        elif agent == "agy":
+            return f"agy --print \"{prompt}\""
+        return f"{agent} -p \"{prompt}\""
+
     def run(self) -> int:
         from .colors import Colors
         try:
@@ -444,13 +459,7 @@ class MiddleManagerLoop:
                     f"Error: {err_summary}. Please debug and fix this issue."
                 )
                 
-                agent_cmd = f"{sc.agent} -p \"{prompt_msg}\""
-                if sc.agent == "grok":
-                    agent_cmd = f"grok --cwd {self.cfg.repo} -p \"{prompt_msg}\""
-                elif sc.agent == "claude":
-                    agent_cmd = f"claude -p \"{prompt_msg}\""
-                elif sc.agent == "crush":
-                    agent_cmd = f"crush run \"{prompt_msg}\" -c {self.cfg.repo}"
+                agent_cmd = self._build_interactive_command(sc.agent, prompt_msg)
                 
                 print(Colors.colored("💡 To launch an interactive session with your programmer agent, run:", Colors.CYAN))
                 print(Colors.colored(f"   {agent_cmd}", Colors.GREEN + Colors.BOLD))
@@ -481,13 +490,7 @@ class MiddleManagerLoop:
                 "Please resume working on it."
             )
             
-            agent_cmd = f"{sc.agent} -p \"{prompt_msg}\""
-            if sc.agent == "grok":
-                agent_cmd = f"grok --cwd {self.cfg.repo} -p \"{prompt_msg}\""
-            elif sc.agent == "claude":
-                agent_cmd = f"claude -p \"{prompt_msg}\""
-            elif sc.agent == "crush":
-                agent_cmd = f"crush run \"{prompt_msg}\" -c {self.cfg.repo}"
+            agent_cmd = self._build_interactive_command(sc.agent, prompt_msg)
                 
             print(Colors.colored("💡 To launch an interactive session on this branch, run:", Colors.CYAN))
             print(Colors.colored(f"   {agent_cmd}", Colors.GREEN + Colors.BOLD))

@@ -93,6 +93,14 @@ middle-manager executes steps in the following order:
 
 **Auto-detected Agents**: You don't need to configure these manually. middle-manager scans your machine, checks what agent CLIs are installed (Grok, Claude, Crush, Agy, Codex, OpenCode), and automatically coordinates them to use the best available stack.
 
+**Agent Monitoring Mode**: By default, middle-manager runs agents in a quiet monitoring mode. Instead of streaming pages of raw LLM/agent console output, it displays a neat live dashboard tracking:
+* **Status & Time Elapsed**: Visual spinner and run duration.
+* **CPU Usage**: Active CPU percentage of the agent process tree.
+* **Agent Output**: Lines and size of output produced so far.
+* **Changed Files**: Live list of files modified, added, or deleted in the repository.
+
+All agent output is saved to the state directory (e.g., `.middle-manager/execute_output.txt`) for easy inspectability. To disable the dashboard and stream raw agent output directly to the console, pass the `--stream-output` flag.
+
 ---
 
 ## Cookbook — copy/paste recipes

@@ -211,8 +211,170 @@ def build_command(
     )
 
 
+def get_process_tree_cpu_ticks(parent_pid: int) -> float | None:
+    import os
+    from pathlib import Path
+    try:
+        pids = []
+        for p in Path("/proc").iterdir():
+            if p.is_dir() and p.name.isdigit():
+                pids.append(int(p.name))
+        
+        ppid_map = {}
+        pid_stats = {}
+        for pid in pids:
+            try:
+                stat_path = Path(f"/proc/{pid}/stat")
+                content = stat_path.read_text(encoding="utf-8")
+                rpar_idx = content.rfind(")")
+                if rpar_idx == -1:
+                    continue
+                fields = content[rpar_idx + 2:].split()
+                ppid = int(fields[1])  # PPID
+                utime = int(fields[11])  # utime
+                stime = int(fields[12])  # stime
+                ppid_map[pid] = ppid
+                pid_stats[pid] = utime + stime
+            except Exception:
+                pass
+        
+        descendants = {parent_pid}
+        changed = True
+        while changed:
+            changed = False
+            for pid, ppid in ppid_map.items():
+                if ppid in descendants and pid not in descendants:
+                    descendants.add(pid)
+                    changed = True
+                    
+        total_ticks = 0
+        for pid in descendants:
+            total_ticks += pid_stats.get(pid, 0)
+        return float(total_ticks)
+    except Exception:
+        return None
+
+
+def get_changed_files_with_status(repo: Path) -> list[str]:
+    import subprocess
+    from pathlib import Path
+    from .git_ops import repo_is_git
+    try:
+        if repo_is_git(repo):
+            proc = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if proc.returncode == 0:
+                files = []
+                for line in proc.stdout.splitlines():
+                    if len(line) > 3:
+                        status = line[:2].strip()
+                        filename = line[3:].strip()
+                        if " -> " in filename:
+                            filename = filename.split(" -> ")[-1].strip()
+                        
+                        if status == "M":
+                            status_desc = "modified"
+                        elif status in ("A", "??"):
+                            status_desc = "new"
+                        elif status == "D":
+                            status_desc = "deleted"
+                        elif status == "R":
+                            status_desc = "renamed"
+                        else:
+                            status_desc = "changed"
+                            
+                        files.append(f"{filename} ({status_desc})")
+                return files
+    except Exception:
+        pass
+    return []
+
+
+def calculate_cpu_percent(pid: int, last_ticks: float | None, last_time: float) -> tuple[float | None, float | None, float]:
+    import os
+    import time
+    current_time = time.time()
+    dt = current_time - last_time
+    if dt <= 0:
+        return None, last_ticks, last_time
+    
+    current_ticks = get_process_tree_cpu_ticks(pid)
+    if current_ticks is None or last_ticks is None:
+        return 0.0, current_ticks, current_time
+    
+    d_ticks = current_ticks - last_ticks
+    try:
+        clk_tck = os.sysconf(os.sysconf_names['SC_CLK_TCK'])
+    except Exception:
+        clk_tck = 100
+        
+    cpu_percent = (d_ticks / (clk_tck * dt)) * 100.0
+    return cpu_percent, current_ticks, current_time
+
+
+def draw_status_block(
+    agent_name: str,
+    status_str: str,
+    elapsed_str: str,
+    cpu_str: str,
+    output_lines_cnt: int,
+    output_size_str: str,
+    changed_files: list[str],
+    last_printed_lines_cnt: int = 0
+) -> int:
+    import sys
+    from .colors import Colors
+    lines = []
+    lines.append(Colors.colored(f"  ┌── MONITORING AGENT: {agent_name.upper()} ──────────────────────────────────────────────", Colors.MAGENTA))
+    lines.append(Colors.colored(f"  │  Status:         {status_str}", Colors.CYAN))
+    lines.append(Colors.colored(f"  │  Elapsed Time:  {elapsed_str}", Colors.CYAN))
+    lines.append(Colors.colored(f"  │  CPU Usage:     {cpu_str}", Colors.CYAN))
+    lines.append(Colors.colored(f"  │  Agent Output:  {output_lines_cnt} lines ({output_size_str}) produced", Colors.CYAN))
+    
+    if changed_files:
+        lines.append(Colors.colored("  │  Files Changed:", Colors.CYAN))
+        for f in changed_files[:5]:
+            lines.append(Colors.colored(f"  │    - {f}", Colors.GREEN))
+        if len(changed_files) > 5:
+            lines.append(Colors.colored(f"  │    - ... and {len(changed_files) - 5} more", Colors.GREEN))
+    else:
+        lines.append(Colors.colored("  │  Files Changed: None yet", Colors.CYAN))
+        
+    lines.append(Colors.colored("  └──────────────────────────────────────────────────────────────────────────", Colors.MAGENTA))
+    
+    if sys.stdout.isatty() and last_printed_lines_cnt > 0:
+        sys.stdout.write(f"\033[{last_printed_lines_cnt}A")
+        
+    for line in lines:
+        if sys.stdout.isatty():
+            sys.stdout.write("\033[K" + line + "\n")
+        else:
+            sys.stdout.write(line + "\n")
+            
+    sys.stdout.flush()
+    return len(lines)
+
+
+def read_available(stream) -> str:
+    try:
+        data = stream.read()
+        return data if data is not None else ""
+    except (BlockingIOError, TypeError):
+        return ""
+    except Exception:
+        return ""
+
+
 def run_agent(run: AgentRun, *, dry_run: bool = False, stream: bool = True) -> subprocess.CompletedProcess[str]:
     import sys
+    import time
+    import fcntl
+    import os
     from .colors import Colors
     display = " ".join(_quote(a) for a in run.command)
     dry_prefix = Colors.colored("[DRY RUN] ", Colors.YELLOW) if dry_run else ""
@@ -226,43 +388,229 @@ def run_agent(run: AgentRun, *, dry_run: bool = False, stream: bool = True) -> s
     if dry_run:
         return subprocess.CompletedProcess(run.command, 0, stdout="", stderr="")
 
-    print(Colors.colored("  ┌── Agent Output ──────────────────────────────────────────────────────────", Colors.MAGENTA))
+    if stream:
+        print(Colors.colored("  ┌── Agent Output ──────────────────────────────────────────────────────────", Colors.MAGENTA))
 
-    proc = subprocess.Popen(
-        run.command,
-        cwd=run.cwd,
-        env=run.env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
-    output_lines: list[str] = []
-    assert proc.stdout is not None
-    
-    start_of_line = True
-    for line in proc.stdout:
-        output_lines.append(line)
-        if stream:
-            for char in line:
-                if start_of_line:
-                    sys.stdout.write(Colors.colored("  │ ", Colors.MAGENTA))
-                    start_of_line = False
-                sys.stdout.write(char)
-                if char == "\n":
-                    start_of_line = True
-            sys.stdout.flush()
+        proc = subprocess.Popen(
+            run.command,
+            cwd=run.cwd,
+            env=run.env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        output_lines: list[str] = []
+        assert proc.stdout is not None
+        
+        start_of_line = True
+        try:
+            for line in proc.stdout:
+                output_lines.append(line)
+                for char in line:
+                    if start_of_line:
+                        sys.stdout.write(Colors.colored("  │ ", Colors.MAGENTA))
+                        start_of_line = False
+                    sys.stdout.write(char)
+                    if char == "\n":
+                        start_of_line = True
+                sys.stdout.flush()
+        except KeyboardInterrupt:
+            try:
+                proc.terminate()
+                proc.wait(timeout=2)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            raise
 
-    proc.wait(timeout=run.timeout)
-    if not start_of_line:
-        print()
-    print(Colors.colored("  └── End of Agent Output ────────────────────────────────────────────────────", Colors.MAGENTA))
-    return subprocess.CompletedProcess(
-        run.command,
-        proc.returncode or 0,
-        stdout="".join(output_lines),
-        stderr="",
-    )
+        proc.wait(timeout=run.timeout)
+        try:
+            proc.stdout.close()
+        except Exception:
+            pass
+        if not start_of_line:
+            print()
+        print(Colors.colored("  └── End of Agent Output ────────────────────────────────────────────────────", Colors.MAGENTA))
+        return subprocess.CompletedProcess(
+            run.command,
+            proc.returncode or 0,
+            stdout="".join(output_lines),
+            stderr="",
+        )
+    else:
+        # Monitoring mode (default)
+        proc = subprocess.Popen(
+            run.command,
+            cwd=run.cwd,
+            env=run.env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        
+        # Make stdout non-blocking
+        fd = proc.stdout.fileno()
+        fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+        
+        output_parts: list[str] = []
+        start_time = time.time()
+        last_cpu_time = start_time
+        last_ticks = get_process_tree_cpu_ticks(proc.pid)
+        cpu_percent = 0.0
+        
+        last_git_check = 0.0
+        changed_files: list[str] = []
+        
+        last_printed_lines = 0
+        step_counter = 0
+        
+        SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        
+        # Track for non-TTY logging
+        last_log_time = start_time
+        known_changed_files = set()
+        
+        if not sys.stdout.isatty():
+            print(Colors.colored(f"  ┌── MONITORING AGENT: {run.agent.upper()} ──────────────────────────────────────────────", Colors.MAGENTA))
+        
+        try:
+            while True:
+                poll_status = proc.poll()
+                is_running = (poll_status is None)
+                
+                chunk = read_available(proc.stdout)
+                if chunk:
+                    output_parts.append(chunk)
+                    
+                if not is_running:
+                    final_chunk = read_available(proc.stdout)
+                    if final_chunk:
+                        output_parts.append(final_chunk)
+                    break
+                    
+                now = time.time()
+                
+                # CPU check
+                if now - last_cpu_time >= 0.5:
+                    cpu_val, last_ticks, last_cpu_time = calculate_cpu_percent(proc.pid, last_ticks, last_cpu_time)
+                    if cpu_val is not None:
+                        cpu_percent = cpu_val
+                        
+                # Git Status check
+                if now - last_git_check >= 1.5:
+                    changed_files = get_changed_files_with_status(run.cwd)
+                    last_git_check = now
+                    
+                elapsed = now - start_time
+                mins, secs = divmod(int(elapsed), 60)
+                elapsed_str = f"{mins:02d}:{secs:02d}"
+                
+                accumulated = "".join(output_parts)
+                out_lines = len(accumulated.splitlines())
+                out_bytes = len(accumulated.encode("utf-8", errors="ignore"))
+                if out_bytes < 1024:
+                    size_str = f"{out_bytes} B"
+                elif out_bytes < 1024 * 1024:
+                    size_str = f"{out_bytes / 1024:.1f} KB"
+                else:
+                    size_str = f"{out_bytes / (1024 * 1024):.1f} MB"
+                    
+                cpu_str = f"{cpu_percent:.1f}%"
+                
+                if sys.stdout.isatty():
+                    spinner_char = SPINNER[step_counter % len(SPINNER)]
+                    status_line = f"{spinner_char} RUNNING..."
+                    
+                    last_printed_lines = draw_status_block(
+                        agent_name=run.agent,
+                        status_str=status_line,
+                        elapsed_str=elapsed_str,
+                        cpu_str=cpu_str,
+                        output_lines_cnt=out_lines,
+                        output_size_str=size_str,
+                        changed_files=changed_files,
+                        last_printed_lines_cnt=last_printed_lines
+                    )
+                else:
+                    # Non-TTY logic
+                    new_files_set = set(changed_files)
+                    added_changes = new_files_set - known_changed_files
+                    for f in added_changes:
+                        print(Colors.colored(f"  │ [{elapsed_str}] File changed: {f}", Colors.GREEN))
+                    known_changed_files = new_files_set
+                    
+                    if now - last_log_time >= 10.0:
+                        print(Colors.colored(f"  │ [{elapsed_str}] CPU: {cpu_percent:.1f}% | Output: {out_lines} lines ({size_str})", Colors.CYAN))
+                        last_log_time = now
+                        
+                time.sleep(0.1)
+                step_counter += 1
+                
+        except KeyboardInterrupt:
+            try:
+                proc.terminate()
+                proc.wait(timeout=2)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            raise
+            
+        proc.wait(timeout=run.timeout)
+        try:
+            proc.stdout.close()
+        except Exception:
+            pass
+        
+        # Final stats
+        elapsed = time.time() - start_time
+        mins, secs = divmod(int(elapsed), 60)
+        elapsed_str = f"{mins:02d}:{secs:02d}"
+        
+        changed_files = get_changed_files_with_status(run.cwd)
+        accumulated = "".join(output_parts)
+        out_lines = len(accumulated.splitlines())
+        out_bytes = len(accumulated.encode("utf-8", errors="ignore"))
+        if out_bytes < 1024:
+            size_str = f"{out_bytes} B"
+        elif out_bytes < 1024 * 1024:
+            size_str = f"{out_bytes / 1024:.1f} KB"
+        else:
+            size_str = f"{out_bytes / (1024 * 1024):.1f} MB"
+            
+        status_str = "✅ COMPLETED" if proc.returncode == 0 else f"❌ FAILED (exit code {proc.returncode})"
+        
+        if sys.stdout.isatty():
+            draw_status_block(
+                agent_name=run.agent,
+                status_str=status_str,
+                elapsed_str=elapsed_str,
+                cpu_str="0.0% (stopped)",
+                output_lines_cnt=out_lines,
+                output_size_str=size_str,
+                changed_files=changed_files,
+                last_printed_lines_cnt=last_printed_lines
+            )
+        else:
+            print(Colors.colored(f"  │ [{elapsed_str}] Final status: {status_str}", Colors.CYAN))
+            if changed_files:
+                print(Colors.colored("  │ Final changed files:", Colors.CYAN))
+                for f in changed_files:
+                    print(Colors.colored(f"  │   - {f}", Colors.GREEN))
+            print(Colors.colored("  └── End of Agent Run ──────────────────────────────────────────────────────", Colors.MAGENTA))
+            
+        return subprocess.CompletedProcess(
+            run.command,
+            proc.returncode or 0,
+            stdout="".join(output_parts),
+            stderr="",
+        )
 
 
 def _quote(arg: str) -> str:

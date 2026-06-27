@@ -179,7 +179,12 @@ class MiddleManagerLoop:
             prompt_file=prompt_file if sc.agent != "agy" else None,
             interactive=self.cfg.interactive and step == "execute",
         )
-        result = run_agent(run, dry_run=self.cfg.dry_run)
+        result = run_agent(run, dry_run=self.cfg.dry_run, stream=self.cfg.stream_output)
+        
+        # Write agent output to state directory for user inspectability/visibility
+        output_file = self.state / f"{step}_output.txt"
+        self.write_text(output_file, result.stdout)
+
         if result.returncode == 0:
             self.log(f"✅ Step {step.upper()} ({sc.agent.upper()}) finished successfully (exit code 0).", Colors.GREEN)
         else:

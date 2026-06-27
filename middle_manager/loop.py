@@ -387,6 +387,8 @@ class MiddleManagerLoop:
             self.log(f"Mission: {self.cfg.mission[:80]}")
         self.log(f"Steps: {self.cfg.steps} ({', '.join(self.cfg.active_steps())})")
         self.log(f"YOLO: {self.cfg.yolo} | dry-run: {self.cfg.dry_run}")
+        from .colors import Colors
+        self.log("Press Ctrl+C to quit/exit the loop at any time.", Colors.YELLOW)
         if self.cfg.issue:
             self.log(f"Issue: {self.cfg.issue}")
 

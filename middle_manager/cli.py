@@ -170,39 +170,50 @@ def cmd_issues(cfg: LoopConfig) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    raw_argv = list(argv) if argv is not None else sys.argv[1:]
-    raw_argv = _preprocess_argv(raw_argv)
+    try:
+        raw_argv = list(argv) if argv is not None else sys.argv[1:]
+        raw_argv = _preprocess_argv(raw_argv)
 
-    if raw_argv and raw_argv[0] == "install-path":
-        return cmd_install_path()
+        if raw_argv and raw_argv[0] == "install-path":
+            return cmd_install_path()
 
-    args, cfg = parse_args(raw_argv)
+        args, cfg = parse_args(raw_argv)
 
-    if args.command == "install-path":
-        return cmd_install_path()
-    if args.command == "agents":
-        return cmd_agents(cfg)
-    if args.command == "init":
-        return cmd_init(cfg)
-    if args.command == "status":
-        return cmd_status(cfg)
-    if args.command == "issues":
-        return cmd_issues(cfg)
+        if args.command == "install-path":
+            return cmd_install_path()
+        if args.command == "agents":
+            return cmd_agents(cfg)
+        if args.command == "init":
+            return cmd_init(cfg)
+        if args.command == "status":
+            return cmd_status(cfg)
+        if args.command == "issues":
+            return cmd_issues(cfg)
 
-    if _should_wizard(args, raw_argv):
-        wizard_cfg = run_wizard(cfg.repo if cfg.repo != Path.cwd() else None)
-        if wizard_cfg is None:
+        if _should_wizard(args, raw_argv):
+            wizard_cfg = run_wizard(cfg.repo if cfg.repo != Path.cwd() else None)
+            if wizard_cfg is None:
+                return 1
+            cfg = wizard_cfg
+
+        if cfg.mode == "queue" and cfg.issue_queue:
+            return IssueQueueRunner(cfg).run()
+
+        if (getattr(args, "quick", False) or cfg.mode == "feature") and not cfg.mission:
+            print("Quick/feature mode needs a mission. Examples:")
+            print('  mm quick "add feature XYZ"')
+            print('  mm "add dark mode toggle"')
             return 1
-        cfg = wizard_cfg
 
-    if cfg.mode == "queue" and cfg.issue_queue:
-        return IssueQueueRunner(cfg).run()
-
-    if (getattr(args, "quick", False) or cfg.mode == "feature") and not cfg.mission:
-        print("Quick/feature mode needs a mission. Examples:")
-        print('  mm quick "add feature XYZ"')
-        print('  mm "add dark mode toggle"')
-        return 1
-
-    loop = MiddleManagerLoop(cfg)
-    return loop.run()
+        loop = MiddleManagerLoop(cfg)
+        return loop.run()
+    except KeyboardInterrupt:
+        from .colors import Colors
+        print()
+        print(Colors.colored("┌────────────────────────────────────────────────────────┐", Colors.YELLOW + Colors.BOLD))
+        print(Colors.colored("│               👋  MIDDLE MANAGER GOODBYE                │", Colors.YELLOW + Colors.BOLD))
+        print(Colors.colored("├────────────────────────────────────────────────────────┤", Colors.YELLOW + Colors.BOLD))
+        print(Colors.colored("│  Wizard/Loop exited by user. No changes were forced.   │", Colors.YELLOW))
+        print(Colors.colored("└────────────────────────────────────────────────────────┘", Colors.YELLOW + Colors.BOLD))
+        print()
+        return 130

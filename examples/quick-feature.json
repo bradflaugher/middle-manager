@@ -1,0 +1,9 @@
+{
+  "steps": 3,
+  "mode": "feature",
+  "max_iterations": 5,
+  "mission": "add feature XYZ",
+  "discover": { "agent": "grok", "extra_args": ["--check"] },
+  "execute": { "agent": "claude" },
+  "verify": { "agent": "codex", "extra_args": [] }
+}

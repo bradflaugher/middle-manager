@@ -44,15 +44,32 @@ export PATH="$HOME/.local/bin:$PATH"
 # or: mm install-path
 ```
 
+## Simplest path (3 agents + your prompt)
+
+The common case: autodetected 3-agent stack, custom mission, no wizard noise.
+
+```bash
+mm quick "add feature XYZ"
+mm "add dark mode toggle"              # shorthand — same thing
+mm quick "add feature XYZ" --dry-run   # preview commands first
+```
+
+This runs **discover → execute → verify** (no commit agent), seeds `fix_plan.md` from your prompt, and resets state with `--fresh`. Agents are picked from whatever you have installed (grok/claude/codex/…).
+
+Equivalent explicit form:
+
+```bash
+mm --steps 3 --mode feature --fresh -m "add feature XYZ" --no-wizard
+```
+
 ## Quick start
 
-**Interactive (recommended):** just run `mm` — it walks you through repo, agents, mission prompt, and mode.
+**Interactive:** run `mm` — wizard defaults to **feature** mode now.
 
 ```bash
 mm                           # interactive wizard → loop
 mm agents                    # see what's installed
 mm init --repo ~/your-project
-mm --repo ~/your-project --dry-run
 mm --repo ~/your-project --issue 42
 mm --label bug --author @dependabot --close-issues   # issue queue mode
 ```
@@ -60,8 +77,8 @@ mm --label bug --author @dependabot --close-issues   # issue queue mode
 Non-interactive:
 
 ```bash
-python mm.py --repo ~/your-project --mission "fix all the maps tests" --dry-run
-python mm.py issues --repo ~/project --label enhancement --close-issues
+mm quick "add feature XYZ" --repo ~/your-project
+mm issues --repo ~/project --label enhancement --close-issues
 ```
 
 State lives in `<repo>/.middle-manager/` (`fix_plan.md`, logs, iteration counter). Issue queue state is per-issue under `.middle-manager/issues/<number>/`.

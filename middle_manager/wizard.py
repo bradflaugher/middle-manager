@@ -125,7 +125,7 @@ def _issue_queue_to_dict(cfg: LoopConfig) -> dict | None:
     }
 
 
-def run_wizard(argv_repo: Path | None = None) -> LoopConfig | None:
+def run_wizard(argv_repo: Path | None = None, mission: str | None = None) -> LoopConfig | None:
     if not _tty():
         return None
 
@@ -149,20 +149,29 @@ def run_wizard(argv_repo: Path | None = None) -> LoopConfig | None:
     if not repo_is_git(repo):
         print(f"  ⚠ {repo} is not a git repo — continuing anyway")
 
-    mode = _choose(
-        "What are we doing?",
-        [
-            ("repair", "Discover & fix problems in the codebase (no specific issue)"),
-            ("issue", "Work a single GitHub issue"),
-            ("queue", "Batch loop: drain a filtered queue of GitHub issues"),
-        ],
-        default_key=last.get("mode", "repair"),
-    )
+    if mission:
+        mode = "feature"
+        print(f"\n  Mission: {mission}")
+    else:
+        mode = _choose(
+            "What are we doing?",
+            [
+                ("feature", "Build something new (e.g. \"add feature XYZ\") — recommended"),
+                ("repair", "Discover & fix problems in the codebase"),
+                ("issue", "Work a single GitHub issue"),
+                ("queue", "Batch loop: drain a filtered queue of GitHub issues"),
+            ],
+            default_key=last.get("mode", "feature"),
+        )
 
-    mission_default = last.get("mission", "")
-    print("\n  Mission prompt — injected into every loop (goals, constraints, tone).")
-    print("  Leave blank for no extra guidance.")
-    mission = _prompt("Mission", mission_default)
+        mission_default = last.get("mission", "")
+        print("\n  Mission prompt — what should the agents build or fix?")
+        if mode == "feature":
+            print("  Example: add dark mode toggle to settings page")
+            mission = _prompt("Mission", mission_default, required=True)
+        else:
+            print("  Leave blank for no extra guidance.")
+            mission = _prompt("Mission", mission_default, required=False)
 
     issue: str | None = None
     issue_queue: dict | None = None
@@ -215,11 +224,15 @@ def run_wizard(argv_repo: Path | None = None) -> LoopConfig | None:
         for step in ("discover", "execute", "verify", "commit"):
             detected[step] = _pick_agent(step, detected[step], overrides)
 
-    steps = 4
-    if _yes_no("Use 4-step loop (discover→execute→verify→commit)?", default=True):
-        steps = 4
-    else:
+    if mode == "feature":
         steps = 3
+        print("\n  Using 3-agent stack: discover → execute → verify")
+    else:
+        steps = 4
+        if _yes_no("Use 4-step loop (discover→execute→verify→commit)?", default=True):
+            steps = 4
+        else:
+            steps = 3
 
     yolo = _yes_no("YOLO mode (auto-approve agent permissions)?", default=True)
     dry_run = _yes_no("Dry-run (print commands only)?", default=False)
@@ -257,6 +270,13 @@ def run_wizard(argv_repo: Path | None = None) -> LoopConfig | None:
     cfg.no_pr = no_pr
     cfg.mode = mode
     cfg.mission = mission or None
+    if mode == "feature" and mission:
+        cfg.fresh = True
+        from .presets import apply_quick_preset
+
+        apply_quick_preset(cfg)
+        for step in ("discover", "execute", "verify"):
+            data[step]["agent"] = cfg.step_for(step).agent
 
     if issue_queue:
         from .config import IssueQueueConfig

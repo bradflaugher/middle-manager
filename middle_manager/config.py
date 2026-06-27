@@ -43,8 +43,9 @@ class LoopConfig:
     dry_run: bool = False
     interactive: bool = False
     issue: str | None = None
-    mode: str = "repair"  # repair | issue | queue
+    mode: str = "repair"  # repair | issue | queue | feature
     mission: str | None = None
+    fresh: bool = False
     issue_queue: IssueQueueConfig | None = None
     branch_prefix: str = "mm"
     no_pr: bool = False
@@ -143,25 +144,29 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python mm.py --repo ~/bradflaugher.com --dry-run
-  python mm.py --repo . --steps 3 --discover-agent grok --execute-agent claude
-  python mm.py --interactive --repo ~/project --issue 42
-  python mm.py agents
+  mm quick "add feature XYZ"              # simplest: 3 agents + your prompt
+  mm "add dark mode toggle"               # same thing (shorthand)
+  mm -m "add feature XYZ" --steps 3 --no-wizard
+  mm --repo ~/bradflaugher.com --dry-run
+  mm agents
         """,
     )
     p.add_argument(
         "command",
         nargs="?",
         default=None,
-        choices=["run", "agents", "init", "status", "issues", "install-path"],
+        choices=["run", "quick", "agents", "init", "status", "issues", "install-path"],
     )
+    p.add_argument("prompt", nargs="*", help="Mission text (with quick command or bare mm \"...\")")
     p.add_argument("--repo", "-C", type=Path, default=Path.cwd(), help="Target repository")
     p.add_argument("--config", type=Path, help="JSON config file")
     p.add_argument("--steps", type=int, choices=[3, 4], help="3-step (no commit agent) or 4-step loop")
     p.add_argument("--max-iterations", type=int, help="Max loop iterations")
     p.add_argument("--issue", help="GitHub issue number or URL to focus on")
     p.add_argument("--mission", "-m", help="Mission prompt injected into agent context")
-    p.add_argument("--mode", choices=["repair", "issue", "queue"], help="Run mode")
+    p.add_argument("--mode", choices=["repair", "issue", "queue", "feature"], help="Run mode")
+    p.add_argument("--quick", "-q", action="store_true", help="3-agent feature preset (discover→execute→verify)")
+    p.add_argument("--fresh", action="store_true", help="Reset .middle-manager state for a new mission")
     p.add_argument("--label", help="Issue queue: filter by label")
     p.add_argument("--author", help="Issue queue: filter by author (@user)")
     p.add_argument("--issue-limit", type=int, default=None, help="Issue queue: max issues")
@@ -192,6 +197,13 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, LoopC
     argv = list(argv) if argv is not None else None
     args = parser.parse_args(argv)
 
+    if args.command == "quick":
+        args.quick = True
+        args.command = "run"
+        if not args.no_wizard:
+            args.no_wizard = True
+        if not args.fresh:
+            args.fresh = True
     if args.command is None:
         args.command = "run"
 
@@ -212,8 +224,20 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, LoopC
         cfg.mode = "issue"
     if args.mode:
         cfg.mode = args.mode
+    if getattr(args, "prompt", None):
+        prompt_text = " ".join(args.prompt).strip()
+        if prompt_text and not args.mission:
+            args.mission = prompt_text
     if args.mission:
         cfg.mission = args.mission
+    if args.quick or args.command == "quick":
+        from .presets import apply_quick_preset
+
+        apply_quick_preset(cfg)
+        if not cfg.mission and getattr(args, "prompt", None):
+            cfg.mission = " ".join(args.prompt).strip() or None
+    if args.fresh:
+        cfg.fresh = True
     if args.label or args.author or args.issue_limit is not None:
         cfg.mode = "queue"
         cfg.issue_queue = cfg.issue_queue or IssueQueueConfig()

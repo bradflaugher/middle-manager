@@ -13,12 +13,47 @@ from .issue_queue import IssueQueueRunner
 from .loop import MiddleManagerLoop
 from .wizard import run_wizard
 
+_COMMANDS = frozenset({
+    "run", "quick", "agents", "init", "status", "issues", "install-path",
+})
+
+
+def _split_mission_tail(argv: list[str]) -> tuple[str, list[str]]:
+    """Pull leading mission words off argv; leave flags intact."""
+    mission_parts: list[str] = []
+    for i, arg in enumerate(argv):
+        if arg.startswith("-"):
+            return " ".join(mission_parts).strip(), argv[i:]
+        mission_parts.append(arg)
+    return " ".join(mission_parts).strip(), []
+
+
+def _preprocess_argv(argv: list[str]) -> list[str]:
+    """Shorthand: mm quick \"add X\"  or  mm \"add feature XYZ\" """
+    if not argv:
+        return argv
+    if argv[0] == "quick":
+        mission, tail = _split_mission_tail(argv[1:])
+        out = ["quick", "--no-wizard"]
+        if mission:
+            out.extend(["--mission", mission])
+        return out + tail
+    if argv[0] not in _COMMANDS and not argv[0].startswith("-"):
+        mission, tail = _split_mission_tail(argv)
+        out = ["quick", "--fresh", "--no-wizard"]
+        if mission:
+            out.extend(["--mission", mission])
+        return out + tail
+    return argv
+
 
 def _should_wizard(args, argv: list[str] | None) -> bool:
     if args.no_wizard:
         return False
     if args.wizard:
         return True
+    if getattr(args, "quick", False):
+        return False
     # No subcommand and no significant CLI flags → wizard
     if argv is None:
         argv = sys.argv[1:]
@@ -31,6 +66,7 @@ def _should_wizard(args, argv: list[str] | None) -> bool:
         "--repo", "-C", "--config", "--issue", "--mission", "-m", "--mode",
         "--label", "--author", "--dry-run", "--no-wizard", "--steps",
         "--discover-agent", "--execute-agent", "--verify-agent", "--commit-agent",
+        "--quick", "-q", "--fresh",
     }
     if any(a in flags or a.split("=")[0] in flags for a in argv):
         return False
@@ -99,6 +135,7 @@ def cmd_issues(cfg: LoopConfig) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(argv) if argv is not None else sys.argv[1:]
+    raw_argv = _preprocess_argv(raw_argv)
 
     if raw_argv and raw_argv[0] == "install-path":
         return cmd_install_path()
@@ -124,6 +161,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if cfg.mode == "queue" and cfg.issue_queue:
         return IssueQueueRunner(cfg).run()
+
+    if (getattr(args, "quick", False) or cfg.mode == "feature") and not cfg.mission:
+        print("Quick/feature mode needs a mission. Examples:")
+        print('  mm quick "add feature XYZ"')
+        print('  mm "add dark mode toggle"')
+        return 1
 
     loop = MiddleManagerLoop(cfg)
     return loop.run()

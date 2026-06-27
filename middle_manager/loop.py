@@ -22,6 +22,7 @@ from .git_ops import (
     repo_is_git,
 )
 from .interactive import pause
+from .presets import reset_loop_state, seed_feature_plan
 from .prompts import build_context, load_prompt, render_prompt
 
 
@@ -88,14 +89,21 @@ class MiddleManagerLoop:
         return "(no AGENT.md or CLAUDE.md found — create one with repo rules)"
 
     def ensure_fix_plan_seed(self, issue_data: dict[str, str]) -> None:
+        if self.cfg.mode == "feature" and self.cfg.mission:
+            if self.cfg.fresh or not self.fix_plan_path.exists():
+                seed_feature_plan(self.cfg, self.fix_plan_path)
+            return
         if self.fix_plan_path.exists():
             return
         seed = "# fix_plan.md\n\n"
+        if self.cfg.mission:
+            seed += f"## Mission\n\n{self.cfg.mission}\n\n"
         if issue_data.get("title"):
             seed += f"## Issue #{issue_data['number']}: {issue_data['title']}\n\n"
             if issue_data.get("body"):
                 seed += issue_data["body"] + "\n\n"
-        seed += "## Tasks\n\n- [ ] Investigate and scope the top priority item\n"
+        task = self.cfg.mission or "Investigate and scope the top priority item"
+        seed += f"## Tasks\n\n- [ ] {task}\n"
         self.write_text(self.fix_plan_path, seed)
 
     def run_tests(self) -> tuple[bool, str]:
@@ -111,7 +119,10 @@ class MiddleManagerLoop:
 
     def prompt_for_step(self, step: str, iteration: int, issue_data: dict[str, str]) -> str:
         sc = self.cfg.step_for(step)
-        template_name = sc.prompt_file or step
+        if step == "discover" and self.cfg.mode == "feature":
+            template_name = "discover_feature"
+        else:
+            template_name = sc.prompt_file or step
         template = load_prompt(template_name.replace(".md", ""))
         ctx = build_context(
             repo=self.cfg.repo,
@@ -252,6 +263,9 @@ class MiddleManagerLoop:
     def run_until_complete(self) -> LoopResult:
         if not self.cfg.repo.exists():
             return LoopResult(False, f"Repo not found: {self.cfg.repo}")
+
+        if self.cfg.fresh:
+            reset_loop_state(self.cfg)
 
         self.log(f"Target repo: {self.cfg.repo}")
         if self.cfg.mission:

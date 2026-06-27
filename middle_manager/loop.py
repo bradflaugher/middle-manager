@@ -124,6 +124,33 @@ class MiddleManagerLoop:
                 return s[2:].strip()
         return "No actionable item in fix_plan.md — add `- [ ] task` lines."
 
+    def top_plan_items(self, count: int = 1) -> list[str]:
+        text = self.read_text(self.fix_plan_path)
+        items = []
+        for line in text.splitlines():
+            s = line.strip()
+            if s.startswith("- [ ]"):
+                items.append(s[5:].strip())
+                if len(items) >= count:
+                    return items
+        
+        # Fallback to loose bullet points only if they are under a Tasks section
+        in_tasks_section = False
+        for line in text.splitlines():
+            s = line.strip()
+            if s.lower().startswith("## task"):
+                in_tasks_section = True
+                continue
+            if s.startswith("#") and not s.lower().startswith("## task"):
+                in_tasks_section = False
+            if in_tasks_section and s.startswith("- ") and not s.startswith("- [x]") and not s.startswith("- [ ]"):
+                item = s[2:].strip()
+                if item not in items:
+                    items.append(item)
+                    if len(items) >= count:
+                        return items
+        return items
+
     def agent_memory(self) -> str:
         mem = self.cfg.repo / self.cfg.agent_memory_file
         if mem.exists():
@@ -161,11 +188,19 @@ class MiddleManagerLoop:
         if step == "execute" and self.cfg.fix_unrelated_tests:
             rule_addition = "\n6. **Fix unrelated test failures:** If the test suite is failing due to unrelated test failures or environment-specific issues that block verification of your changes, you are allowed and encouraged to modify the test files or unrelated files directly to fix the test failures so that they pass.\n"
             template += rule_addition
+        top_items = self.top_plan_items(self.cfg.batch_size)
+        if len(top_items) == 1:
+            top_item_str = top_items[0]
+        elif len(top_items) > 1:
+            top_item_str = "\n".join(f"- [ ] {item}" for item in top_items)
+        else:
+            top_item_str = "No actionable item in fix_plan.md — add `- [ ] task` lines."
+
         ctx = build_context(
             repo=self.cfg.repo,
             issue=self.cfg.issue or issue_data.get("url", ""),
             fix_plan=self.read_text(self.fix_plan_path),
-            top_item=self.top_plan_item(),
+            top_item=top_item_str,
             agent_memory=self.agent_memory(),
             test_output=self.read_text(self.error_log_path),
             error_log=self.read_text(self.error_log_path),
@@ -379,23 +414,24 @@ class MiddleManagerLoop:
                     ensure_branch(self.cfg.repo, self.cfg.branch_prefix, iteration)
             self.maybe_commit_and_pr(iteration, issue_data)
 
-        # Mark top item done if tests passed and we have a plan
-        self._check_off_top_item()
+        # Mark top items done if tests passed and we have a plan
+        self._check_off_top_items(self.cfg.batch_size)
         return True
 
     def is_complete(self) -> bool:
         return plan_is_complete(self.read_text(self.fix_plan_path))
 
-    def _check_off_top_item(self) -> None:
+    def _check_off_top_items(self, count: int) -> None:
         text = self.read_text(self.fix_plan_path)
         lines = text.splitlines()
-        changed = False
+        checked = 0
         for i, line in enumerate(lines):
             if line.strip().startswith("- [ ]"):
                 lines[i] = line.replace("- [ ]", "- [x]", 1)
-                changed = True
-                break
-        if changed:
+                checked += 1
+                if checked >= count:
+                    break
+        if checked > 0:
             self.write_text(self.fix_plan_path, "\n".join(lines) + "\n")
 
     def run_until_complete(self) -> LoopResult:

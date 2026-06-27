@@ -65,6 +65,7 @@ class LoopConfig:
     fix_unrelated_tests: bool = False
     stream_output: bool = False
     tmux: bool = HAS_TMUX
+    batch_size: int = 1
 
     def step_for(self, name: str) -> StepConfig:
         return getattr(self, name)
@@ -89,6 +90,7 @@ DEFAULTS: dict[str, Any] = {
     "fix_unrelated_tests": False,
     "stream_output": False,
     "tmux": HAS_TMUX,
+    "batch_size": 1,
     "discover": {"agent": "grok", "model": None, "extra_args": ["--check"]},
     "execute": {"agent": "claude", "model": "claude-sonnet-4-20250514"},
     "verify": {"agent": "codex", "model": "o4-mini"},
@@ -147,6 +149,7 @@ def config_from_dict(data: dict[str, Any], repo: Path) -> LoopConfig:
         fix_unrelated_tests=bool(data.get("fix_unrelated_tests", False)),
         stream_output=bool(data.get("stream_output", False)),
         tmux=bool(data.get("tmux", HAS_TMUX)),
+        batch_size=int(data.get("batch_size", 1)),
     )
 
 
@@ -199,6 +202,7 @@ Examples:
     p.add_argument("--stream-output", action="store_true", help="Stream raw agent stdout/stderr to console instead of using the monitor")
     p.add_argument("--tmux", dest="tmux", action="store_true", default=None, help="Run agent commands inside a tmux session (default: True if tmux is installed)")
     p.add_argument("--no-tmux", dest="tmux", action="store_false", help="Disable running agent commands inside a tmux session")
+    p.add_argument("--batch-size", type=int, default=None, help="Number of tasks to execute in a single iteration")
 
     for step in ("discover", "execute", "verify", "commit"):
         p.add_argument(f"--{step}-agent", choices=AGENT_NAMES)
@@ -291,6 +295,8 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, LoopC
         cfg.stream_output = True
     if args.tmux is not None:
         cfg.tmux = args.tmux
+    if args.batch_size is not None:
+        cfg.batch_size = args.batch_size
 
     for step in ("discover", "execute", "verify", "commit"):
         agent = getattr(args, f"{step}_agent")

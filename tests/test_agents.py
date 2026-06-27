@@ -165,6 +165,26 @@ class TestAgents(unittest.TestCase):
                 "No actionable item in fix_plan.md — add `- [ ] task` lines."
             )
 
+            # Test top_plan_items batching
+            plan_content = (
+                "# fix_plan.md\n\n"
+                "## Tasks\n"
+                "- [ ] Task 1\n"
+                "- [ ] Task 2\n"
+                "- [ ] Task 3\n"
+            )
+            loop.write_text(loop.fix_plan_path, plan_content)
+            self.assertEqual(loop.top_plan_items(2), ["Task 1", "Task 2"])
+            self.assertEqual(loop.top_plan_items(5), ["Task 1", "Task 2", "Task 3"])
+
+            # Test _check_off_top_items
+            loop._check_off_top_items(2)
+            updated_text = loop.read_text(loop.fix_plan_path)
+            self.assertIn("- [x] Task 1", updated_text)
+            self.assertIn("- [x] Task 2", updated_text)
+            self.assertIn("- [ ] Task 3", updated_text)
+
+
     def test_run_command_monitored_tmux(self):
         import shutil
         from pathlib import Path

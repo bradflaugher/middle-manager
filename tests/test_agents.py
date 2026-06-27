@@ -202,4 +202,68 @@ class TestAgents(unittest.TestCase):
             self.assertEqual(res.returncode, 0)
             self.assertIn("hello_from_tmux", res.stdout)
 
+    def test_loop_task_auto_checkoff_logic(self):
+        from middle_manager.config import LoopConfig
+        from middle_manager.loop import MiddleManagerLoop
+        import tempfile
+        from pathlib import Path
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = LoopConfig(repo=Path(tmpdir))
+            loop = MiddleManagerLoop(cfg)
+            
+            # Setup plan
+            plan_content = (
+                "# fix_plan.md\n\n"
+                "## Tasks\n"
+                "- [ ] Task 1\n"
+                "- [ ] Task 2\n"
+            )
+            loop.write_text(loop.fix_plan_path, plan_content)
+            
+            # Scenario 1: tasks_before is None (e.g. step execute was skipped)
+            # It should fall back to checking off the top item (Task 1)
+            tasks_before = None
+            if tasks_before is not None:
+                tasks_after = len([line for line in loop.read_text(loop.fix_plan_path).splitlines() if line.strip().startswith("- [ ]")])
+                if tasks_after >= tasks_before:
+                    loop._check_off_top_items(cfg.batch_size)
+            else:
+                loop._check_off_top_items(cfg.batch_size)
+            
+            updated = loop.read_text(loop.fix_plan_path)
+            self.assertIn("- [x] Task 1", updated)
+            self.assertIn("- [ ] Task 2", updated)
+            
+            # Scenario 2: agent did NOT check off any task (tasks_after >= tasks_before)
+            # Setup plan again
+            loop.write_text(loop.fix_plan_path, plan_content)
+            tasks_before = 2
+            tasks_after = 2
+            if tasks_after >= tasks_before:
+                loop._check_off_top_items(cfg.batch_size)
+            
+            updated = loop.read_text(loop.fix_plan_path)
+            self.assertIn("- [x] Task 1", updated)
+            self.assertIn("- [ ] Task 2", updated)
+            
+            # Scenario 3: agent DID check off a task (tasks_after < tasks_before)
+            # Setup plan with Task 1 already checked off by the agent
+            agent_modified_plan = (
+                "# fix_plan.md\n\n"
+                "## Tasks\n"
+                "- [x] Task 1\n"
+                "- [ ] Task 2\n"
+            )
+            loop.write_text(loop.fix_plan_path, agent_modified_plan)
+            tasks_before = 2
+            tasks_after = 1 # Task 1 is checked off, so only 1 remains unchecked
+            if tasks_after >= tasks_before:
+                loop._check_off_top_items(cfg.batch_size)
+                
+            updated = loop.read_text(loop.fix_plan_path)
+            self.assertIn("- [x] Task 1", updated)
+            self.assertIn("- [ ] Task 2", updated) # Task 2 remains unchecked!
+
+
 

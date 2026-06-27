@@ -364,10 +364,13 @@ class MiddleManagerLoop:
 
         verifier_passed = True
         verifier_stdout = ""
+        tasks_before = None
 
         for step in ("discover", "execute", "verify"):
             if step not in self.cfg.active_steps():
                 continue
+            if step == "execute":
+                tasks_before = len([line for line in self.read_text(self.fix_plan_path).splitlines() if line.strip().startswith("- [ ]")])
             sc = self.cfg.step_for(step)
             self.log(f"⚡ [Step: {step.upper()}] Starting step with agent '{sc.agent.upper()}'...", Colors.CYAN + Colors.BOLD)
             if self.cfg.interactive:
@@ -415,7 +418,12 @@ class MiddleManagerLoop:
             self.maybe_commit_and_pr(iteration, issue_data)
 
         # Mark top items done if tests passed and we have a plan
-        self._check_off_top_items(self.cfg.batch_size)
+        if tasks_before is not None:
+            tasks_after = len([line for line in self.read_text(self.fix_plan_path).splitlines() if line.strip().startswith("- [ ]")])
+            if tasks_after >= tasks_before:
+                self._check_off_top_items(self.cfg.batch_size)
+        else:
+            self._check_off_top_items(self.cfg.batch_size)
         return True
 
     def is_complete(self) -> bool:

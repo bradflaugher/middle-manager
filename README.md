@@ -44,74 +44,151 @@ export PATH="$HOME/.local/bin:$PATH"
 # or: mm install-path
 ```
 
-## Simplest path (3 agents + your prompt)
+## Cookbook — copy/paste recipes
 
-The common case: autodetected 3-agent stack, custom mission, no wizard noise.
+### Add a feature fast (most common)
 
-```bash
-mm quick "add feature XYZ"
-mm "add dark mode toggle"              # shorthand — same thing
-mm quick "add feature XYZ" --dry-run   # preview commands first
-```
-
-This runs **discover → execute → verify** (no commit agent), seeds `fix_plan.md` from your prompt, and resets state with `--fresh`. Agents are picked from whatever you have installed (grok/claude/codex/…).
-
-Equivalent explicit form:
+Three autodetected agents, your prompt, fresh state every run:
 
 ```bash
-mm --steps 3 --mode feature --fresh -m "add feature XYZ" --no-wizard
+cd ~/your-project
+
+mm quick "add dark mode toggle to settings"
+mm "add Stripe checkout to the pricing page"     # shorthand — identical
+mm quick "add user avatars" --dry-run            # preview agent commands first
 ```
 
-## Quick start
-
-**Interactive:** run `mm` — wizard defaults to **feature** mode now.
+What happens: **discover** scopes the feature into subtasks → **execute** implements one item per loop → **verify** audits + runs tests. State resets each `quick` run. No wizard, no config file.
 
 ```bash
-mm                           # interactive wizard → loop
-mm agents                    # see what's installed
-mm init --repo ~/your-project
-mm --repo ~/your-project --issue 42
-mm --label bug --author @dependabot --close-issues   # issue queue mode
+# same thing, explicit flags
+mm --steps 3 --mode feature --fresh -m "add OAuth login" --no-wizard
+
+# pick your own agents (when you have them installed)
+mm quick "add webhook handler" \
+  --discover-agent grok \
+  --execute-agent claude \
+  --verify-agent codex \
+  --test-command "npm test"
 ```
 
-Non-interactive:
+More feature examples:
 
 ```bash
-mm quick "add feature XYZ" --repo ~/your-project
-mm issues --repo ~/project --label enhancement --close-issues
+mm quick "add /health endpoint that returns JSON status"
+mm quick "add pagination to the search results page"
+mm quick "add email validation to the signup form"
+mm quick "refactor auth middleware to use JWT" --max-iterations 8
+mm quick "add Playwright test for the checkout flow" --test-command "npx playwright test"
 ```
 
-State lives in `<repo>/.middle-manager/` (`fix_plan.md`, logs, iteration counter). Issue queue state is per-issue under `.middle-manager/issues/<number>/`.
+### Chug through GitHub issues
 
-## Interactive wizard
+Requires [`gh`](https://cli.github.com/) authenticated in the repo (`gh auth login`).
 
-Running `mm` with no arguments starts the wizard:
-
-1. **Repository** — path to your git repo (defaults to cwd)
-2. **Mode** — codebase repair, single issue, or filtered issue queue
-3. **Mission prompt** — free-text goals injected into every agent step
-4. **Agents** — autodetected from what's on your PATH; customize per step if you want
-5. **Options** — 3/4 steps, YOLO, dry-run, test command, PRs, close issues
-
-Last choices are saved to `~/.config/middle-manager/last.json`.
-
-## Issue queue (batch mode)
-
-Drain open GitHub issues matching a filter, one at a time:
+**By submitter** — burn down everything `@someuser` filed:
 
 ```bash
-mm --repo ~/myapp --label bug --author @someuser --close-issues
-mm issues --repo ~/myapp --label "good first issue" --issue-limit 10
+cd ~/your-project
+
+mm --author @someuser --close-issues
+mm issues --repo . --author dependabot --close-issues --issue-limit 20
+mm --author @bradflaugher --close-issues --no-pr    # fix + close, skip PR step
 ```
 
-Or pick **queue** in the interactive wizard. For each issue middle-manager:
+**By label:**
+
+```bash
+mm --label bug --close-issues
+mm --label "good first issue" --issue-limit 10 --close-issues
+mm --label enhancement --author @intern --close-issues
+```
+
+**Label + author combo** — e.g. dependabot bugs only:
+
+```bash
+mm --label bug --author dependabot --close-issues --issue-limit 50
+mm issues --repo ~/myapp --label security --author @renovate-bot --close-issues
+```
+
+**Don't auto-close** — open PRs but leave issues open for human review:
+
+```bash
+mm --author @someuser --no-close-issues
+mm --label bug --no-close-issues --steps 4   # full loop with commit agent + PR
+```
+
+**Preview the queue** without running agents:
+
+```bash
+gh issue list --author @someuser --state open --json number,title
+gh issue list --label bug --author dependabot --state open
+mm --author @someuser --dry-run --issue-limit 3
+```
+
+For each issue, middle-manager:
 
 1. Checks out `mm/issue-<number>`
-2. Seeds a per-issue `fix_plan.md` from the issue body
-3. Runs the full discover → execute → verify → commit loop
+2. Seeds `fix_plan.md` from the issue body
+3. Runs discover → execute → verify → (commit)
 4. Closes the issue on success (unless `--no-close-issues`)
 
-Requires `gh` CLI authenticated against the repo.
+Per-issue state: `.middle-manager/issues/<number>/`
+
+### Single GitHub issue
+
+```bash
+mm --issue 42
+mm --issue 42 --mission "fix without refactoring anything else"
+mm --issue https://github.com/you/repo/issues/42 --steps 4
+```
+
+### Fix whatever's broken (no specific feature)
+
+Repo-wide discovery — finds failing tests, doc drift, missing CI, etc.:
+
+```bash
+mm --mode repair
+mm --mode repair --mission "focus on Playwright failures only"
+mm --mode repair --test-command "npm run test:ci" --max-iterations 5
+```
+
+### Interactive wizard
+
+When you want prompts instead of flags:
+
+```bash
+mm                    # walks through repo → mode → mission → agents → go
+mm --wizard           # force wizard even with other flags
+```
+
+Wizard defaults to **feature** mode + 3-step stack. Last choices saved to `~/.config/middle-manager/last.json`.
+
+### Inspect before you YOLO
+
+```bash
+mm agents                              # what's installed on this machine
+mm init --repo .                       # seed AGENT.md + .middle-manager/
+mm status --repo .                     # fix_plan, logs, iteration count
+mm quick "add feature X" --dry-run     # print agent commands, run nothing
+```
+
+## Quick reference
+
+| I want to… | Command |
+|------------|---------|
+| Add a feature | `mm quick "add feature XYZ"` |
+| Shorthand feature | `mm "add feature XYZ"` |
+| One GitHub issue | `mm --issue 42` |
+| All issues by user | `mm --author @someuser --close-issues` |
+| All bugs by user | `mm --label bug --author @someuser --close-issues` |
+| Good-first-issues sprint | `mm --label "good first issue" --issue-limit 10 --close-issues` |
+| Fix the codebase generally | `mm --mode repair` |
+| Point at another repo | `mm quick "…" --repo ~/other-project` |
+| Pause between steps | `mm quick "…" -i` |
+| Use a config file | `mm --config examples/quick-feature.json --repo .` |
+
+State lives in `<repo>/.middle-manager/`. Issue queue state is per-issue under `.middle-manager/issues/<number>/`.
 
 ## Agent YOLO flags
 
@@ -133,7 +210,7 @@ Not all agents are installed on every box. That's fine — `python mm.py agents`
 Override agents, models, and extra CLI args per step:
 
 ```bash
-python mm.py --repo ~/bradflaugher.com \
+mm --repo ~/bradflaugher.com \
   --discover-agent grok --discover-model grok-3 \
   --execute-agent claude --execute-model claude-sonnet-4-20250514 \
   --verify-agent grok --verify-args "--check,--effort,high" \
@@ -145,26 +222,22 @@ python mm.py --repo ~/bradflaugher.com \
 Or use a JSON config:
 
 ```bash
-python mm.py --config my-loop.json --repo ~/project
+mm --config examples/quick-feature.json --repo ~/project
+mm --config examples/bradflaugher.com.json --repo ~/bradflaugher.com --dry-run
 ```
 
 See `config.default.json` for the full schema.
 
-### Example: bradflaugher.com on this box
-
-Grok + Crush + Agy are installed here; Claude and Codex are not. A workable local config:
+### Example: only grok installed (no claude/codex)
 
 ```bash
-python mm.py --repo ~/bradflaugher.com \
+mm quick "add resume link to index.html" \
+  --repo ~/bradflaugher.com \
   --discover-agent grok \
   --execute-agent grok \
-  --verify-agent grok --verify-args "--check" \
-  --commit-agent agy \
-  --test-command "npm test" \
-  --dry-run
+  --verify-agent grok \
+  --test-command "npm test"
 ```
-
-Drop `--dry-run` when you're ready to let the agents actually run.
 
 ## Interactive mode
 
@@ -182,10 +255,14 @@ middle-manager> q    # quit
 
 | Command | Description |
 |---------|-------------|
-| `python mm.py` | Run the loop (default) |
-| `python mm.py agents` | Show installed agents + YOLO flags |
-| `python mm.py init --repo PATH` | Seed `.middle-manager/` and AGENT.md |
-| `python mm.py status --repo PATH` | Show loop state |
+| `mm` | Interactive wizard → loop |
+| `mm quick "…"` | 3-agent feature preset |
+| `mm "…"` | Shorthand for `mm quick "…"` |
+| `mm agents` | Show installed agents + YOLO flags |
+| `mm init --repo PATH` | Seed `.middle-manager/` and AGENT.md |
+| `mm status --repo PATH` | Show loop state |
+| `mm issues --author @user` | Issue queue batch mode |
+| `mm install-path` | Print PATH export for installer |
 
 ## Rules of the road
 

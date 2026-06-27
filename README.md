@@ -21,11 +21,50 @@ Make sure to add the bin directory to your `PATH`:
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
+### Quick reference
+
+| I want to… | Command |
+|------------|---------|
+| Add a feature | `mm quick "add feature XYZ"` |
+| Shorthand feature | `mm "add feature XYZ"` |
+| One GitHub issue | `mm --issue 42` |
+| All issues by user | `mm --author @someuser --close-issues` |
+| All bugs by user | `mm --label bug --author @someuser --close-issues` |
+| Good-first-issues sprint | `mm --label "good first issue" --issue-limit 10 --close-issues` |
+| Fix the codebase generally | `mm --mode repair` |
+| Point at another repo | `mm quick "…" --repo ~/other-project` |
+| Pause between steps | `mm quick "…" -i` |
+| Use a config file | `mm --config examples/quick-feature.json --repo .` |
+
+State lives in `<repo>/.middle-manager/`. Issue queue state is per-issue under `.middle-manager/issues/<number>/`.
+
+---
+
+## The Loop
+
+```
+┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+│  DISCOVER   │───▶│   EXECUTE   │───▶│   VERIFY    │───▶│   COMMIT    │
+│  plan/spec  │    │  one item   │    │   critic    │    │ PR + memory │
+│   (grok)    │    │  (claude)   │    │  (crush)    │    │   (agy)     │
+└─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘
+       ▲                                      │
+       └──────── tests fail / verifier fail ──┘
+```
+
+| Step | Default agent | Job |
+|------|---------------|-----|
+| 1. Discover | Grok | Scan repo + issues, maintain `fix_plan.md` |
+| 2. Execute | Claude Code | Implement **exactly one** plan item |
+| 3. Verify | Codex | Critic / backpressure on tests + diff |
+| 4. Commit | Agy | Update AGENT.md, commit, push, open PR (**never merge**) |
+
 ---
 
 ## Cookbook — copy/paste recipes
 
-### Interactive wizard (recommended)
+<details>
+<summary><b>Interactive wizard (recommended)</b></summary>
 
 If you prefer interactive prompts instead of specifying CLI flags, run `mm` with no arguments. It will walk you through setting up your loop step-by-step:
 
@@ -35,8 +74,10 @@ mm --wizard           # force the wizard even if other flags are provided
 ```
 
 Your last chosen configuration options are saved to `~/.config/middle-manager/last.json` to make running subsequent loops extremely fast.
+</details>
 
-### Add a feature fast (most common)
+<details>
+<summary><b>Add a feature fast (most common)</b></summary>
 
 Three autodetected agents, your prompt, fresh state every run:
 
@@ -71,8 +112,10 @@ mm quick "add email validation to the signup form"
 mm quick "refactor auth middleware to use JWT" --max-iterations 8
 mm quick "add Playwright test for the checkout flow" --test-command "npx playwright test"
 ```
+</details>
 
-### Chug through GitHub issues
+<details>
+<summary><b>Chug through GitHub issues</b></summary>
 
 Requires `gh` authenticated in the repo (`gh auth login`).
 
@@ -124,16 +167,20 @@ For each issue, middle-manager:
 4. Closes the issue on success (unless `--no-close-issues`)
 
 Per-issue state: `.middle-manager/issues/<number>/`
+</details>
 
-### Single GitHub issue
+<details>
+<summary><b>Single GitHub issue</b></summary>
 
 ```bash
 mm --issue 42
 mm --issue 42 --mission "fix without refactoring anything else"
 mm --issue https://github.com/you/repo/issues/42 --steps 4
 ```
+</details>
 
-### Fix whatever's broken (no specific feature)
+<details>
+<summary><b>Fix whatever's broken (no specific feature)</b></summary>
 
 Repo-wide discovery — finds failing tests, doc drift, missing CI, etc.:
 
@@ -142,8 +189,10 @@ mm --mode repair
 mm --mode repair --mission "focus on Playwright failures only"
 mm --mode repair --test-command "npm run test:ci" --max-iterations 5
 ```
+</details>
 
-### Inspect before you YOLO
+<details>
+<summary><b>Inspect before you YOLO</b></summary>
 
 ```bash
 mm agents                              # what's installed on this machine
@@ -151,67 +200,10 @@ mm init --repo .                       # seed AGENT.md + .middle-manager/
 mm status --repo .                     # fix_plan, logs, iteration count
 mm quick "add feature X" --dry-run     # print agent commands, run nothing
 ```
+</details>
 
----
-
-## The Loop
-
-```
-┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│  DISCOVER   │───▶│   EXECUTE   │───▶│   VERIFY    │───▶│   COMMIT    │
-│  plan/spec  │    │  one item   │    │   critic    │    │ PR + memory │
-│   (grok)    │    │  (claude)   │    │  (crush)    │    │   (agy)     │
-└─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘
-       ▲                                      │
-       └──────── tests fail / verifier fail ──┘
-```
-
-| Step | Default agent | Job |
-|------|---------------|-----|
-| 1. Discover | Grok | Scan repo + issues, maintain `fix_plan.md` |
-| 2. Execute | Claude Code | Implement **exactly one** plan item |
-| 3. Verify | Codex | Critic / backpressure on tests + diff |
-| 4. Commit | Agy | Update AGENT.md, commit, push, open PR (**never merge**) |
-
----
-
-## Quick reference
-
-| I want to… | Command |
-|------------|---------|
-| Add a feature | `mm quick "add feature XYZ"` |
-| Shorthand feature | `mm "add feature XYZ"` |
-| One GitHub issue | `mm --issue 42` |
-| All issues by user | `mm --author @someuser --close-issues` |
-| All bugs by user | `mm --label bug --author @someuser --close-issues` |
-| Good-first-issues sprint | `mm --label "good first issue" --issue-limit 10 --close-issues` |
-| Fix the codebase generally | `mm --mode repair` |
-| Point at another repo | `mm quick "…" --repo ~/other-project` |
-| Pause between steps | `mm quick "…" -i` |
-| Use a config file | `mm --config examples/quick-feature.json --repo .` |
-
-State lives in `<repo>/.middle-manager/`. Issue queue state is per-issue under `.middle-manager/issues/<number>/`.
-
----
-
-## Agent YOLO flags
-
-middle-manager passes the right permission-skipping flag per CLI when `--yolo` is on (default):
-
-| Agent | Binary | YOLO flag | Headless invocation |
-|-------|--------|-----------|---------------------|
-| **[Grok](https://docs.x.ai/docs/grok-cli)** | `grok` | `--yolo` (alias: `--always-approve`) | `grok -p PROMPT --yolo --cwd DIR` |
-| **[Claude Code](https://code.claude.com)** | `claude` | `--dangerously-skip-permissions` | `claude -p PROMPT --dangerously-skip-permissions` |
-| **[Codex](https://developers.openai.com/codex/cli)** | `codex` | `--yolo` | `codex exec PROMPT --yolo` |
-| **[Crush](https://github.com/charmbracelet/crush)** | `crush` | None | `crush run PROMPT -c DIR` |
-| **[OpenCode](https://opencode.ai)** | `opencode` | `--dangerously-skip-permissions` | `opencode run PROMPT --dangerously-skip-permissions --dir DIR` |
-| **[Agy](https://antigravity.google/docs/cli-install)** | `agy` | `--dangerously-skip-permissions` | `agy --print PROMPT --dangerously-skip-permissions` |
-
-Not all agents are installed on every box. `mm agents` shows what you have. Override with `--binary claude=/path/to/claude`.
-
----
-
-## Per-step configuration
+<details>
+<summary><b>Per-step configuration</b></summary>
 
 Override agents, models, and extra CLI args per step:
 
@@ -234,7 +226,7 @@ mm --config examples/bradflaugher.com.json --repo ~/bradflaugher.com --dry-run
 
 See `config.default.json` for the full schema.
 
-### Example: only grok installed (no claude/codex)
+#### Example: only grok installed (no claude/codex)
 
 ```bash
 mm quick "add resume link to index.html" \
@@ -244,20 +236,24 @@ mm quick "add resume link to index.html" \
   --verify-agent grok \
   --test-command "npm test"
 ```
+</details>
 
 ---
 
-## Interactive mode
+## Agent YOLO flags
 
-`-i` / `--interactive` pauses before each step:
+middle-manager passes the right permission-skipping flag per CLI when `--yolo` is on (default):
 
-```
-middle-manager> c    # continue
-middle-manager> s    # skip step
-middle-manager> a    # list agent availability
-middle-manager> p    # print step config
-middle-manager> q    # quit
-```
+| Agent | Binary | YOLO flag | Headless invocation |
+|-------|--------|-----------|---------------------|
+| **[Grok](https://docs.x.ai/docs/grok-cli)** | `grok` | `--yolo` (alias: `--always-approve`) | `grok -p PROMPT --yolo --cwd DIR` |
+| **[Claude Code](https://code.claude.com)** | `claude` | `--dangerously-skip-permissions` | `claude -p PROMPT --dangerously-skip-permissions` |
+| **[Codex](https://developers.openai.com/codex/cli)** | `codex` | `--yolo` | `codex exec PROMPT --yolo` |
+| **[Crush](https://github.com/charmbracelet/crush)** | `crush` | None | `crush run PROMPT -c DIR` |
+| **[OpenCode](https://opencode.ai)** | `opencode` | `--dangerously-skip-permissions` | `opencode run PROMPT --dangerously-skip-permissions --dir DIR` |
+| **[Agy](https://antigravity.google/docs/cli-install)** | `agy` | `--dangerously-skip-permissions` | `agy --print PROMPT --dangerously-skip-permissions` |
+
+Not all agents are installed on every box. `mm agents` shows what you have. Override with `--binary claude=/path/to/claude`.
 
 ---
 

@@ -1,4 +1,6 @@
-# ⚡️ middle-manager
+![middle-manager logo](Logo.jpg)
+
+# middle-manager
 
 Unsupervised multi-agent coding loop that orchestrates your favorite coding CLIs. 
 
@@ -6,7 +8,7 @@ Unsupervised multi-agent coding loop that orchestrates your favorite coding CLIs
 
 ---
 
-## 🚀 Key Features
+## Key Features
 
 - **Dynamic Agent Picking**: No configuration boilerplate. It automatically scans your system (`grok`, `crush`, `agy`, etc.) and routes each step of the pipeline to the best installed tool.
 - **Critic Backpressure**: Real verifier logic. It parses the critique, writes feedback loops, and injects new corrective tasks into the plan on failure, preventing buggy commits.
@@ -15,40 +17,7 @@ Unsupervised multi-agent coding loop that orchestrates your favorite coding CLIs
 
 ---
 
-## 📸 Terminal Preview
-
-Here is what it looks like when running:
-
-```ansi
-$ mm "add stripe checkout to pricing page"
-
-Target repo: /root/my-project
-Steps: 3 (discover, execute, verify)
-YOLO: True
-
-=== Iteration 1 ===
-▶ grok: grok -p PROMPT --yolo --cwd /root/my-project --check
-discover finished.
-
-Current Plan:
-  [ ] Install and configure stripe SDK
-  [ ] Create checkout endpoint in api/checkout.py
-  [ ] Add payment button to billing UI
-
-▶ grok: grok -p PROMPT --yolo --cwd /root/my-project
-execute finished.
-
-▶ grok: grok -p PROMPT --yolo --cwd /root/my-project
-verify finished.
-Verifier verdict: PASS
-
-✓ Tests passed.
-✓ Committed changes: middle-manager: Install and configure stripe SDK.
-```
-
----
-
-## 📦 Install (One-Liner)
+## Install (One-Liner)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/bradflaugher/middle-manager/main/install.sh | bash
@@ -63,7 +32,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ---
 
-## 🕹️ Quick Start
+## Quick Start
 
 ### 1. Build a new feature fast
 Point the manager at your repo, tell it what to build, and let it rip:
@@ -87,7 +56,7 @@ mm --author @dependabot --close-issues --issue-limit 5
 
 ---
 
-## 🔄 The Loop
+## The Loop
 
 ```
 ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
@@ -108,7 +77,7 @@ mm --author @dependabot --close-issues --issue-limit 5
 
 ---
 
-## 🛠️ Commands
+## Commands
 
 | Command | Description |
 | :--- | :--- |
@@ -121,7 +90,7 @@ mm --author @dependabot --close-issues --issue-limit 5
 
 ---
 
-## 🎛️ Advanced Customization
+## Advanced Customization
 
 ### Override Agents & Models
 ```bash
@@ -138,7 +107,7 @@ mm --config examples/quick-feature.json
 
 ---
 
-## 📜 Rules of the Road
+## Rules of the Road
 
 1. **Keep tasks small**: The cleaner the steps, the higher the success rate.
 2. **Review before merging**: The commit agent creates PRs; you decide when they land.
@@ -148,7 +117,7 @@ mm --config examples/quick-feature.json
 
 ---
 
-## 🧱 Architecture
+## Architecture
 
 ```
 middle_manager/

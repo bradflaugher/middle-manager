@@ -18,10 +18,45 @@ Unsupervised multi-agent coding loop that orchestrates your favorite coding CLIs
 
 This installs `mm` to `~/.local/bin/mm` and clones the repo to `~/.local/share/middle-manager`.
 
-Make sure to add the bin directory to your `PATH`:
+<details>
+<summary><b>Adding to PATH (if needed)</b></summary>
+
+Make sure to add the bin directory to your shell configuration file (e.g., `~/.bashrc` or `~/.zshrc`):
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
+Then source it:
+```bash
+source ~/.bashrc  # or ~/.zshrc
+```
+</details>
+
+<details>
+<summary><b>Manual Installation</b></summary>
+
+If you prefer to install manually without the automatic script:
+
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/bradflaugher/middle-manager.git ~/.local/share/middle-manager
+   ```
+2. **Create the wrapper executable**:
+   Create a file at `~/.local/bin/mm`:
+   ```bash
+   #!/usr/bin/env bash
+   set -euo pipefail
+   export PYTHONPATH="$HOME/.local/share/middle-manager:${PYTHONPATH:-}"
+   exec python3 "$HOME/.local/share/middle-manager/mm.py" "$@"
+   ```
+3. **Make it executable**:
+   ```bash
+   chmod +x ~/.local/bin/mm
+   ```
+4. **Create the configuration directory**:
+   ```bash
+   mkdir -p ~/.config/middle-manager
+   ```
+</details>
 
 ### Quick reference
 

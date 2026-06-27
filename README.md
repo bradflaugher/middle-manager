@@ -96,8 +96,11 @@ middle-manager executes steps in the following order:
 **Agent Monitoring Mode**: By default, middle-manager runs agents in a quiet monitoring mode. Instead of streaming pages of raw LLM/agent console output, it displays a neat live dashboard tracking:
 * **Status & Time Elapsed**: Visual spinner and run duration.
 * **CPU Usage**: Active CPU percentage of the agent process tree.
-* **Agent Output**: Lines and size of output produced so far.
+* **Live Stats**: Active descendant child processes and open network sockets.
+* **Last Output**: The latest non-empty stdout line written by the agent.
 * **Changed Files**: Live list of files modified, added, or deleted in the repository.
+
+* **Tmux Execution (Highly Recommended)**: If `tmux` is installed, middle-manager automatically runs all agents inside background tmux sessions. This preserves their native pseudo-terminal (PTY) environment—enabling full colored TUIs, spinners, and interactive prompt choices—while keeping the main terminal clean with the live monitoring dashboard. The dashboard displays the exact attach command (e.g., `tmux attach-session -t mm-execute-<id>`) so you can attach, inspect the rich agent terminal interface, or interact at any time. (Pass `--no-tmux` to disable it.)
 
 All agent output is saved to the state directory (e.g., `.middle-manager/execute_output.txt`) for easy inspectability. To disable the dashboard and stream raw agent output directly to the console, pass the `--stream-output` flag.
 

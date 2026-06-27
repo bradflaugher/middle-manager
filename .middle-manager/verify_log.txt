@@ -1,1 +1,0 @@
-[dry-run] would run: npm test

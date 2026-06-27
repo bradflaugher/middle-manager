@@ -61,7 +61,7 @@ class LoopConfig:
     commit: StepConfig = field(default_factory=lambda: StepConfig("agy"))
     binary_overrides: dict[str, str] = field(default_factory=dict)
     state_dir: Path | None = None
-    agent_memory_file: str = "AGENT.md"
+    agent_memory_file: str = "AGENTS.md"
     fix_unrelated_tests: bool = False
     stream_output: bool = False
     tmux: bool = HAS_TMUX
@@ -145,7 +145,7 @@ def config_from_dict(data: dict[str, Any], repo: Path) -> LoopConfig:
         verify=step_from_dict(data.get("verify", DEFAULTS["verify"])),
         commit=step_from_dict(data.get("commit", DEFAULTS["commit"])),
         binary_overrides=dict(data.get("binary_overrides", {})),
-        agent_memory_file=str(data.get("agent_memory_file", "AGENT.md")),
+        agent_memory_file=str(data.get("agent_memory_file", "AGENTS.md")),
         fix_unrelated_tests=bool(data.get("fix_unrelated_tests", False)),
         stream_output=bool(data.get("stream_output", False)),
         tmux=bool(data.get("tmux", HAS_TMUX)),

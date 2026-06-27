@@ -4,7 +4,7 @@
   "yolo": true,
   "branch_prefix": "mm",
   "no_merge": true,
-  "agent_memory_file": "AGENT.md",
+  "agent_memory_file": "AGENTS.md",
   "stream_output": false,
   "discover": {
     "agent": "grok",

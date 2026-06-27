@@ -155,10 +155,12 @@ class MiddleManagerLoop:
         mem = self.cfg.repo / self.cfg.agent_memory_file
         if mem.exists():
             return mem.read_text(encoding="utf-8")
-        claude_md = self.cfg.repo / "CLAUDE.md"
-        if claude_md.exists():
-            return claude_md.read_text(encoding="utf-8")
-        return "(no AGENT.md or CLAUDE.md found — create one with repo rules)"
+        # Fallbacks
+        for name in ("AGENTS.md", "AGENT.md", "CLAUDE.md"):
+            fallback_file = self.cfg.repo / name
+            if fallback_file.exists():
+                return fallback_file.read_text(encoding="utf-8")
+        return f"(no {self.cfg.agent_memory_file} or CLAUDE.md found — create one with repo rules)"
 
     def ensure_fix_plan_seed(self, issue_data: dict[str, str]) -> None:
         if self.cfg.mode == "feature" and self.cfg.mission:

@@ -91,7 +91,7 @@ def cmd_agents(cfg: LoopConfig) -> int:
 def cmd_init(cfg: LoopConfig) -> int:
     from .colors import Colors
     state = cfg.state_path()
-    templates = ["fix_plan.md", "AGENT.md"]
+    templates = ["fix_plan.md", "AGENTS.md"]
     for name in templates:
         dest = state / name if name == "fix_plan.md" else cfg.repo / name
         if dest.exists():
@@ -101,7 +101,7 @@ def cmd_init(cfg: LoopConfig) -> int:
             dest.write_text("# fix_plan.md\n\n- [ ] Add your first task here\n", encoding="utf-8")
         else:
             dest.write_text(
-                "# AGENT.md\n\nRepository memory for middle-manager loops.\n"
+                "# AGENTS.md\n\nRepository memory for middle-manager loops.\n"
                 "Add build commands, conventions, and things agents keep forgetting.\n",
                 encoding="utf-8",
             )

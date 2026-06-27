@@ -480,9 +480,9 @@ class MiddleManagerLoop:
 
     def _build_interactive_command(self, agent: str, prompt: str) -> str:
         if agent == "grok":
-            return f"grok --cwd {self.cfg.repo} -p \"{prompt}\""
+            return f"grok --cwd {self.cfg.repo} \"{prompt}\""
         elif agent == "claude":
-            return f"claude -p \"{prompt}\""
+            return f"claude \"{prompt}\""
         elif agent == "crush":
             return f"crush run \"{prompt}\" -c {self.cfg.repo}"
         elif agent == "opencode":
@@ -490,8 +490,8 @@ class MiddleManagerLoop:
         elif agent == "codex":
             return f"codex exec \"{prompt}\""
         elif agent == "agy":
-            return f"agy --print \"{prompt}\""
-        return f"{agent} -p \"{prompt}\""
+            return f"agy --prompt-interactive \"{prompt}\""
+        return f"{agent} \"{prompt}\""
 
     def run(self) -> int:
         from .colors import Colors

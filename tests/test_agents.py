@@ -267,5 +267,95 @@ class TestAgents(unittest.TestCase):
             self.assertIn("- [x] Task 1", updated)
             self.assertIn("- [ ] Task 2", updated) # Task 2 remains unchecked!
 
+    def test_build_command_interactive(self):
+        from pathlib import Path
+        from middle_manager.agents import build_command
+        
+        # Test grok in interactive mode
+        run_grok = build_command(
+            "grok",
+            "test prompt",
+            cwd=Path("/tmp"),
+            interactive=True,
+            prompt_file=Path("/tmp/prompt.md")
+        )
+        # Should not use --prompt-file, should append prompt directly as argument
+        self.assertNotIn("--prompt-file", run_grok.command)
+        self.assertIn("test prompt", run_grok.command)
+        self.assertNotIn("-p", run_grok.command)
+        
+        # Test claude in interactive mode
+        run_claude = build_command(
+            "claude",
+            "test prompt",
+            cwd=Path("/tmp"),
+            interactive=True
+        )
+        self.assertIn("test prompt", run_claude.command)
+        self.assertNotIn("-p", run_claude.command)
+
+    def test_build_interactive_command(self):
+        from pathlib import Path
+        from middle_manager.config import LoopConfig
+        from middle_manager.loop import MiddleManagerLoop
+        
+        cfg = LoopConfig(repo=Path("/tmp"))
+        loop = MiddleManagerLoop(cfg)
+        
+        grok_cmd = loop._build_interactive_command("grok", "test prompt")
+        self.assertIn("grok", grok_cmd)
+        self.assertNotIn("-p", grok_cmd)
+        self.assertIn('"test prompt"', grok_cmd)
+        
+        claude_cmd = loop._build_interactive_command("claude", "test prompt")
+        self.assertNotIn("-p", claude_cmd)
+        self.assertIn('"test prompt"', claude_cmd)
+        
+        agy_cmd = loop._build_interactive_command("agy", "test prompt")
+        self.assertNotIn("--print", agy_cmd)
+        self.assertIn("--prompt-interactive", agy_cmd)
+
+    def test_draw_status_block_tmux_labels(self):
+        import io
+        from unittest.mock import patch
+        from middle_manager.agents import draw_status_block
+        
+        with patch('sys.stdout', new=io.StringIO()) as mock_stdout:
+            draw_status_block(
+                agent_name="EXECUTE STEP (GROK)",
+                status_str="running",
+                elapsed_str="00:01",
+                cpu_str="0.0%",
+                active_procs=1,
+                active_sockets=0,
+                changed_files=[],
+                last_printed_lines_cnt=0,
+                last_line="",
+                tmux_session="mm-execute",
+                interactive=True
+            )
+            output = mock_stdout.getvalue()
+            self.assertIn("Attach Session:  tmux attach-session -t mm-execute (Interactive TUI)", output)
+            self.assertIn("Loop is waiting for you to attach and interact", output)
+            
+        with patch('sys.stdout', new=io.StringIO()) as mock_stdout:
+            draw_status_block(
+                agent_name="EXECUTE STEP (GROK)",
+                status_str="running",
+                elapsed_str="00:01",
+                cpu_str="0.0%",
+                active_procs=1,
+                active_sockets=0,
+                changed_files=[],
+                last_printed_lines_cnt=0,
+                last_line="",
+                tmux_session="mm-execute",
+                interactive=False
+            )
+            output = mock_stdout.getvalue()
+            self.assertIn("Attach Session:  tmux attach-session -t mm-execute (Headless logs; will exit)", output)
+
+
+
 
 

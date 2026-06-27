@@ -106,6 +106,7 @@ class AgentRun:
     extra_args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
     timeout: int | None = None
+    interactive: bool = False
 
 
 def resolve_binary(name: str, override: str | None = None) -> str | None:
@@ -157,9 +158,7 @@ def build_command(
         cmd.extend(spec.extra_yolo)
 
     if interactive and agent in ("grok", "claude", "crush", "opencode", "agy"):
-        if prompt_file and spec.prompt_file_flag:
-            cmd.extend([spec.prompt_file_flag, str(prompt_file)])
-        elif agent == "agy":
+        if agent == "agy":
             cmd.extend(["--prompt-interactive", prompt])
         elif spec.prompt_mode == "arg":
             cmd.append(prompt)
@@ -177,6 +176,7 @@ def build_command(
             yolo=yolo,
             extra_args=list(extras),
             env=env,
+            interactive=interactive,
         )
 
     use_prompt_file = prompt_file and spec.prompt_file_flag and spec.prompt_mode != "print_flag"
@@ -218,6 +218,7 @@ def build_command(
         yolo=yolo,
         extra_args=list(extras),
         env=env,
+        interactive=interactive,
     )
 
 
@@ -395,7 +396,8 @@ def draw_status_block(
     changed_files: list[str],
     last_printed_lines_cnt: int = 0,
     last_line: str = "",
-    tmux_session: str | None = None
+    tmux_session: str | None = None,
+    interactive: bool = False
 ) -> int:
     import sys
     from .colors import Colors
@@ -408,7 +410,12 @@ def draw_status_block(
     lines.append(Colors.colored(f"  │  Active Sockets:   {active_sockets}", Colors.CYAN))
 
     if tmux_session:
-        lines.append(Colors.colored(f"  │  Attach Session:  tmux attach-session -t {tmux_session}", Colors.GREEN + Colors.BOLD))
+        is_agent_tui = interactive and any(name in agent_name.lower() for name in ("grok", "claude", "agy"))
+        if is_agent_tui:
+            lines.append(Colors.colored(f"  │  Attach Session:  tmux attach-session -t {tmux_session} (Interactive TUI)", Colors.GREEN + Colors.BOLD))
+            lines.append(Colors.colored("  │  ⚠️  Loop is waiting for you to attach and interact in tmux!", Colors.YELLOW + Colors.BOLD))
+        else:
+            lines.append(Colors.colored(f"  │  Attach Session:  tmux attach-session -t {tmux_session} (Headless logs; will exit)", Colors.GREEN + Colors.BOLD))
 
     if last_line:
         cleaned_last_line = strip_ansi(last_line)
@@ -464,6 +471,7 @@ def run_command_monitored(
     dry_run: bool = False,
     tmux: bool = False,
     tmux_session: str | None = None,
+    interactive: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     import sys
     import time
@@ -639,7 +647,8 @@ def run_command_monitored(
                         changed_files=changed_files,
                         last_printed_lines_cnt=last_printed_lines,
                         last_line=last_line,
-                        tmux_session=session_name
+                        tmux_session=session_name,
+                        interactive=interactive
                     )
                 else:
                     new_files_set = set(changed_files)
@@ -699,7 +708,8 @@ def run_command_monitored(
                 changed_files=changed_files,
                 last_printed_lines_cnt=last_printed_lines,
                 last_line=last_line,
-                tmux_session=session_name
+                tmux_session=session_name,
+                interactive=interactive
             )
         else:
             print(Colors.colored(f"  │ [{elapsed_str}] Final status: {status_str}", Colors.CYAN))
@@ -971,7 +981,8 @@ def run_agent(run: AgentRun, *, dry_run: bool = False, stream: bool = True, step
         label=label,
         dry_run=dry_run,
         tmux=tmux,
-        tmux_session=f"mm-{step}{suffix}" if step else f"mm-agent{suffix}"
+        tmux_session=f"mm-{step}{suffix}" if step else f"mm-agent{suffix}",
+        interactive=run.interactive
     )
 
 

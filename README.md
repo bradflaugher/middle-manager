@@ -100,7 +100,13 @@ middle-manager executes steps in the following order:
 * **Last Output**: The latest non-empty stdout line written by the agent.
 * **Changed Files**: Live list of files modified, added, or deleted in the repository.
 
-* **Tmux Execution (Highly Recommended)**: If `tmux` is installed, middle-manager automatically runs all agents inside background tmux sessions. This preserves their native pseudo-terminal (PTY) environment—enabling full colored TUIs, spinners, and interactive prompt choices—while keeping the main terminal clean with the live monitoring dashboard. The dashboard displays the exact attach command (e.g., `tmux attach-session -t mm-execute-<id>`) so you can attach, inspect the rich agent terminal interface, or interact at any time. (Pass `--no-tmux` to disable it.)
+* **Tmux Execution (Highly Recommended)**: If `tmux` is installed, middle-manager automatically runs all agents inside background tmux sessions. This preserves their native pseudo-terminal (PTY) environment—enabling full colored TUIs, spinners, and interactive prompt choices—while keeping the main terminal clean with the live monitoring dashboard. 
+  
+  The dashboard displays the exact attach command (e.g., `tmux attach-session -t mm-execute-<id>`) along with an indicator showing the session type:
+  * **`(Interactive TUI)`**: Starts the agent in its full interactive TUI mode (available on a best-effort basis for agents supporting interactive CLI prompts: **`grok`**, **`claude`**, and **`agy`** during the `execute` step under `--interactive` or `--wizard` modes).
+  * **`(Headless logs; will exit)`**: Runs non-interactively for automated loop steps (e.g., `discover` or `verify`) or for agents that do not support interactive prompt args (e.g., **`crush`** and **`codex`**). Attaching shows running output logs, and the session exits when the task is done.
+  
+  To disable tmux and run normally, pass the `--no-tmux` flag.
 
 All agent output is saved to the state directory (e.g., `.middle-manager/execute_output.txt`) for easy inspectability. To disable the dashboard and stream raw agent output directly to the console, pass the `--stream-output` flag.
 

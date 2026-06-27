@@ -238,7 +238,7 @@ def run_wizard(argv_repo: Path | None = None, mission: str | None = None) -> Loo
 
     yolo = _yes_no("YOLO mode (auto-approve agent permissions)?", default=True)
     dry_run = _yes_no("Dry-run (print commands only)?", default=False)
-    pause_steps = _yes_no("Pause before each step?", default=False)
+    pause_steps = _yes_no("Interactive mode (pause steps and run agent TUI)?", default=last.get("interactive", False))
     fix_unrelated = _yes_no("Allow agents to fix unrelated test failures?", default=last.get("fix_unrelated_tests", False))
 
 

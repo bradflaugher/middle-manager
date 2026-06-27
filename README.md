@@ -4,16 +4,7 @@
 
 Unsupervised multi-agent coding loop that orchestrates your favorite coding CLIs. 
 
-**Bring your own agents.** `middle-manager` dynamically chains **Grok**, **Claude Code**, **Crush**, **Agy**, **Codex**, and **OpenCode** into a tight 4-step software factory. It reads your codebase, maps out a task list, executes fixes, critiques its own work, runs tests, commits, and opens PRs—completely on autopilot.
-
----
-
-## Key Features
-
-- **Dynamic Agent Picking**: No configuration boilerplate. It automatically scans your system (`grok`, `crush`, `agy`, etc.) and routes each step of the pipeline to the best installed tool.
-- **Critic Backpressure**: Real verifier logic. It parses the critique, writes feedback loops, and injects new corrective tasks into the plan on failure, preventing buggy commits.
-- **Git Native**: Autonomously branches, stages, commits, and opens pull requests (but never merges without human approval).
-- **Zero Dependencies**: Pure Python standard library. Fast, lightweight, and sandbox-friendly.
+**Bring your own agents.** middle-manager dynamically chains **Grok**, **Claude Code**, **Crush**, **Agy**, **Codex**, and **OpenCode** into a tight 4-step software factory. It reads your codebase, maps out a task list, executes fixes, critiques its own work, runs tests, commits, and opens PRs—completely on autopilot.
 
 ---
 
@@ -32,26 +23,133 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ---
 
-## Quick Start
+## Cookbook — copy/paste recipes
 
-### 1. Build a new feature fast
-Point the manager at your repo, tell it what to build, and let it rip:
-```bash
-cd ~/my-project
-mm "add a dark mode toggle to the settings screen"
-```
-*What happens:* It autodetects your installed CLIs, plans the feature in `.middle-manager/fix_plan.md`, implements one subtask at a time, runs tests, commits, and loops until complete.
+### Add a feature fast (most common)
 
-### 2. General codebase repair
-Let it hunt down bugs, failing tests, and outdated code:
+Three autodetected agents, your prompt, fresh state every run:
+
 ```bash
-mm --mode repair --test-command "npm test"
+cd ~/your-project
+
+mm quick "add dark mode toggle to settings"
+mm "add Stripe checkout to the pricing page"     # shorthand — identical
+mm quick "add user avatars" --dry-run            # preview agent commands first
 ```
 
-### 3. Burn down your GitHub issues
-Provide issue labels/authors, and it will batch-checkout branch-by-branch, resolve the issue, and open PRs:
+What happens: discover scopes the feature into subtasks → execute implements one item per loop → verify audits + runs tests. State resets each quick run. No wizard, no config file.
+
 ```bash
-mm --author @dependabot --close-issues --issue-limit 5
+# same thing, explicit flags
+mm --steps 3 --mode feature --fresh -m "add OAuth login" --no-wizard
+
+# pick your own agents (when you have them installed)
+mm quick "add webhook handler" \
+  --discover-agent grok \
+  --execute-agent claude \
+  --verify-agent codex \
+  --test-command "npm test"
+```
+
+More feature examples:
+
+```bash
+mm quick "add /health endpoint that returns JSON status"
+mm quick "add pagination to the search results page"
+mm quick "add email validation to the signup form"
+mm quick "refactor auth middleware to use JWT" --max-iterations 8
+mm quick "add Playwright test for the checkout flow" --test-command "npx playwright test"
+```
+
+### Chug through GitHub issues
+
+Requires `gh` authenticated in the repo (`gh auth login`).
+
+**By submitter** — burn down everything `@someuser` filed:
+
+```bash
+cd ~/your-project
+
+mm --author @someuser --close-issues
+mm issues --repo . --author dependabot --close-issues --issue-limit 20
+mm --author @bradflaugher --close-issues --no-pr    # fix + close, skip PR step
+```
+
+**By label:**
+
+```bash
+mm --label bug --close-issues
+mm --label "good first issue" --issue-limit 10 --close-issues
+mm --label enhancement --author @intern --close-issues
+```
+
+**Label + author combo** — e.g. dependabot bugs only:
+
+```bash
+mm --label bug --author dependabot --close-issues --issue-limit 50
+mm issues --repo ~/myapp --label security --author @renovate-bot --close-issues
+```
+
+**Don't auto-close** — open PRs but leave issues open for human review:
+
+```bash
+mm --author @someuser --no-close-issues
+mm --label bug --no-close-issues --steps 4   # full loop with commit agent + PR
+```
+
+**Preview the queue** without running agents:
+
+```bash
+gh issue list --author @someuser --state open --json number,title
+gh issue list --label bug --author dependabot --state open
+mm --author @someuser --dry-run --issue-limit 3
+```
+
+For each issue, middle-manager:
+
+1. Checks out `mm/issue-<number>`
+2. Seeds `fix_plan.md` from the issue body
+3. Runs discover → execute → verify → (commit)
+4. Closes the issue on success (unless `--no-close-issues`)
+
+Per-issue state: `.middle-manager/issues/<number>/`
+
+### Single GitHub issue
+
+```bash
+mm --issue 42
+mm --issue 42 --mission "fix without refactoring anything else"
+mm --issue https://github.com/you/repo/issues/42 --steps 4
+```
+
+### Fix whatever's broken (no specific feature)
+
+Repo-wide discovery — finds failing tests, doc drift, missing CI, etc.:
+
+```bash
+mm --mode repair
+mm --mode repair --mission "focus on Playwright failures only"
+mm --mode repair --test-command "npm run test:ci" --max-iterations 5
+```
+
+### Interactive wizard
+
+When you want prompts instead of flags:
+
+```bash
+mm                    # walks through repo → mode → mission → agents → go
+mm --wizard           # force wizard even with other flags
+```
+
+Wizard defaults to feature mode + 3-step stack. Last choices saved to `~/.config/middle-manager/last.json`.
+
+### Inspect before you YOLO
+
+```bash
+mm agents                              # what's installed on this machine
+mm init --repo .                       # seed AGENT.md + .middle-manager/
+mm status --repo .                     # fix_plan, logs, iteration count
+mm quick "add feature X" --dry-run     # print agent commands, run nothing
 ```
 
 ---
@@ -68,56 +166,129 @@ mm --author @dependabot --close-issues --issue-limit 5
        └──────── tests fail / verifier fail ──┘
 ```
 
-| Step | Job | Default Priority |
-| :--- | :--- | :--- |
-| **1. Discover** | Scans repo + issues, maintains `fix_plan.md` task checklist | `grok` → `claude` → `crush` → `opencode` → `agy` |
-| **2. Execute** | Implements exactly one task from `fix_plan.md` | `claude` → `grok` → `opencode` → `crush` → `agy` |
-| **3. Verify** | Audits diff, checks tests, outputs `VERDICT: PASS/FAIL` | `codex` → `grok` → `claude` → `opencode` → `crush` |
-| **4. Commit** | Updates memory files (`AGENT.md`), commits, pushes, opens PR | `agy` → `grok` → `claude` → `opencode` → `crush` |
+| Step | Default agent | Job |
+|------|---------------|-----|
+| 1. Discover | Grok | Scan repo + issues, maintain `fix_plan.md` |
+| 2. Execute | Claude Code | Implement **exactly one** plan item |
+| 3. Verify | Codex | Critic / backpressure on tests + diff |
+| 4. Commit | Agy | Update AGENT.md, commit, push, open PR (**never merge**) |
+
+---
+
+## Quick reference
+
+| I want to… | Command |
+|------------|---------|
+| Add a feature | `mm quick "add feature XYZ"` |
+| Shorthand feature | `mm "add feature XYZ"` |
+| One GitHub issue | `mm --issue 42` |
+| All issues by user | `mm --author @someuser --close-issues` |
+| All bugs by user | `mm --label bug --author @someuser --close-issues` |
+| Good-first-issues sprint | `mm --label "good first issue" --issue-limit 10 --close-issues` |
+| Fix the codebase generally | `mm --mode repair` |
+| Point at another repo | `mm quick "…" --repo ~/other-project` |
+| Pause between steps | `mm quick "…" -i` |
+| Use a config file | `mm --config examples/quick-feature.json --repo .` |
+
+State lives in `<repo>/.middle-manager/`. Issue queue state is per-issue under `.middle-manager/issues/<number>/`.
+
+---
+
+## Agent YOLO flags
+
+middle-manager passes the right permission-skipping flag per CLI when `--yolo` is on (default):
+
+| Agent | Binary | YOLO flag | Headless invocation |
+|-------|--------|-----------|---------------------|
+| **[Grok](https://docs.x.ai/docs/grok-cli)** | `grok` | `--yolo` (alias: `--always-approve`) | `grok -p PROMPT --yolo --cwd DIR` |
+| **[Claude Code](https://code.claude.com)** | `claude` | `--dangerously-skip-permissions` | `claude -p PROMPT --dangerously-skip-permissions` |
+| **[Codex](https://developers.openai.com/codex/cli)** | `codex` | `--yolo` | `codex exec PROMPT --yolo` |
+| **[Crush](https://github.com/charmbracelet/crush)** | `crush` | None | `crush run PROMPT -c DIR` |
+| **[OpenCode](https://opencode.ai)** | `opencode` | `--dangerously-skip-permissions` | `opencode run PROMPT --dangerously-skip-permissions --dir DIR` |
+| **[Agy](https://antigravity.google/docs/cli-install)** | `agy` | `--dangerously-skip-permissions` | `agy --print PROMPT --dangerously-skip-permissions` |
+
+Not all agents are installed on every box. `mm agents` shows what you have. Override with `--binary claude=/path/to/claude`.
+
+---
+
+## Per-step configuration
+
+Override agents, models, and extra CLI args per step:
+
+```bash
+mm --repo ~/bradflaugher.com \
+  --discover-agent grok --discover-model grok-3 \
+  --execute-agent claude --execute-model claude-sonnet-4-20250514 \
+  --verify-agent grok --verify-args "--check,--effort,high" \
+  --commit-agent agy \
+  --test-command "npm test" \
+  --max-iterations 5
+```
+
+Or use a JSON config:
+
+```bash
+mm --config examples/quick-feature.json --repo ~/project
+mm --config examples/bradflaugher.com.json --repo ~/bradflaugher.com --dry-run
+```
+
+See `config.default.json` for the full schema.
+
+### Example: only grok installed (no claude/codex)
+
+```bash
+mm quick "add resume link to index.html" \
+  --repo ~/bradflaugher.com \
+  --discover-agent grok \
+  --execute-agent grok \
+  --verify-agent grok \
+  --test-command "npm test"
+```
+
+---
+
+## Interactive mode
+
+`-i` / `--interactive` pauses before each step:
+
+```
+middle-manager> c    # continue
+middle-manager> s    # skip step
+middle-manager> a    # list agent availability
+middle-manager> p    # print step config
+middle-manager> q    # quit
+```
 
 ---
 
 ## Commands
 
 | Command | Description |
-| :--- | :--- |
-| `mm` | Starts the interactive configuration wizard |
-| `mm quick "..."` | Starts a 3-agent feature loop (discover → execute → verify) |
-| `mm "..."` | Shorthand for `mm quick "..."` |
-| `mm status` | Shows current checklist, progress, and logs |
-| `mm agents` | Lists detected agents, binary locations, and status |
-| `mm init` | Seeds `AGENT.md` memory file and state directories |
+|---------|-------------|
+| `mm` | Interactive wizard → loop |
+| `mm quick "…"` | 3-agent feature preset |
+| `mm "…"` | Shorthand for `mm quick "…"` |
+| `mm agents` | Show installed agents + YOLO flags |
+| `mm init --repo PATH` | Seed `.middle-manager/` and AGENT.md |
+| `mm status --repo PATH` | Show loop state |
+| `mm issues --author @user` | Issue queue batch mode |
+| `mm install-path` | Print PATH export for installer |
 
 ---
 
-## Advanced Customization
+## Rules of the road
 
-### Override Agents & Models
-```bash
-mm --discover-agent grok --discover-model grok-3 \
-   --execute-agent claude --execute-model claude-3-5-sonnet \
-   --test-command "pytest"
-```
-
-### Run with a JSON config
-Save your settings and run them easily:
-```bash
-mm --config examples/quick-feature.json
-```
-
----
-
-## Rules of the Road
-
-1. **Keep tasks small**: The cleaner the steps, the higher the success rate.
-2. **Review before merging**: The commit agent creates PRs; you decide when they land.
-3. **Write repository memory**: Maintain `AGENT.md` at your repo root. This is the persistent long-term memory where agents check for conventions, build commands, and rules.
-4. **`fix_plan.md` is the source of truth**: The loop reads the top `- [ ]` task from this checklist.
-5. **Tests are backpressure**: Test failures are automatically captured and fed back to the discovery phase.
+1. **One item per loop iteration.** Cramming the context window makes everything worse.
+2. **Don't merge PRs.** The commit step opens PRs; humans merge (or don't).
+3. **Maintain AGENT.md.** Agents are ghosts — repo memory is how they learn.
+4. **fix_plan.md is the source of truth.** Discover writes it; execute reads the top `- [ ]` item.
+5. **Tests are backpressure.** `test_command` runs after verify; failures feed the next discover pass.
 
 ---
 
 ## Architecture
+
+Pure Python 3.10+. No pip dependencies. Subprocesses to agent CLIs. Prompt templates in `middle_manager/prompts/`.
 
 ```
 middle_manager/
@@ -135,4 +306,4 @@ mm.py            # Executable runner script
 
 ---
 
-MIT. No warranty. Use with `--yolo` at your own discretion.
+MIT. No warranty.

@@ -15,6 +15,39 @@ Unsupervised multi-agent coding loop that orchestrates your favorite coding CLIs
 
 ---
 
+## 📸 Terminal Preview
+
+Here is what it looks like when running:
+
+```ansi
+$ mm "add stripe checkout to pricing page"
+
+Target repo: /root/my-project
+Steps: 3 (discover, execute, verify)
+YOLO: True
+
+=== Iteration 1 ===
+▶ grok: grok -p PROMPT --yolo --cwd /root/my-project --check
+discover finished.
+
+Current Plan:
+  [ ] Install and configure stripe SDK
+  [ ] Create checkout endpoint in api/checkout.py
+  [ ] Add payment button to billing UI
+
+▶ grok: grok -p PROMPT --yolo --cwd /root/my-project
+execute finished.
+
+▶ grok: grok -p PROMPT --yolo --cwd /root/my-project
+verify finished.
+Verifier verdict: PASS
+
+✓ Tests passed.
+✓ Committed changes: middle-manager: Install and configure stripe SDK.
+```
+
+---
+
 ## 📦 Install (One-Liner)
 
 ```bash

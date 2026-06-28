@@ -57,7 +57,7 @@ def render_screen_to_image(screen, font_reg, font_bold):
             if cell.reverse:
                 fg_color, bg_color = bg_color, fg_color
                 
-            if bg_color != "#11111B":
+            if bg_color.lower() != "#11111b":
                 draw.rectangle(
                     [x * cell_width, y * cell_height, (x + 1) * cell_width - 1, (y + 1) * cell_height - 1],
                     fill=bg_color
@@ -243,10 +243,22 @@ def main():
     os.close(master_fd)
     
     if frames:
-        frames[0].save(
+        # Combine all frames into a single image to generate a unified palette
+        width, height = frames[0].size
+        combined = Image.new("RGB", (width, height * len(frames)))
+        for idx, frame in enumerate(frames):
+            combined.paste(frame, (0, idx * height))
+        
+        # Quantize the combined image to 256 colors
+        palette_image = combined.quantize(colors=256, method=Image.Quantize.MAXCOVERAGE)
+        
+        # Convert each individual frame using the unified palette
+        p_frames = [frame.quantize(palette=palette_image, dither=Image.Dither.NONE) for frame in frames]
+        
+        p_frames[0].save(
             gif_path,
             save_all=True,
-            append_images=frames[1:],
+            append_images=p_frames[1:],
             duration=durations,
             loop=0
         )

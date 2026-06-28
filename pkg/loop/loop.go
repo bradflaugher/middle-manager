@@ -2,6 +2,8 @@ package loop
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -36,6 +38,12 @@ type MiddleManagerLoop struct {
 	startTime     time.Time
 	ctx           context.Context
 	cancel        context.CancelFunc
+
+	// stall detection — bail when the loop stops making progress.
+	lastSignature string
+	stallCount    int
+	stalled       bool
+	stallReason   string
 }
 
 func NewMiddleManagerLoop(cfg *config.LoopConfig) *MiddleManagerLoop {
@@ -52,6 +60,15 @@ func NewMiddleManagerLoop(cfg *config.LoopConfig) *MiddleManagerLoop {
 		startTime:     time.Now(),
 		ctx:           ctx,
 		cancel:        cancel,
+	}
+}
+
+// Cancel aborts the loop's context, terminating any in-flight agent process
+// group. Called when the operator quits the TUI so control returns immediately
+// instead of blocking on a long-running agent step.
+func (l *MiddleManagerLoop) Cancel() {
+	if l.cancel != nil {
+		l.cancel()
 	}
 }
 
@@ -216,8 +233,6 @@ func (l *MiddleManagerLoop) RunStep(step string, iteration int, issueData map[st
 		l.cfg.Yolo,
 		sc.ExtraArgs,
 		binary,
-		promptFile,
-		l.cfg.Interactive && step == "execute",
 	)
 	if err != nil {
 		return "", -1, err
@@ -237,7 +252,7 @@ func (l *MiddleManagerLoop) RunStep(step string, iteration int, issueData map[st
 		}
 	}
 
-	stdout, exitCode, err := agents.RunAgent(l.ctx, run, l.cfg.DryRun, l.cfg.StreamOutput, step, onUpdate)
+	stdout, exitCode, err := agents.RunAgent(l.ctx, run, l.cfg.DryRun, step, onUpdate)
 
 	outputFile := filepath.Join(l.state, fmt.Sprintf("%s_output.txt", step))
 	l.WriteText(outputFile, stdout)
@@ -357,26 +372,22 @@ func (l *MiddleManagerLoop) RunOnce(iteration int, issueData map[string]string) 
 			existingErr := l.ReadText(l.errorLogPath, "")
 			l.WriteText(l.errorLogPath, fmt.Sprintf("Step %s failed with error: %v\n\n%s", step, err, existingErr))
 
-			errStr := err.Error()
-			if strings.Contains(errStr, "Authentication required") || strings.Contains(errStr, "-32000") {
+			errStr := strings.ToLower(err.Error())
+			stepAgent := sc.Agent
+			if strings.Contains(errStr, "auth") || strings.Contains(errStr, "login") || strings.Contains(errStr, "unauthorized") || strings.Contains(errStr, "api key") {
 				authMsg := []string{
 					"----------------------------------------------------------------",
-					"🔑 CLAUDE AUTHENTICATION ERROR DETECTED",
+					fmt.Sprintf("🔑 %s may not be authenticated.", strings.ToUpper(stepAgent)),
 					"----------------------------------------------------------------",
-					"The Claude ACP adapter (@agentclientprotocol/claude-agent-acp)",
-					"requires an Anthropic API Key to communicate with the model.",
-					"It does NOT support OAuth login sessions from the Claude CLI.",
-					"",
-					"To fix this, please:",
-					"1. Get an API key from the Anthropic Console (console.anthropic.com)",
-					"2. Export it in your terminal environment:",
-					"   export ANTHROPIC_API_KEY=\"your-api-key\"",
-					"3. Re-run middle-manager.",
+					"middle-manager runs each agent as its own CLI. Make sure that CLI",
+					"is logged in / has credentials when run directly, e.g.:",
+					fmt.Sprintf("   %s   (then complete its login flow)", stepAgent),
+					"middle-manager uses whatever auth the agent CLI already has —",
+					"OAuth logins and API keys both work, no extra keys required.",
 					"----------------------------------------------------------------",
 				}
 				for _, line := range authMsg {
 					l.Log(line, colors.Red)
-					l.WriteText(l.errorLogPath, fmt.Sprintf("%s\n", line)+l.ReadText(l.errorLogPath, ""))
 				}
 			}
 		}
@@ -387,6 +398,14 @@ func (l *MiddleManagerLoop) RunOnce(iteration int, issueData map[string]string) 
 				l.Log("❌ Verifier reported CLI error/failure", colors.Red)
 				verifierPassed = false
 			}
+		}
+
+		// Interactive mode: pause after each step so the operator can inspect /
+		// interject before the next one runs.
+		if l.cfg.Interactive && !l.cfg.StreamOutput {
+			l.Log("⏸️  Interactive pause — type /resume (or press p) in the input box to continue.", colors.Yellow)
+			tui.RequestPause()
+			l.checkTUIPause()
 		}
 	}
 
@@ -403,6 +422,22 @@ func (l *MiddleManagerLoop) RunOnce(iteration int, issueData map[string]string) 
 	}
 
 	if !verifierPassed {
+		// No-progress detection: if the working diff AND the verifier feedback are
+		// identical to the previous failing iteration, the loop is spinning. Bail
+		// instead of burning iterations (and tokens) on a fixed point.
+		sig := l.iterationSignature(verifierStdout)
+		if sig != "" && sig == l.lastSignature {
+			l.stallCount++
+			if l.stallCount >= 1 {
+				l.stalled = true
+				l.stallReason = "no progress — working tree and verifier feedback unchanged across iterations"
+				l.Log("🛑 No progress detected (identical diff + verifier feedback). Stopping loop.", colors.Red+colors.Bold)
+				return false
+			}
+		} else {
+			l.stallCount = 0
+		}
+		l.lastSignature = sig
 		return true // Continue loop
 	}
 
@@ -549,6 +584,9 @@ func (l *MiddleManagerLoop) RunUntilComplete() (*LoopResult, error) {
 				l.Log("Loop finished successfully.", colors.Green)
 				return &LoopResult{Success: true, Reason: "completed successfully", PRURL: l.lastPRURL, Iterations: ran}, nil
 			}
+			if l.stalled {
+				return &LoopResult{Success: false, Reason: l.stallReason, PRURL: l.lastPRURL, Iterations: ran}, nil
+			}
 			return &LoopResult{Success: false, Reason: "Stopped by user", PRURL: l.lastPRURL, Iterations: ran}, nil
 		}
 
@@ -581,6 +619,22 @@ func (l *MiddleManagerLoop) ResetLoopState() {
 			}
 		}
 	}
+}
+
+// iterationSignature fingerprints the current working tree diff plus the
+// verifier's feedback, so the loop can detect when it is no longer making
+// progress (same diff + same critique twice running).
+func (l *MiddleManagerLoop) iterationSignature(verifierStdout string) string {
+	diff := ""
+	if gitops.RepoIsGit(l.cfg.Repo) {
+		diff, _, _, _ = gitops.RunGit(l.cfg.Repo, "diff", "HEAD")
+	}
+	combined := diff + "\x00" + strings.TrimSpace(verifierStdout)
+	if strings.TrimSpace(combined) == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(combined))
+	return hex.EncodeToString(sum[:])
 }
 
 func (l *MiddleManagerLoop) branchName() string {

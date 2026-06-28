@@ -53,6 +53,15 @@ type LoopConfig struct {
 	StreamOutput      bool              `json:"stream_output"`
 	BatchSize         int               `json:"batch_size"`
 
+	// Merge mode — drain ready-to-merge open PRs.
+	MergeAuthor        string `json:"merge_author"`
+	MergeLabel         string `json:"merge_label"`
+	MergePRNumber      int    `json:"merge_pr_number"` // 0 = all matching
+	MergeMethod        string `json:"merge_method"` // squash | merge | rebase
+	MergeLimit         int    `json:"merge_limit"`
+	MergeRequireChecks bool   `json:"merge_require_checks"`
+	MergeDeleteBranch  bool   `json:"merge_delete_branch"`
+
 	// Interactive Wizard overrides
 	Wizard   bool
 	NoWizard bool
@@ -69,7 +78,10 @@ func NewDefaultConfig() *LoopConfig {
 		StreamOutput:    false,
 		BatchSize:       1,
 		Fresh:           true,
-		BinaryOverrides: make(map[string]string),
+		MergeMethod:        "squash",
+		MergeLimit:         30,
+		MergeRequireChecks: true,
+		BinaryOverrides:    make(map[string]string),
 		Discover: StepConfig{
 			Agent:   "claude",
 			Enabled: true,
@@ -263,7 +275,7 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 	var restArgs []string
 
 	cliCommands := map[string]bool{
-		"run": true, "quick": true, "agents": true, "init": true, "status": true, "issues": true, "install-path": true,
+		"run": true, "quick": true, "agents": true, "init": true, "status": true, "issues": true, "install-path": true, "merge": true,
 	}
 
 	if len(args) > 0 {
@@ -450,6 +462,43 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 			bs, _ := strconv.Atoi(restArgs[i+1])
 			cfg.BatchSize = bs
 			i++
+		// Any --merge-* flag implies merge mode, so modifiers like
+		// --merge-method work on their own and never silently no-op.
+		case arg == "--merge-prs":
+			cfg.Mode = "merge"
+		case arg == "--merge-author" && i+1 < len(restArgs):
+			cfg.MergeAuthor = restArgs[i+1]
+			cfg.Mode = "merge"
+			i++
+		case arg == "--merge-label" && i+1 < len(restArgs):
+			cfg.MergeLabel = restArgs[i+1]
+			cfg.Mode = "merge"
+			i++
+		case arg == "--merge-pr" && i+1 < len(restArgs):
+			n, _ := strconv.Atoi(restArgs[i+1])
+			cfg.MergePRNumber = n
+			cfg.Mode = "merge"
+			i++
+		case arg == "--merge-method" && i+1 < len(restArgs):
+			cfg.MergeMethod = restArgs[i+1]
+			cfg.Mode = "merge"
+			i++
+		case arg == "--merge-limit" && i+1 < len(restArgs):
+			n, _ := strconv.Atoi(restArgs[i+1])
+			if n > 0 {
+				cfg.MergeLimit = n
+			}
+			cfg.Mode = "merge"
+			i++
+		case arg == "--require-checks":
+			cfg.MergeRequireChecks = true
+			cfg.Mode = "merge"
+		case arg == "--no-require-checks":
+			cfg.MergeRequireChecks = false
+			cfg.Mode = "merge"
+		case arg == "--delete-branch":
+			cfg.MergeDeleteBranch = true
+			cfg.Mode = "merge"
 		case strings.HasPrefix(arg, "--discover-"):
 			parseStepOverride(&cfg.Discover, strings.TrimPrefix(arg, "--discover-"), &i, restArgs)
 		case strings.HasPrefix(arg, "--execute-"):
@@ -476,6 +525,10 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 		if cfg.Mission == "" {
 			cfg.Mission = promptText
 		}
+	}
+
+	if command == "merge" {
+		cfg.Mode = "merge"
 	}
 
 	if command == "quick" {

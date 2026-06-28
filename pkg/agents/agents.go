@@ -1,11 +1,10 @@
 package agents
 
 import (
-	"bytes"
+	"bufio"
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,94 +15,94 @@ import (
 	"time"
 
 	"github.com/bradflaugher/middle-manager/pkg/gitops"
-	"github.com/coder/acp-go-sdk"
 )
 
+// AgentNames is the ordered roster of coding-agent CLIs middle-manager can stack.
 var AgentNames = []string{"grok", "claude", "codex", "opencode", "agy"}
 
+// AgentSpec describes how to invoke one coding-agent CLI in plain headless mode.
+//
+// middle-manager runs every agent as an ordinary subprocess — "the stack" — and
+// streams its stdout/stderr live. No Agent Client Protocol, no third-party
+// adapters, no API-key-only auth paths: just the CLI each agent already ships,
+// driven the way you'd drive it by hand.
 type AgentSpec struct {
-	Name         string
-	Binary       string
-	YoloFlag     string
-	YoloPosition string // "before_prompt" | "after_binary" | "extra" | "before_subcommand"
-	PromptMode   string // "arg" | "stdin" | "print_flag"
-	PrintFlag    string
-	ModelFlag    string
-	CwdFlag      string
-	Subcommand   []string
-	ExtraYolo    []string
-	Notes        string
+	Name string
+	// Binary is the executable name resolved on PATH.
+	Binary string
+	// Subcommand is inserted right after the binary (e.g. {"run"}, {"exec"}).
+	Subcommand []string
+	// PrintFlag, when set, carries the prompt as its value (grok/claude/agy: "-p").
+	// When empty, the prompt is appended as the trailing positional argument
+	// (opencode, codex).
+	PrintFlag string
+	// YoloFlags are appended when auto-approve / unattended execution is on.
+	YoloFlags []string
+	// ModelFlag selects a model when one is configured.
+	ModelFlag string
+	// CwdFlag passes the working directory as a flag. cmd.Dir is set regardless,
+	// so this is only for agents that also want it spelled out explicitly.
+	CwdFlag string
+	// ExtraArgs are always-on flags for this agent.
+	ExtraArgs []string
+	Notes     string
 }
 
 var AgentSpecs = map[string]AgentSpec{
 	"grok": {
-		Name:         "grok",
-		Binary:       "grok",
-		YoloFlag:     "--yolo",
-		YoloPosition: "before_prompt",
-		PromptMode:   "arg",
-		PrintFlag:    "-p",
-		ModelFlag:    "-m",
-		CwdFlag:      "--cwd",
-		ExtraYolo:    []string{"--always-approve"},
-		Notes:        "Headless: grok -p PROMPT --yolo --cwd DIR. Alias: --always-approve",
+		Name:      "grok",
+		Binary:    "grok",
+		PrintFlag: "-p",
+		YoloFlags: []string{"--always-approve"},
+		ModelFlag: "-m",
+		CwdFlag:   "--cwd",
+		Notes:     "xAI Grok — grok -p PROMPT --cwd DIR --always-approve",
 	},
 	"claude": {
-		Name:         "claude",
-		Binary:       "claude",
-		YoloFlag:     "--dangerously-skip-permissions",
-		YoloPosition: "before_prompt",
-		PromptMode:   "arg",
-		PrintFlag:    "-p",
-		ModelFlag:    "--model",
-		CwdFlag:      "",
-		Notes:        "Claude Code via @agentclientprotocol/claude-agent-acp (https://github.com/agentclientprotocol/agent-client-protocol)",
-	},
-	"codex": {
-		Name:         "codex",
-		Binary:       "codex",
-		YoloFlag:     "--yolo",
-		YoloPosition: "before_prompt",
-		Subcommand:   []string{"exec"},
-		PromptMode:   "arg",
-		ModelFlag:    "-m",
-		CwdFlag:      "",
-		Notes:        "OpenAI Codex CLI via acp-adapter (https://github.com/beyond5959/acp-adapter)",
+		Name:      "claude",
+		Binary:    "claude",
+		PrintFlag: "-p",
+		YoloFlags: []string{"--dangerously-skip-permissions"},
+		ModelFlag: "--model",
+		Notes:     "Claude Code (headless, OAuth login) — claude -p PROMPT --dangerously-skip-permissions",
 	},
 	"opencode": {
-		Name:         "opencode",
-		Binary:       "opencode",
-		YoloFlag:     "--dangerously-skip-permissions",
-		YoloPosition: "before_prompt",
-		Subcommand:   []string{"run"},
-		PromptMode:   "arg",
-		ModelFlag:    "-m",
-		CwdFlag:      "--dir",
-		Notes:        "opencode run PROMPT --dangerously-skip-permissions --dir DIR",
+		Name:       "opencode",
+		Binary:     "opencode",
+		Subcommand: []string{"run"},
+		YoloFlags:  []string{"--dangerously-skip-permissions"},
+		ModelFlag:  "-m",
+		CwdFlag:    "--dir",
+		Notes:      "opencode run PROMPT --dir DIR --dangerously-skip-permissions",
+	},
+	"codex": {
+		Name:       "codex",
+		Binary:     "codex",
+		Subcommand: []string{"exec"},
+		YoloFlags:  []string{"--dangerously-bypass-approvals-and-sandbox"},
+		ModelFlag:  "-m",
+		CwdFlag:    "-C",
+		Notes:      "OpenAI Codex — codex exec PROMPT -C DIR --dangerously-bypass-approvals-and-sandbox",
 	},
 	"agy": {
-		Name:         "agy",
-		Binary:       "agy",
-		YoloFlag:     "--always-approve",
-		YoloPosition: "before_prompt",
-		PromptMode:   "arg",
-		PrintFlag:    "-p",
-		ModelFlag:    "-m",
-		CwdFlag:      "--cwd",
-		Notes:        "Google Antigravity CLI via agy-acp (https://github.com/hicder/agy-acp)",
+		Name:      "agy",
+		Binary:    "agy",
+		PrintFlag: "-p",
+		YoloFlags: []string{"--dangerously-skip-permissions"},
+		ModelFlag: "--model",
+		Notes:     "Google Antigravity (agy) — agy -p PROMPT --dangerously-skip-permissions",
 	},
 }
 
 type AgentRun struct {
-	Agent       string
-	Command     []string
-	Prompt      string
-	Cwd         string
-	Model       string
-	Yolo        bool
-	ExtraArgs   []string
-	Env         []string
-	Interactive bool
+	Agent     string
+	Command   []string
+	Prompt    string
+	Cwd       string
+	Model     string
+	Yolo      bool
+	ExtraArgs []string
+	Env       []string
 }
 
 func ResolveBinary(name string, override string) string {
@@ -131,6 +130,9 @@ func AgentAvailable(name string, binaryOverride string) bool {
 	return ResolveBinary(name, binaryOverride) != ""
 }
 
+// BuildCommand assembles the argv for a single headless agent invocation.
+// It never builds a shell string — every element is a discrete argv entry, so a
+// prompt containing shell metacharacters cannot escape into the shell.
 func BuildCommand(
 	agent string,
 	prompt string,
@@ -139,8 +141,6 @@ func BuildCommand(
 	yolo bool,
 	extraArgs []string,
 	binaryOverride string,
-	promptFile string,
-	interactive bool,
 ) (*AgentRun, error) {
 	spec, ok := AgentSpecs[agent]
 	if !ok {
@@ -153,126 +153,187 @@ func BuildCommand(
 	}
 
 	cmd := []string{binary}
-	extras := append([]string{}, extraArgs...)
-
-	if yolo && spec.YoloPosition == "before_subcommand" {
-		if spec.YoloFlag != "" {
-			cmd = append(cmd, spec.YoloFlag)
-		}
-	}
-
 	cmd = append(cmd, spec.Subcommand...)
 
-	if yolo && (spec.YoloPosition == "after_binary" || spec.YoloPosition == "before_prompt") {
-		if spec.YoloFlag != "" {
-			cmd = append(cmd, spec.YoloFlag)
-		}
-	}
-
-	if yolo && spec.YoloPosition == "extra" {
-		cmd = append(cmd, spec.ExtraYolo...)
-	}
-
-	if interactive && (agent == "grok" || agent == "claude" || agent == "opencode") {
-		if spec.PromptMode == "arg" {
-			cmd = append(cmd, prompt)
-		}
-		cmd = append(cmd, extras...)
-		if model != "" && spec.ModelFlag != "" {
-			cmd = append(cmd, spec.ModelFlag, model)
-		}
-		if spec.CwdFlag != "" {
-			cmd = append(cmd, spec.CwdFlag, cwd)
-		}
-		return &AgentRun{
-			Agent:       agent,
-			Command:     cmd,
-			Prompt:      prompt,
-			Cwd:         cwd,
-			Model:       model,
-			Yolo:        yolo,
-			ExtraArgs:   extras,
-			Env:         os.Environ(),
-			Interactive: true,
-		}, nil
-	}
-
-	usePromptFile := promptFile != "" // Python did check: prompt_file and spec.prompt_file_flag and spec.prompt_mode != "print_flag"
-	// Wait, does Python specify a prompt_file_flag for grok?
-	// Yes! Grok spec: prompt_file_flag = "--prompt-file"
-	promptFileFlag := ""
-	if agent == "grok" {
-		promptFileFlag = "--prompt-file"
-	}
-
-	if usePromptFile && promptFileFlag != "" {
-		cmd = append(cmd, promptFileFlag, promptFile)
-	} else if spec.PromptMode == "print_flag" && spec.PrintFlag != "" {
+	promptPlaced := false
+	if spec.PrintFlag != "" {
 		cmd = append(cmd, spec.PrintFlag, prompt)
-	} else if spec.PromptMode == "arg" {
-		if spec.PrintFlag != "" {
-			cmd = append(cmd, spec.PrintFlag)
-		}
-		cmd = append(cmd, prompt)
+		promptPlaced = true
 	}
 
+	if yolo {
+		cmd = append(cmd, spec.YoloFlags...)
+	}
 	if model != "" && spec.ModelFlag != "" {
 		cmd = append(cmd, spec.ModelFlag, model)
 	}
-
 	if spec.CwdFlag != "" {
 		cmd = append(cmd, spec.CwdFlag, cwd)
 	}
+	cmd = append(cmd, spec.ExtraArgs...)
+	cmd = append(cmd, extraArgs...)
 
-	if yolo && spec.YoloPosition != "before_subcommand" && spec.YoloPosition != "after_binary" && spec.YoloPosition != "before_prompt" && spec.YoloPosition != "extra" {
-		if spec.YoloFlag != "" {
-			cmd = append(cmd, spec.YoloFlag)
-		}
-	}
-
-	// opencode: yolo often works as trailing flag too
-	if yolo && agent == "opencode" && spec.YoloFlag != "" {
-		found := false
-		for _, arg := range cmd {
-			if arg == spec.YoloFlag {
-				found = true
-				break
-			}
-		}
-		if !found {
-			cmd = append(cmd, spec.YoloFlag)
-		}
-	}
-
-	cmd = append(cmd, extras...)
-
-	if agent == "claude" && yolo && spec.YoloFlag != "" {
-		found := false
-		for _, arg := range cmd {
-			if arg == spec.YoloFlag {
-				found = true
-				break
-			}
-		}
-		if !found {
-			cmd = append(cmd, spec.YoloFlag)
-		}
+	if !promptPlaced {
+		cmd = append(cmd, prompt)
 	}
 
 	return &AgentRun{
-		Agent:       agent,
-		Command:     cmd,
-		Prompt:      prompt,
-		Cwd:         cwd,
-		Model:       model,
-		Yolo:        yolo,
-		ExtraArgs:   extras,
-		Env:         os.Environ(),
-		Interactive: false,
+		Agent:     agent,
+		Command:   cmd,
+		Prompt:    prompt,
+		Cwd:       cwd,
+		Model:     model,
+		Yolo:      yolo,
+		ExtraArgs: extraArgs,
+		Env:       os.Environ(),
 	}, nil
 }
 
-// GetProcessTreeCPUTicks retrieves cpu ticks for pid and all its descendants on Linux.
+// cleanAgentEnv strips the host Claude Code session variables so a nested
+// `claude` (or any agent that respects them) starts a fresh session with the
+// user's own OAuth login rather than inheriting middle-manager's parent session.
+func cleanAgentEnv(env []string) []string {
+	var cleaned []string
+	for _, envVar := range env {
+		if strings.HasPrefix(envVar, "CLAUDECODE=") ||
+			strings.HasPrefix(envVar, "CLAUDE_CODE_ENTRYPOINT=") ||
+			strings.HasPrefix(envVar, "CLAUDE_CODE_SSE_PORT=") ||
+			strings.HasPrefix(envVar, "CLAUDE_CODE_SESSION_ID=") ||
+			strings.HasPrefix(envVar, "CLAUDE_CODE_CHILD_SESSION=") ||
+			strings.HasPrefix(envVar, "CLAUDE_CODE_EXECPATH=") ||
+			strings.HasPrefix(envVar, "CLAUDE_AGENT_SDK_VERSION=") {
+			continue
+		}
+		cleaned = append(cleaned, envVar)
+	}
+	return cleaned
+}
+
+// RunAgentCLI runs one agent step as a plain subprocess in its own process
+// group, streaming stdout (foreground) and stderr (greyed "thinking") into
+// onUpdate line by line with ANSI stripped. Cancelling ctx terminates the whole
+// group. It returns the accumulated output and the process exit code.
+//
+// Agents spawn their own subprocesses (shells, language servers, test runners);
+// signalling the whole group prevents orphaned, token-burning children from
+// outliving an aborted step.
+func RunAgentCLI(
+	ctx context.Context,
+	run *AgentRun,
+	onUpdate func(text string, isThought bool),
+) (string, int, error) {
+	if len(run.Command) == 0 {
+		return "", -1, fmt.Errorf("empty command for agent %q", run.Agent)
+	}
+
+	cmd := exec.Command(run.Command[0], run.Command[1:]...)
+	cmd.Dir = run.Cwd
+	cmd.Env = cleanAgentEnv(run.Env)
+	setProcGroup(cmd)
+
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", -1, err
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		_ = stdoutPipe.Close()
+		return "", -1, err
+	}
+
+	if err := cmd.Start(); err != nil {
+		_ = stdoutPipe.Close()
+		_ = stderrPipe.Close()
+		return "", -1, fmt.Errorf("start agent %q: %w", run.Agent, err)
+	}
+
+	// On cancellation, SIGTERM the group; escalate to SIGKILL only if the
+	// process hasn't exited within the grace window. The stop channel lets a
+	// clean exit cancel the escalation, so we never signal a reaped (possibly
+	// recycled) PID.
+	stop := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			killProcGroup(cmd, false)
+			select {
+			case <-stop:
+			case <-time.After(4 * time.Second):
+				killProcGroup(cmd, true)
+			}
+		case <-stop:
+		}
+	}()
+
+	var (
+		mu  sync.Mutex
+		buf strings.Builder
+		wg  sync.WaitGroup
+	)
+
+	stream := func(r io.Reader, isThought bool) {
+		defer wg.Done()
+		sc := bufio.NewScanner(r)
+		sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+		for sc.Scan() {
+			line := StripAnsi(sc.Text())
+			mu.Lock()
+			buf.WriteString(line)
+			buf.WriteByte('\n')
+			mu.Unlock()
+			if onUpdate != nil && strings.TrimSpace(line) != "" {
+				onUpdate(line+"\n", isThought)
+			}
+		}
+	}
+
+	wg.Add(2)
+	go stream(stdoutPipe, false)
+	go stream(stderrPipe, true)
+	wg.Wait()
+
+	waitErr := cmd.Wait()
+	close(stop)
+
+	exitCode := 0
+	if waitErr != nil {
+		if exitErr, ok := waitErr.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			exitCode = -1
+		}
+	}
+	if ctx.Err() != nil {
+		// Step was cancelled/aborted by the operator.
+		return buf.String(), 130, ctx.Err()
+	}
+
+	return buf.String(), exitCode, nil
+}
+
+// RunAgent executes an AgentRun (or prints what it would run in dry-run mode).
+func RunAgent(
+	ctx context.Context,
+	run *AgentRun,
+	dryRun bool,
+	step string,
+	onUpdate func(text string, isThought bool),
+) (string, int, error) {
+	if dryRun {
+		msg := fmt.Sprintf("[DRY RUN] %s → %s\n", strings.ToUpper(run.Agent), FormatCmdForDisplay(run.Command))
+		if onUpdate != nil {
+			onUpdate(msg, false)
+		}
+		return msg, 0, nil
+	}
+	return RunAgentCLI(ctx, run, onUpdate)
+}
+
+// ---------------------------------------------------------------------------
+// Process-tree resource accounting (Linux /proc) — feeds the TUI resource panel
+// ---------------------------------------------------------------------------
+
+// GetProcessTreeCPUTicks retrieves cpu ticks for pid and all its descendants.
 func GetProcessTreeCPUTicks(parentPid int) (float64, error) {
 	pids, err := listPids()
 	if err != nil {
@@ -304,18 +365,7 @@ func GetProcessTreeCPUTicks(parentPid int) (float64, error) {
 		pidStats[pid] = utime + stime
 	}
 
-	descendants := make(map[int]bool)
-	descendants[parentPid] = true
-	changed := true
-	for changed {
-		changed = false
-		for pid, ppid := range ppidMap {
-			if descendants[ppid] && !descendants[pid] {
-				descendants[pid] = true
-				changed = true
-			}
-		}
-	}
+	descendants := descendantsOf(parentPid, ppidMap)
 
 	var total float64
 	for pid := range descendants {
@@ -351,19 +401,7 @@ func GetProcessTreeStats(parentPid int) (int, int) {
 		ppidMap[pid] = ppid
 	}
 
-	descendants := make(map[int]bool)
-	descendants[parentPid] = true
-
-	changed := true
-	for changed {
-		changed = false
-		for pid, ppid := range ppidMap {
-			if descendants[ppid] && !descendants[pid] {
-				descendants[pid] = true
-				changed = true
-			}
-		}
-	}
+	descendants := descendantsOf(parentPid, ppidMap)
 
 	totalSockets := 0
 	for pid := range descendants {
@@ -381,6 +419,20 @@ func GetProcessTreeStats(parentPid int) (int, int) {
 	}
 
 	return len(descendants), totalSockets
+}
+
+func descendantsOf(parentPid int, ppidMap map[int]int) map[int]bool {
+	descendants := map[int]bool{parentPid: true}
+	for changed := true; changed; {
+		changed = false
+		for pid, ppid := range ppidMap {
+			if descendants[ppid] && !descendants[pid] {
+				descendants[pid] = true
+				changed = true
+			}
+		}
+	}
+	return descendants
 }
 
 func listPids() ([]int, error) {
@@ -418,485 +470,38 @@ func CalculateCPUPercent(pid int, lastTicks *float64, lastTime time.Time) (float
 	}
 
 	dTicks := currentTicks - *lastTicks
-	clkTck := 100.0 // Default fallback
-	// We can check SC_CLK_TCK on Unix/Linux, but standard is 100
+	const clkTck = 100.0 // SC_CLK_TCK is 100 on Linux
 	cpuPercent := (dTicks / (clkTck * dt)) * 100.0
 	return cpuPercent, currentTicks, currentTime
 }
 
+var ansiRe = regexp.MustCompile(`\x1B(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])`)
+
 func StripAnsi(text string) string {
-	re := regexp.MustCompile(`\x1B(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])`)
-	return re.ReplaceAllString(text, "")
+	return ansiRe.ReplaceAllString(text, "")
 }
 
 func FormatCmdForDisplay(command []string) string {
 	quoted := make([]string, 0, len(command))
 	for _, arg := range command {
 		if strings.Contains(arg, "\n") || len(arg) > 150 {
-			lines := strings.Split(arg, "\n")
-			first := lines[0]
-			if len(first) > 120 {
-				first = first[:120] + "..."
+			first := strings.SplitN(arg, "\n", 2)[0]
+			if len(first) > 80 {
+				first = first[:80]
 			}
-			quoted = append(quoted, fmt.Sprintf("%q... [truncated prompt]", first))
+			quoted = append(quoted, fmt.Sprintf("%q…[prompt]", first))
+		} else if strings.ContainsAny(arg, " \"'") {
+			quoted = append(quoted, fmt.Sprintf("%q", arg))
 		} else {
-			if strings.Contains(arg, " ") || strings.Contains(arg, "\"") || strings.Contains(arg, "'") {
-				quoted = append(quoted, fmt.Sprintf("%q", arg))
-			} else {
-				quoted = append(quoted, arg)
-			}
+			quoted = append(quoted, arg)
 		}
 	}
 	return strings.Join(quoted, " ")
 }
 
-func GetACPCommand(agent string, binaryOverride string) []string {
-	binary := binaryOverride
-	if agent == "grok" {
-		binName := binary
-		if binName == "" {
-			binName = "grok"
-		}
-		_, err := exec.LookPath(binName)
-		if err != nil {
-			if _, err2 := exec.LookPath("agent"); err2 == nil {
-				binName = "agent"
-			}
-		}
-		return []string{binName, "agent", "stdio"}
-	} else if agent == "opencode" {
-		binName := binary
-		if binName == "" {
-			binName = "opencode"
-		}
-		return []string{binName, "acp"}
-	} else if agent == "claude" {
-		return []string{"npx", "-y", "@agentclientprotocol/claude-agent-acp"}
-	} else if agent == "codex" {
-		binName := "acp-adapter"
-		if binary != "" && !strings.Contains(binary, "codex") {
-			binName = binary
-		}
-		return []string{binName, "--adapter", "codex"}
-	} else if agent == "agy" {
-		binName := "agy-acp"
-		if binary != "" && !strings.Contains(binary, "agy") {
-			binName = binary
-		}
-		return []string{binName}
-	}
-	binName := binary
-	if binName == "" {
-		binName = agent
-	}
-	return []string{binName}
-}
-
-// middleManagerClient implements acp.Client to run agents headlessly and track progress.
-type middleManagerClient struct {
-	cwd       string
-	onUpdate  func(text string, isThought bool)
-	terminals map[string]*terminalInfo
-	mu        sync.Mutex
-}
-
-type terminalInfo struct {
-	cmd      *exec.Cmd
-	output   *bytes.Buffer
-	mu       sync.Mutex
-	exitCode int
-	done     chan struct{}
-}
-
-func (c *middleManagerClient) ReadTextFile(ctx context.Context, params acp.ReadTextFileRequest) (acp.ReadTextFileResponse, error) {
-	path := params.Path
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(c.cwd, path)
-	}
-
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return acp.ReadTextFileResponse{}, fmt.Errorf("read %s: %w", path, err)
-	}
-	content := string(b)
-
-	// Apply line and limit if specified
-	if params.Line != nil || params.Limit != nil {
-		lines := strings.Split(content, "\n")
-		start := 0
-		if params.Line != nil && *params.Line > 0 {
-			start = *params.Line - 1
-			if start > len(lines) {
-				start = len(lines)
-			}
-		}
-		end := len(lines)
-		if params.Limit != nil && *params.Limit > 0 {
-			end = start + *params.Limit
-			if end > len(lines) {
-				end = len(lines)
-			}
-		}
-		content = strings.Join(lines[start:end], "\n")
-	}
-
-	return acp.ReadTextFileResponse{Content: content}, nil
-}
-
-func (c *middleManagerClient) WriteTextFile(ctx context.Context, params acp.WriteTextFileRequest) (acp.WriteTextFileResponse, error) {
-	path := params.Path
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(c.cwd, path)
-	}
-
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return acp.WriteTextFileResponse{}, fmt.Errorf("mkdir %s: %w", dir, err)
-	}
-
-	if err := os.WriteFile(path, []byte(params.Content), 0644); err != nil {
-		return acp.WriteTextFileResponse{}, fmt.Errorf("write %s: %w", path, err)
-	}
-	return acp.WriteTextFileResponse{}, nil
-}
-
-func (c *middleManagerClient) RequestPermission(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
-	// Auto-approve all permissions for YOLO execution
-	var optionId acp.PermissionOptionId
-	if len(params.Options) > 0 {
-		optionId = params.Options[0].OptionId
-	}
-	return acp.RequestPermissionResponse{
-		Outcome: acp.RequestPermissionOutcome{
-			Selected: &acp.RequestPermissionOutcomeSelected{
-				OptionId: optionId,
-			},
-		},
-	}, nil
-}
-
-func (c *middleManagerClient) SessionUpdate(ctx context.Context, params acp.SessionNotification) error {
-	u := params.Update
-	if u.AgentThoughtChunk != nil {
-		text := ""
-		if u.AgentThoughtChunk.Content.Text != nil {
-			text = u.AgentThoughtChunk.Content.Text.Text
-		}
-		if text != "" && c.onUpdate != nil {
-			c.onUpdate(text, true)
-		}
-	} else if u.AgentMessageChunk != nil {
-		content := u.AgentMessageChunk.Content
-		text := ""
-		if content.Text != nil {
-			text = content.Text.Text
-		}
-		if text != "" && c.onUpdate != nil {
-			c.onUpdate(text, false)
-		}
-	}
-	return nil
-}
-
-func (c *middleManagerClient) CreateTerminal(ctx context.Context, params acp.CreateTerminalRequest) (acp.CreateTerminalResponse, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	termId := fmt.Sprintf("term_%d", len(c.terminals)+1)
-
-	cmdCwd := c.cwd
-	if params.Cwd != nil && *params.Cwd != "" {
-		cmdCwd = *params.Cwd
-	}
-
-	// Shell invocation for command
-	var cmd *exec.Cmd
-	if len(params.Args) > 0 {
-		cmd = exec.Command(params.Command, params.Args...)
-	} else {
-		cmd = exec.Command("sh", "-c", params.Command)
-	}
-	cmd.Dir = cmdCwd
-
-	// Build environment variables
-	if len(params.Env) > 0 {
-		cmd.Env = os.Environ()
-		for _, e := range params.Env {
-			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", e.Name, e.Value))
-		}
-	}
-
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
-
-	tInfo := &terminalInfo{
-		cmd:    cmd,
-		output: &buf,
-		done:   make(chan struct{}),
-	}
-	c.terminals[termId] = tInfo
-
-	err := cmd.Start()
-	if err != nil {
-		return acp.CreateTerminalResponse{}, fmt.Errorf("start terminal command: %w", err)
-	}
-
-	go func() {
-		err := cmd.Wait()
-		tInfo.mu.Lock()
-		if err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				tInfo.exitCode = exitErr.ExitCode()
-			} else {
-				tInfo.exitCode = -1
-			}
-		} else {
-			tInfo.exitCode = 0
-		}
-		tInfo.mu.Unlock()
-		close(tInfo.done)
-	}()
-
-	return acp.CreateTerminalResponse{TerminalId: termId}, nil
-}
-
-func (c *middleManagerClient) KillTerminal(ctx context.Context, params acp.KillTerminalRequest) (acp.KillTerminalResponse, error) {
-	c.mu.Lock()
-	tInfo, ok := c.terminals[string(params.TerminalId)]
-	c.mu.Unlock()
-	if !ok {
-		return acp.KillTerminalResponse{}, fmt.Errorf("terminal not found: %s", params.TerminalId)
-	}
-	if tInfo.cmd.Process != nil {
-		_ = tInfo.cmd.Process.Kill()
-	}
-	return acp.KillTerminalResponse{}, nil
-}
-
-func (c *middleManagerClient) TerminalOutput(ctx context.Context, params acp.TerminalOutputRequest) (acp.TerminalOutputResponse, error) {
-	c.mu.Lock()
-	tInfo, ok := c.terminals[string(params.TerminalId)]
-	c.mu.Unlock()
-	if !ok {
-		return acp.TerminalOutputResponse{}, fmt.Errorf("terminal not found: %s", params.TerminalId)
-	}
-
-	tInfo.mu.Lock()
-	outStr := tInfo.output.String()
-	tInfo.mu.Unlock()
-
-	select {
-	case <-tInfo.done:
-		exitCode := tInfo.exitCode
-		return acp.TerminalOutputResponse{
-			Output:    outStr,
-			Truncated: false,
-			ExitStatus: &acp.TerminalExitStatus{
-				ExitCode: acp.Ptr(exitCode),
-			},
-		}, nil
-	default:
-		return acp.TerminalOutputResponse{
-			Output:    outStr,
-			Truncated: false,
-		}, nil
-	}
-}
-
-func (c *middleManagerClient) ReleaseTerminal(ctx context.Context, params acp.ReleaseTerminalRequest) (acp.ReleaseTerminalResponse, error) {
-	c.mu.Lock()
-	tInfo, ok := c.terminals[string(params.TerminalId)]
-	if ok {
-		delete(c.terminals, string(params.TerminalId))
-	}
-	c.mu.Unlock()
-
-	if ok && tInfo.cmd.Process != nil {
-		_ = tInfo.cmd.Process.Kill()
-	}
-	return acp.ReleaseTerminalResponse{}, nil
-}
-
-func (c *middleManagerClient) WaitForTerminalExit(ctx context.Context, params acp.WaitForTerminalExitRequest) (acp.WaitForTerminalExitResponse, error) {
-	c.mu.Lock()
-	tInfo, ok := c.terminals[string(params.TerminalId)]
-	c.mu.Unlock()
-	if !ok {
-		return acp.WaitForTerminalExitResponse{}, fmt.Errorf("terminal not found: %s", params.TerminalId)
-	}
-
-	select {
-	case <-tInfo.done:
-		exitCode := tInfo.exitCode
-		return acp.WaitForTerminalExitResponse{
-			ExitCode: acp.Ptr(exitCode),
-		}, nil
-	case <-ctx.Done():
-		return acp.WaitForTerminalExitResponse{}, ctx.Err()
-	}
-}
-
-func cleanAgentEnv(env []string) []string {
-	var cleaned []string
-	for _, envVar := range env {
-		if strings.HasPrefix(envVar, "CLAUDECODE=") ||
-			strings.HasPrefix(envVar, "CLAUDE_CODE_ENTRYPOINT=") ||
-			strings.HasPrefix(envVar, "CLAUDE_CODE_SSE_PORT=") ||
-			strings.HasPrefix(envVar, "CLAUDE_AGENT_SDK_VERSION=") {
-			continue
-		}
-		cleaned = append(cleaned, envVar)
-	}
-	return cleaned
-}
-
-func RunAgentACP(
-	ctx context.Context,
-	agent string,
-	prompt string,
-	cwd string,
-	model string,
-	env []string,
-	extraArgs []string,
-	binaryOverride string,
-	step string,
-	onUpdate func(text string, isThought bool),
-) (string, int, error) {
-	cmdArgs := GetACPCommand(agent, binaryOverride)
-	if model != "" {
-		if agent == "grok" {
-			cmdArgs = append(cmdArgs, "-m", model)
-		}
-	}
-
-	// Spawn agent process
-	cmd := exec.CommandContext(ctx, cmdArgs[0], cmdArgs[1:]...)
-	cmd.Dir = cwd
-	cmd.Env = cleanAgentEnv(env)
-	cmd.Stderr = os.Stderr
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return "", -1, err
-	}
-	defer stdin.Close()
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return "", -1, err
-	}
-
-	if err := cmd.Start(); err != nil {
-		return "", -1, fmt.Errorf("start agent process: %w", err)
-	}
-
-	var accumulatedText []string
-	var mu sync.Mutex
-
-	updateHandler := func(text string, isThought bool) {
-		mu.Lock()
-		accumulatedText = append(accumulatedText, text)
-		mu.Unlock()
-		if onUpdate != nil {
-			onUpdate(text, isThought)
-		}
-	}
-
-	client := &middleManagerClient{
-		cwd:       cwd,
-		onUpdate:  updateHandler,
-		terminals: make(map[string]*terminalInfo),
-	}
-
-	conn := acp.NewClientSideConnection(client, stdin, stdout)
-	conn.SetLogger(slog.New(slog.NewTextHandler(io.Discard, nil))) // suppress internal ACP log spamming
-
-	// Initialize negotiation
-	_, err = conn.Initialize(ctx, acp.InitializeRequest{
-		ProtocolVersion: acp.ProtocolVersionNumber,
-		ClientInfo: &acp.Implementation{
-			Name:    "middle-manager",
-			Version: "1.0.0",
-		},
-		ClientCapabilities: acp.ClientCapabilities{
-			Fs:       acp.FileSystemCapabilities{ReadTextFile: true, WriteTextFile: true},
-			Terminal: true,
-		},
-	})
-	if err != nil {
-		_ = cmd.Process.Kill()
-		return "", -1, fmt.Errorf("ACP initialize failed: %w", err)
-	}
-
-	// Create session
-	sessionResp, err := conn.NewSession(ctx, acp.NewSessionRequest{
-		Cwd:        cwd,
-		McpServers: []acp.McpServer{},
-	})
-	if err != nil {
-		_ = cmd.Process.Kill()
-		return "", -1, fmt.Errorf("ACP session/new failed: %w", err)
-	}
-
-	// Prompt agent
-	_, promptErr := conn.Prompt(ctx, acp.PromptRequest{
-		SessionId: sessionResp.SessionId,
-		Prompt:    []acp.ContentBlock{acp.TextBlock(prompt)},
-	})
-
-	// Close stdin pipe to signal EOF to the agent process and avoid deadlock
-	_ = stdin.Close()
-
-	// Wait for process to exit
-	err = cmd.Wait()
-	exitCode := 0
-	if err != nil {
-		if exitError, ok := err.(*exec.ExitError); ok {
-			exitCode = exitError.ExitCode()
-		} else {
-			exitCode = -1
-		}
-	}
-
-	// Return error if prompt failed or process crashed
-	if promptErr != nil && exitCode == 0 {
-		return strings.Join(accumulatedText, ""), 1, promptErr
-	}
-
-	return strings.Join(accumulatedText, ""), exitCode, nil
-}
-
-func RunAgent(
-	ctx context.Context,
-	run *AgentRun,
-	dryRun bool,
-	stream bool,
-	step string,
-	onUpdate func(text string, isThought bool),
-) (string, int, error) {
-	if dryRun {
-		return fmt.Sprintf("[DRY RUN] Would run agent %s with prompt: %s\n", run.Agent, run.Prompt), 0, nil
-	}
-
-	binaryOverride := ""
-	if len(run.Command) > 0 {
-		binaryOverride = run.Command[0]
-	}
-
-	stdout, exitCode, err := RunAgentACP(
-		ctx,
-		run.Agent,
-		run.Prompt,
-		run.Cwd,
-		run.Model,
-		run.Env,
-		run.ExtraArgs,
-		binaryOverride,
-		step,
-		onUpdate,
-	)
-	return stdout, exitCode, err
-}
+// ---------------------------------------------------------------------------
+// Agent roster / autodetection
+// ---------------------------------------------------------------------------
 
 func ListAgentsStatus(binaryOverrides map[string]string) []map[string]string {
 	rows := []map[string]string{}
@@ -919,7 +524,6 @@ func ListAgentsStatus(binaryOverrides map[string]string) []map[string]string {
 			"agent":     name,
 			"binary":    binaryPath,
 			"available": available,
-			"yolo":      spec.YoloFlag,
 			"notes":     spec.Notes,
 		})
 	}
@@ -940,10 +544,13 @@ func AvailableAgents(binaryOverrides map[string]string) []string {
 	return res
 }
 
+// StepAgentPriority encodes a sensible default agent per loop step, ordered by
+// preference. Each agent is run in plain headless mode, so any of them is a
+// valid choice for any step — these are just opinionated defaults.
 var StepAgentPriority = map[string][]string{
-	"discover": {"grok", "claude", "opencode", "codex", "agy"},
-	"execute":  {"opencode", "claude", "grok", "codex", "agy"},
-	"verify":   {"claude", "grok", "opencode", "codex", "agy"},
+	"discover": {"claude", "grok", "opencode", "codex", "agy"},
+	"execute":  {"opencode", "codex", "claude", "grok", "agy"},
+	"verify":   {"claude", "grok", "codex", "opencode", "agy"},
 	"commit":   {"grok", "opencode", "claude", "codex", "agy"},
 }
 
@@ -964,74 +571,61 @@ func AutodetectAgent(step string, binaryOverrides map[string]string, fallback st
 	return fallback
 }
 
+// AutodetectStepAgents assigns an installed agent to each loop step, preferring
+// to diversify (a different agent per step) before reusing one.
 func AutodetectStepAgents(binaryOverrides map[string]string) map[string]string {
 	installed := AvailableAgents(binaryOverrides)
+	steps := []string{"discover", "execute", "verify", "commit"}
+
 	if len(installed) == 0 {
 		return map[string]string{
-			"discover": "grok",
-			"execute":  "claude",
-			"verify":   "grok",
-			"commit":   "grok",
+			"discover": "claude", "execute": "opencode", "verify": "claude", "commit": "grok",
 		}
 	}
 
 	assigned := make(map[string]string)
-	steps := []string{"discover", "execute", "verify", "commit"}
+	installedSet := make(map[string]bool, len(installed))
+	for _, n := range installed {
+		installedSet[n] = true
+	}
 
 	for _, step := range steps {
-		priorityList := StepAgentPriority[step]
-		if priorityList == nil {
-			priorityList = AgentNames
+		priority := StepAgentPriority[step]
+		if priority == nil {
+			priority = AgentNames
 		}
 		chosen := ""
-		// First pass: try to pick an installed agent that has NOT been assigned to any other step yet
-		for _, name := range priorityList {
-			alreadyAssigned := false
-			for _, assignedAgent := range assigned {
-				if assignedAgent == name {
-					alreadyAssigned = true
-					break
-				}
-			}
-			isInstalled := false
-			for _, inst := range installed {
-				if inst == name {
-					isInstalled = true
-					break
-				}
-			}
-			if isInstalled && !alreadyAssigned {
+		// Prefer an installed agent not yet assigned to another step.
+		for _, name := range priority {
+			if installedSet[name] && !isAssigned(assigned, name) {
 				chosen = name
 				break
 			}
 		}
-
-		// Second pass: pick the highest priority installed agent regardless of duplicate assignment
+		// Otherwise reuse the highest-priority installed agent.
 		if chosen == "" {
-			for _, name := range priorityList {
-				isInstalled := false
-				for _, inst := range installed {
-					if inst == name {
-						isInstalled = true
-						break
-					}
-				}
-				if isInstalled {
+			for _, name := range priority {
+				if installedSet[name] {
 					chosen = name
 					break
 				}
 			}
 		}
-
-		// Third pass: absolute fallback
 		if chosen == "" {
-			chosen = priorityList[0]
+			chosen = priority[0]
 		}
-
 		assigned[step] = chosen
 	}
-
 	return assigned
+}
+
+func isAssigned(assigned map[string]string, name string) bool {
+	for _, v := range assigned {
+		if v == name {
+			return true
+		}
+	}
+	return false
 }
 
 func GetChangedFilesWithStatus(repo string) []string {
@@ -1039,36 +633,33 @@ func GetChangedFilesWithStatus(repo string) []string {
 		return nil
 	}
 	stdout, _, code, err := gitops.RunGit(repo, "status", "--porcelain")
-	if err != nil || code != 0 {
-		return nil
-	}
-	if stdout == "" {
+	if err != nil || code != 0 || stdout == "" {
 		return nil
 	}
 
 	var files []string
-	lines := strings.Split(stdout, "\n")
-	for _, line := range lines {
-		if len(line) > 3 {
-			status := strings.TrimSpace(line[:2])
-			filename := strings.TrimSpace(line[3:])
-			if strings.Contains(filename, " -> ") {
-				parts := strings.Split(filename, " -> ")
-				filename = strings.TrimSpace(parts[len(parts)-1])
-			}
-			statusDesc := "changed"
-			switch status {
-			case "M":
-				statusDesc = "modified"
-			case "A", "??":
-				statusDesc = "new"
-			case "D":
-				statusDesc = "deleted"
-			case "R":
-				statusDesc = "renamed"
-			}
-			files = append(files, fmt.Sprintf("%s (%s)", filename, statusDesc))
+	for _, line := range strings.Split(stdout, "\n") {
+		if len(line) <= 3 {
+			continue
 		}
+		status := strings.TrimSpace(line[:2])
+		filename := strings.TrimSpace(line[3:])
+		if strings.Contains(filename, " -> ") {
+			parts := strings.Split(filename, " -> ")
+			filename = strings.TrimSpace(parts[len(parts)-1])
+		}
+		statusDesc := "changed"
+		switch status {
+		case "M":
+			statusDesc = "modified"
+		case "A", "??":
+			statusDesc = "new"
+		case "D":
+			statusDesc = "deleted"
+		case "R":
+			statusDesc = "renamed"
+		}
+		files = append(files, fmt.Sprintf("%s (%s)", filename, statusDesc))
 	}
 	return files
 }

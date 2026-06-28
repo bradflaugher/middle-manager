@@ -12,9 +12,12 @@ import (
 	"github.com/bradflaugher/middle-manager/pkg/config"
 	"github.com/bradflaugher/middle-manager/pkg/gitops"
 	"github.com/bradflaugher/middle-manager/pkg/loop"
+	"github.com/bradflaugher/middle-manager/pkg/merge"
 	"github.com/bradflaugher/middle-manager/pkg/queue"
 	"github.com/bradflaugher/middle-manager/pkg/tui"
 )
+
+const version = "v0.2.0"
 
 func main() {
 	// Parse CLI Arguments
@@ -35,6 +38,8 @@ func main() {
 		cmdStatus(cfg)
 	case "issues":
 		cmdIssues(cfg)
+	case "merge":
+		os.Exit(merge.NewRunner(cfg).Run())
 	case "run", "quick":
 		cmdRun(cfg)
 	default:
@@ -156,6 +161,10 @@ func cmdRun(cfg *config.LoopConfig) {
 		cfg = wizardCfg
 	}
 
+	if cfg.Mode == "merge" {
+		os.Exit(merge.NewRunner(cfg).Run())
+	}
+
 	if cfg.Mode == "queue" && cfg.IssueQueue != nil {
 		runner, err := queue.NewIssueQueueRunner(cfg)
 		if err != nil {
@@ -212,6 +221,10 @@ func cmdRun(cfg *config.LoopConfig) {
 			os.Exit(1)
 		}
 
+		// The TUI has exited (normal completion or operator quit). Cancel the
+		// loop so any in-flight agent process group is terminated and control
+		// returns immediately rather than blocking on a long agent step.
+		l.Cancel()
 		wg.Wait()
 
 		if loopErr != nil {
@@ -229,43 +242,30 @@ func cmdRun(cfg *config.LoopConfig) {
 }
 
 func printSummaryPanel(cfg *config.LoopConfig, l *loop.MiddleManagerLoop, result *loop.LoopResult) {
+	if result == nil {
+		fmt.Fprintln(os.Stderr, "Loop returned no result.")
+		return
+	}
 	fmt.Println()
-	border := strings.Repeat("=", 60)
-	if result.Success {
-		fmt.Println(colors.Colored(border, colors.Green))
-		fmt.Println(colors.Colored("🎉 SUCCESS: middle-manager loop finished successfully", colors.Green+colors.Bold))
-		fmt.Println(colors.Colored(border, colors.Green))
-		fmt.Printf("  All tasks in plan checked off successfully.\n")
-		fmt.Printf("  Total loop iterations: %d\n", result.Iterations)
-		if result.PRURL != "" {
-			fmt.Printf("  PR URL: %s\n", colors.Colored(result.PRURL, colors.Green+colors.Bold))
-		}
-		fmt.Println(colors.Colored(border, colors.Green))
-	} else {
-		fmt.Println(colors.Colored(border, colors.Yellow))
-		fmt.Println(colors.Colored("⚠️ LOOP ABANDONED / FAILED", colors.Yellow+colors.Bold))
-		fmt.Println(colors.Colored(border, colors.Yellow))
-		fmt.Printf("  Reason: %s\n", colors.Colored(result.Reason, colors.Bold))
-		fmt.Printf("  Total loop iterations: %d\n\n", result.Iterations)
+	fmt.Println(tui.RenderSummaryPanel(result.Success, result.Reason, result.PRURL, result.Iterations, l.TopPlanItem()))
 
+	if !result.Success {
 		sc := cfg.StepFor("execute")
 		promptMsg := fmt.Sprintf("The last task %q failed verification. Please debug and fix.", l.TopPlanItem())
-
-		// Build interactive command suggestion
 		agentCmd := ""
 		switch sc.Agent {
 		case "grok":
-			agentCmd = fmt.Sprintf("grok --cwd %s %q", cfg.Repo, promptMsg)
+			agentCmd = fmt.Sprintf("grok -p %q --cwd %s", promptMsg, cfg.Repo)
 		case "claude":
 			agentCmd = fmt.Sprintf("claude %q", promptMsg)
 		case "opencode":
 			agentCmd = fmt.Sprintf("opencode run %q --dir %s", promptMsg, cfg.Repo)
+		case "codex":
+			agentCmd = fmt.Sprintf("codex exec %q -C %s", promptMsg, cfg.Repo)
 		default:
 			agentCmd = fmt.Sprintf("%s %q", sc.Agent, promptMsg)
 		}
-
-		fmt.Println(colors.Colored("💻 To launch an interactive session with your programmer agent, run:", colors.Cyan))
+		fmt.Println(colors.Colored("\n💻 Pick up where it left off — launch your programmer agent directly:", colors.Cyan))
 		fmt.Println("   " + colors.Colored(agentCmd, colors.Green+colors.Bold))
-		fmt.Println(colors.Colored(border, colors.Yellow))
 	}
 }

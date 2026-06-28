@@ -314,6 +314,198 @@ func CreatePR(repo string, title, body, branch, issueNumber string, dryRun bool)
 	return strings.TrimSpace(stdout.String()), nil
 }
 
+// PullRequest is a normalized view of an open PR for the merge feature.
+type PullRequest struct {
+	Number         int
+	Title          string
+	Author         string
+	HeadRef        string
+	URL            string
+	IsDraft        bool
+	Mergeable      string // MERGEABLE | CONFLICTING | UNKNOWN
+	MergeState	   string // CLEAN | BLOCKED | BEHIND | DIRTY | UNSTABLE | ...
+	ReviewDecision string // APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED | ""
+	ChecksState    string // passing | pending | failing | none
+}
+
+// Mergeable reports whether a PR is safe to auto-merge under our conservative
+// policy. requireChecks gates on CI being green (vs. merely not failing).
+func (pr PullRequest) IsSafeToMerge(requireChecks bool) (bool, string) {
+	if pr.IsDraft {
+		return false, "draft"
+	}
+	if pr.Mergeable == "CONFLICTING" || pr.MergeState == "DIRTY" {
+		return false, "merge conflicts"
+	}
+	if pr.ReviewDecision == "CHANGES_REQUESTED" {
+		return false, "changes requested"
+	}
+	if pr.ChecksState == "failing" {
+		return false, "checks failing"
+	}
+	if requireChecks {
+		switch pr.ChecksState {
+		case "pending":
+			return false, "checks pending"
+		case "failing":
+			return false, "checks failing"
+		}
+		// "passing" and "none" are acceptable when requiring checks.
+	}
+	// mergeStateStatus is the most authoritative signal GitHub gives us.
+	switch pr.MergeState {
+	case "DIRTY":
+		return false, "merge conflicts"
+	case "BEHIND":
+		return false, "branch behind base (needs update)"
+	case "BLOCKED":
+		// Blocked usually means required reviews/checks are missing.
+		if pr.ReviewDecision == "APPROVED" && !requireChecks {
+			return true, "approved"
+		}
+		return false, "blocked by branch protection"
+	}
+	return true, "mergeable"
+}
+
+// ListOpenPRs returns open PRs, optionally filtered by author login and label.
+func ListOpenPRs(repo string, author string, label string, limit int) ([]PullRequest, error) {
+	if !GHAvailable() {
+		return nil, fmt.Errorf("gh CLI not available")
+	}
+	if limit <= 0 {
+		limit = 30
+	}
+	args := []string{"pr", "list", "--state", "open", "--limit", fmt.Sprintf("%d", limit),
+		"--json", "number,title,author,headRefName,url,isDraft,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup"}
+	if author != "" {
+		args = append(args, "--author", strings.TrimPrefix(author, "@"))
+	}
+	if label != "" {
+		args = append(args, "--label", label)
+	}
+
+	cmd := exec.Command("gh", args...)
+	cmd.Dir = repo
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("gh pr list: %s", strings.TrimSpace(stderr.String()))
+	}
+
+	type ghPR struct {
+		Number            int       `json:"number"`
+		Title             string    `json:"title"`
+		Author            struct{ Login string `json:"login"` } `json:"author"`
+		HeadRefName       string    `json:"headRefName"`
+		URL               string    `json:"url"`
+		IsDraft           bool      `json:"isDraft"`
+		Mergeable         string    `json:"mergeable"`
+		MergeStateStatus  string    `json:"mergeStateStatus"`
+		ReviewDecision    string    `json:"reviewDecision"`
+		StatusCheckRollup []prCheck `json:"statusCheckRollup"`
+	}
+
+	var items []ghPR
+	if err := json.Unmarshal(stdout.Bytes(), &items); err != nil {
+		return nil, fmt.Errorf("parse gh pr list: %w", err)
+	}
+
+	prs := make([]PullRequest, 0, len(items))
+	for _, it := range items {
+		prs = append(prs, PullRequest{
+			Number:         it.Number,
+			Title:          it.Title,
+			Author:         it.Author.Login,
+			HeadRef:        it.HeadRefName,
+			URL:            it.URL,
+			IsDraft:        it.IsDraft,
+			Mergeable:      it.Mergeable,
+			MergeState:     it.MergeStateStatus,
+			ReviewDecision: it.ReviewDecision,
+			ChecksState:    rollupChecksState(it.StatusCheckRollup),
+		})
+	}
+	return prs, nil
+}
+
+// prCheck is one entry of a PR's statusCheckRollup (GitHub Actions check runs
+// use Status+Conclusion; legacy commit statuses use State).
+type prCheck struct {
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+	State      string `json:"state"`
+}
+
+func rollupChecksState(checks []prCheck) string {
+	if len(checks) == 0 {
+		return "none"
+	}
+	pending := false
+	for _, c := range checks {
+		// GitHub Actions style: Status COMPLETED + Conclusion.
+		if c.Status != "" && c.Status != "COMPLETED" {
+			pending = true
+			continue
+		}
+		outcome := c.Conclusion
+		if outcome == "" {
+			outcome = c.State // commit-status contexts use State (SUCCESS/PENDING/FAILURE/ERROR)
+		}
+		switch strings.ToUpper(outcome) {
+		case "SUCCESS", "NEUTRAL", "SKIPPED", "":
+			// ok
+		case "PENDING", "QUEUED", "IN_PROGRESS", "EXPECTED":
+			pending = true
+		default:
+			return "failing" // FAILURE, ERROR, CANCELLED, TIMED_OUT, ACTION_REQUIRED, STARTUP_FAILURE
+		}
+	}
+	if pending {
+		return "pending"
+	}
+	return "passing"
+}
+
+// MergePR merges a PR via the gh CLI. It never uses --admin and never
+// force-merges; method is one of squash|merge|rebase.
+func MergePR(repo string, number int, method string, deleteBranch bool, dryRun bool) (string, error) {
+	if method == "" {
+		method = "squash"
+	}
+	methodFlag := "--squash"
+	switch method {
+	case "merge":
+		methodFlag = "--merge"
+	case "rebase":
+		methodFlag = "--rebase"
+	}
+	args := []string{"pr", "merge", fmt.Sprintf("%d", number), methodFlag}
+	if deleteBranch {
+		args = append(args, "--delete-branch")
+	}
+	if dryRun {
+		return fmt.Sprintf("[dry-run] gh %s", strings.Join(args, " ")), nil
+	}
+	if !GHAvailable() {
+		return "", fmt.Errorf("gh CLI not available")
+	}
+	cmd := exec.Command("gh", args...)
+	cmd.Dir = repo
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = strings.TrimSpace(stdout.String())
+		}
+		return "", fmt.Errorf("%s", msg)
+	}
+	return strings.TrimSpace(stdout.String()), nil
+}
+
 func PlanIsComplete(planText string) bool {
 	pending := false
 	lines := strings.Split(planText, "\n")

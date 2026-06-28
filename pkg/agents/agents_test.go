@@ -28,3 +28,46 @@ func TestCleanAgentEnv(t *testing.T) {
 		t.Errorf("cleanAgentEnv() = %v, want %v", result, expected)
 	}
 }
+
+// TestBuildCommand pins the exact headless argv for each agent. These are the
+// commands middle-manager actually shells out to; if a CLI's flags change, this
+// is where it should break loudly.
+func TestBuildCommand(t *testing.T) {
+	const p = "do the thing"
+	const dir = "/repo"
+
+	cases := map[string][]string{
+		"grok":     {"grok", "-p", p, "--always-approve", "--cwd", dir},
+		"claude":   {"claude", "-p", p, "--dangerously-skip-permissions"},
+		"opencode": {"opencode", "run", "--dangerously-skip-permissions", "--dir", dir, p},
+		"codex":    {"codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "-C", dir, p},
+		"agy":      {"agy", "-p", p, "--dangerously-skip-permissions"},
+	}
+
+	for agent, want := range cases {
+		run, err := BuildCommand(agent, p, dir, "", true, nil, "")
+		if err != nil {
+			t.Fatalf("%s: BuildCommand error: %v", agent, err)
+		}
+		if !reflect.DeepEqual(run.Command, want) {
+			t.Errorf("%s argv = %v, want %v", agent, run.Command, want)
+		}
+	}
+}
+
+func TestBuildCommandModelAndNoYolo(t *testing.T) {
+	run, err := BuildCommand("grok", "x", "/repo", "grok-4", false, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"grok", "-p", "x", "-m", "grok-4", "--cwd", "/repo"}
+	if !reflect.DeepEqual(run.Command, want) {
+		t.Errorf("argv = %v, want %v", run.Command, want)
+	}
+}
+
+func TestBuildCommandUnknownAgent(t *testing.T) {
+	if _, err := BuildCommand("bogus", "x", "/repo", "", true, nil, ""); err == nil {
+		t.Error("expected error for unknown agent")
+	}
+}

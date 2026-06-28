@@ -41,10 +41,10 @@ fi
 echo "Compiling middle-manager in Go..."
 (
   cd "${INSTALL_DIR}"
-  # We might need to handle local replacement paths in go.mod
-  # But for a standard user clone we'll compile directly:
   rm -f "${BIN_DIR}/mm"
-  go build -o "${BIN_DIR}/mm" main.go
+  go build -o "${BIN_DIR}/mm" .
+  # Ship the default loop config next to the binary so `mm` finds it anywhere.
+  [[ -f config.default.json ]] && cp -f config.default.json "${BIN_DIR}/config.default.json" || true
 )
 
 # User config dir

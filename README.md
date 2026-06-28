@@ -30,7 +30,7 @@ If you prefer to install manually without the automatic script:
 2. **Build and install the binary**:
    ```bash
    cd ~/.local/share/middle-manager
-   go build -o ~/.local/bin/mm main.go
+   go build -o ~/.local/bin/mm .
    ```
 3. **Create the configuration directory**:
    ```bash
@@ -68,6 +68,9 @@ mm
 | All bugs by user | `mm --label bug --author @someuser --close-issues` |
 | Good-first-issues sprint | `mm --label "good first issue" --issue-limit 10 --close-issues` |
 | Fix the codebase generally | `mm --mode repair` |
+| Merge ready open PRs | `mm merge` |
+| Merge PRs by one author | `mm merge --merge-author @someuser` |
+| Preview a merge run | `mm merge --dry-run` |
 | Point at another repo | `mm quick "…" --repo ~/other-project` |
 | Pause between steps | `mm quick "…" -i` |
 | Use a config file | `mm --config examples/quick-feature.json --repo .` |
@@ -80,7 +83,7 @@ State lives in `<repo>/.middle-manager/`. Issue queue state is per-issue under `
 
 ```text
   ┌──────────────┐
-  │   DISCOVER   │  Grok repo requirements & compile scoping guidelines
+  │   DISCOVER   │  Scope requirements & compile guidelines
   └──────────────┘
          │
          ▼

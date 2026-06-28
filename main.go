@@ -244,8 +244,11 @@ func cmdRun(cfg *config.LoopConfig) {
 			os.Exit(1)
 		}
 
-		printSummaryPanel(cfg, l, result)
-		if result.Success {
+		success := false
+		if result != nil {
+			success = result.Success
+		}
+		if success {
 			os.Exit(0)
 		} else {
 			os.Exit(1)

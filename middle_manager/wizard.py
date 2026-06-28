@@ -32,15 +32,26 @@ def _prompt(text: str, default: str = "", *, required: bool = True) -> str:
 
 def _choose(text: str, options: list[tuple[str, str]], default_key: str) -> str:
     print(f"\n{text}")
-    for key, label in options:
-        mark = "*" if key == default_key else " "
-        print(f"  {mark} [{key}] {label}")
+    mapping = {}
     keys = {k for k, _ in options}
+    
+    for i, (key, label) in enumerate(options, 1):
+        mark = "*" if key == default_key else " "
+        mapping[str(i)] = key
+        # Add first letter as shortcut if not already mapped
+        first_letter = key[0].lower()
+        if first_letter not in mapping:
+            mapping[first_letter] = key
+        mapping[key] = key
+        print(f"  {mark} [{i}] {key:8} {label}")
+        
     while True:
-        raw = input(f"Choice [{default_key}]: ").strip().lower() or default_key
-        if raw in keys:
-            return raw
-        print(f"  Pick one of: {', '.join(sorted(keys))}")
+        raw = input(f"Choice [{default_key}]: ").strip().lower()
+        if not raw:
+            return default_key
+        if raw in mapping:
+            return mapping[raw]
+        print(f"  Pick by number (1-{len(options)}), first letter, or name ({', '.join(sorted(keys))})")
 
 
 def _yes_no(text: str, default: bool = True) -> bool:
@@ -67,14 +78,31 @@ def _pick_agent(step: str, default: str, overrides: dict[str, str]) -> str:
     if default not in available and available:
         default = available[0]
     print(f"\n  {step} agent (default: {default})")
-    print(f"    available: {', '.join(available) or 'none — will dry-run or fail'}")
-    raw = input(f"  Agent [{default}]: ").strip().lower()
-    if not raw:
-        return default
-    if raw in AGENT_NAMES:
+    
+    if not available:
+        print("    available: none — will dry-run or fail")
+        raw = input(f"  Agent [{default}]: ").strip().lower()
+        return raw if raw else default
+
+    mapping = {}
+    for i, name in enumerate(available, 1):
+        mark = "*" if name == default else " "
+        mapping[str(i)] = name
+        # Add first letter as shortcut if not already mapped
+        first_letter = name[0].lower()
+        if first_letter not in mapping:
+            mapping[first_letter] = name
+        mapping[name] = name
+        print(f"    {mark} [{i}] {name}")
+        
+    while True:
+        raw = input(f"  Agent [{default}]: ").strip().lower()
+        if not raw:
+            return default
+        if raw in mapping:
+            return mapping[raw]
+        # Fallback to whatever they typed if it's custom
         return raw
-    print(f"  Unknown agent, using {default}")
-    return default
 
 
 def load_last_config() -> dict:

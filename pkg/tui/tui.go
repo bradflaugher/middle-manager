@@ -682,7 +682,11 @@ func (m *MonitorModel) View() tea.View {
 	// Side-by-side Layout
 	dashPanel := panelBorder.Render(boldStyle.Render(" DASHBOARD \n\n") + dashboard)
 	statsPanel := panelBorder.Render(boldStyle.Render(" RESOURCES \n\n") + stats)
-	s += lipgloss.JoinHorizontal(lipgloss.Top, dashPanel, statsPanel) + "\n\n"
+	s += lipgloss.JoinHorizontal(lipgloss.Top, dashPanel, statsPanel) + "\n"
+	if m.cfg.Tmux && m.currentStep != "" && m.state == "running" {
+		s += accentStyle.Render(fmt.Sprintf(" 💡 Tmux session active. To view native UI, run: tmux attach -t mm-%s\n", m.currentStep))
+	}
+	s += "\n"
 
 	// Plan / Task list
 	s += boldStyle.Render("Current Plan Tasks:") + "\n"

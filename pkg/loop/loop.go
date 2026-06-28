@@ -264,6 +264,7 @@ func (l *MiddleManagerLoop) RunStep(step string, iteration int, issueData map[st
 		binary,
 		promptFile,
 		l.cfg.Interactive && step == "execute",
+		l.cfg.Tmux,
 	)
 	if err != nil {
 		return "", -1, err

@@ -93,6 +93,7 @@ type AgentRun struct {
 	ExtraArgs   []string
 	Env         []string
 	Interactive bool
+	Tmux        bool
 }
 
 func ResolveBinary(name string, override string) string {
@@ -130,6 +131,7 @@ func BuildCommand(
 	binaryOverride string,
 	promptFile string,
 	interactive bool,
+	tmux bool,
 ) (*AgentRun, error) {
 	spec, ok := AgentSpecs[agent]
 	if !ok {
@@ -183,6 +185,7 @@ func BuildCommand(
 			ExtraArgs:   extras,
 			Env:         os.Environ(),
 			Interactive: true,
+			Tmux:        tmux,
 		}, nil
 	}
 
@@ -258,7 +261,35 @@ func BuildCommand(
 		ExtraArgs:   extras,
 		Env:         os.Environ(),
 		Interactive: false,
+		Tmux:        tmux,
 	}, nil
+}
+
+var (
+	ActiveTmuxPIDs   []int
+	ActiveTmuxPIDsMu sync.Mutex
+)
+
+func addActiveTmuxPID(pid int) {
+	ActiveTmuxPIDsMu.Lock()
+	defer ActiveTmuxPIDsMu.Unlock()
+	for _, p := range ActiveTmuxPIDs {
+		if p == pid {
+			return
+		}
+	}
+	ActiveTmuxPIDs = append(ActiveTmuxPIDs, pid)
+}
+
+func removeActiveTmuxPID(pid int) {
+	ActiveTmuxPIDsMu.Lock()
+	defer ActiveTmuxPIDsMu.Unlock()
+	for i, p := range ActiveTmuxPIDs {
+		if p == pid {
+			ActiveTmuxPIDs = append(ActiveTmuxPIDs[:i], ActiveTmuxPIDs[i+1:]...)
+			return
+		}
+	}
 }
 
 // GetProcessTreeCPUTicks retrieves cpu ticks for pid and all its descendants on Linux.
@@ -295,6 +326,12 @@ func GetProcessTreeCPUTicks(parentPid int) (float64, error) {
 
 	descendants := make(map[int]bool)
 	descendants[parentPid] = true
+
+	ActiveTmuxPIDsMu.Lock()
+	for _, pid := range ActiveTmuxPIDs {
+		descendants[pid] = true
+	}
+	ActiveTmuxPIDsMu.Unlock()
 	changed := true
 	for changed {
 		changed = false
@@ -342,6 +379,13 @@ func GetProcessTreeStats(parentPid int) (int, int) {
 
 	descendants := make(map[int]bool)
 	descendants[parentPid] = true
+
+	ActiveTmuxPIDsMu.Lock()
+	for _, pid := range ActiveTmuxPIDs {
+		descendants[pid] = true
+	}
+	ActiveTmuxPIDsMu.Unlock()
+
 	changed := true
 	for changed {
 		changed = false
@@ -844,6 +888,10 @@ func RunAgent(
 		return fmt.Sprintf("[DRY RUN] Would run agent %s with prompt: %s\n", run.Agent, run.Prompt), 0, nil
 	}
 
+	if run.Tmux {
+		return RunAgentTmux(ctx, run, step, onUpdate)
+	}
+
 	binaryOverride := ""
 	if len(run.Command) > 0 {
 		binaryOverride = run.Command[0]
@@ -862,6 +910,170 @@ func RunAgent(
 		onUpdate,
 	)
 	return stdout, exitCode, err
+}
+
+func RunAgentTmux(
+	ctx context.Context,
+	run *AgentRun,
+	step string,
+	onUpdate func(text string, isThought bool),
+) (string, int, error) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		onUpdate("⚠ tmux not found on PATH — running agent normally without tmux\n", false)
+		run.Tmux = false
+		binaryOverride := ""
+		if len(run.Command) > 0 {
+			binaryOverride = run.Command[0]
+		}
+		return RunAgentACP(ctx, run.Agent, run.Prompt, run.Cwd, run.Model, run.Env, run.ExtraArgs, binaryOverride, step, onUpdate)
+	}
+
+	sessionName := fmt.Sprintf("mm-%s", step)
+	// Kill existing session if any
+	_ = exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+
+	mmDir := filepath.Join(run.Cwd, ".middle-manager")
+	_ = os.MkdirAll(mmDir, 0755)
+
+	logPath := filepath.Join(mmDir, fmt.Sprintf("tmux_%s.log", sessionName))
+	exitPath := filepath.Join(mmDir, fmt.Sprintf("tmux_%s.exit", sessionName))
+	scriptPath := filepath.Join(mmDir, fmt.Sprintf("tmux_%s.sh", sessionName))
+
+	// Remove old files
+	_ = os.Remove(logPath)
+	_ = os.Remove(exitPath)
+	_ = os.Remove(scriptPath)
+
+	// Write execution script
+	var scriptContent strings.Builder
+	scriptContent.WriteString("#!/usr/bin/env bash\n")
+	scriptContent.WriteString("set -e\n")
+	for _, envVar := range run.Env {
+		parts := strings.SplitN(envVar, "=", 2)
+		if len(parts) == 2 {
+			escapedVal := strings.ReplaceAll(parts[1], "'", "'\\''")
+			scriptContent.WriteString(fmt.Sprintf("export %s='%s'\n", parts[0], escapedVal))
+		}
+	}
+	var cmdStr strings.Builder
+	for _, arg := range run.Command {
+		escapedArg := "'" + strings.ReplaceAll(arg, "'", "'\\''") + "'"
+		cmdStr.WriteString(escapedArg + " ")
+	}
+	scriptContent.WriteString(cmdStr.String() + "\n")
+
+	err := os.WriteFile(scriptPath, []byte(scriptContent.String()), 0755)
+	if err != nil {
+		return "", -1, fmt.Errorf("write tmux script: %w", err)
+	}
+
+	// Start tmux session
+	tmuxCmd := exec.Command("tmux", "new-session", "-d",
+		"-s", sessionName,
+		"-x", "120",
+		"-y", "40",
+		"-c", run.Cwd,
+		fmt.Sprintf("/bin/bash -c 'sleep 0.1; %s; echo $? > %s'", scriptPath, exitPath),
+	)
+	if err := tmuxCmd.Run(); err != nil {
+		return "", -1, fmt.Errorf("start tmux session: %w", err)
+	}
+
+	// Set remain-on-exit so the pane doesn't close and TUI scrollback is preserved
+	_ = exec.Command("tmux", "set-option", "-t", sessionName, "remain-on-exit", "on").Run()
+
+	// Start piping pane output to log_path
+	_ = exec.Command("tmux", "pipe-pane", "-t", sessionName, fmt.Sprintf("cat > %s", logPath)).Run()
+
+	// Find pane_pid of the newly created session.
+	panePid := -1
+	for i := 0; i < 10; i++ {
+		time.Sleep(100 * time.Millisecond)
+		res, err := exec.Command("tmux", "list-panes", "-t", sessionName, "-F", "#{pane_pid}").Output()
+		if err == nil {
+			val := strings.TrimSpace(string(res))
+			if pid, err := strconv.Atoi(val); err == nil {
+				panePid = pid
+				break
+			}
+		}
+	}
+
+	if panePid != -1 {
+		addActiveTmuxPID(panePid)
+		defer removeActiveTmuxPID(panePid)
+	}
+
+	// Monitor and tail log file
+	var logFile *os.File
+	for i := 0; i < 20; i++ {
+		lf, err := os.Open(logPath)
+		if err == nil {
+			logFile = lf
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	defer func() {
+		if logFile != nil {
+			_ = logFile.Close()
+		}
+		_ = os.Remove(scriptPath)
+		_ = os.Remove(exitPath)
+	}()
+
+	buf := make([]byte, 8192)
+	var logOffset int64 = 0
+
+	for {
+		if logFile != nil {
+			// Read new content from log file
+			fi, err := logFile.Stat()
+			if err == nil && fi.Size() > logOffset {
+				_, _ = logFile.Seek(logOffset, io.SeekStart)
+				n, err := logFile.Read(buf)
+				if n > 0 {
+					onUpdate(string(buf[:n]), false)
+					logOffset += int64(n)
+				}
+				_ = err
+			}
+		}
+
+		// Check if exit file exists
+		if _, err := os.Stat(exitPath); err == nil {
+			exitB, err := os.ReadFile(exitPath)
+			if err == nil {
+				exitStr := strings.TrimSpace(string(exitB))
+				if exitCode, err := strconv.Atoi(exitStr); err == nil {
+					// Read any remaining logs
+					if logFile != nil {
+						fi, err := logFile.Stat()
+						if err == nil && fi.Size() > logOffset {
+							_, _ = logFile.Seek(logOffset, io.SeekStart)
+							for {
+								n, _ := logFile.Read(buf)
+								if n == 0 {
+									break
+								}
+								onUpdate(string(buf[:n]), false)
+							}
+						}
+					}
+					stdoutB, _ := os.ReadFile(logPath)
+					return string(stdoutB), exitCode, nil
+				}
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			_ = exec.Command("tmux", "kill-session", "-t", sessionName).Run()
+			return "", -1, ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
 }
 
 func ListAgentsStatus(binaryOverrides map[string]string) []map[string]string {

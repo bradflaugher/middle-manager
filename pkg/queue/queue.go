@@ -79,7 +79,20 @@ func (r *IssueQueueRunner) Run() int {
 		r.Log(fmt.Sprintf("=== Queue %d/%d: Issue #%s — %s ===", idx+1, len(issues), number, issue["title"]), colors.Cyan+colors.Bold)
 
 		if gitops.RepoIsGit(r.cfg.Repo) && !r.cfg.DryRun {
-			gitops.CheckoutDefaultBranch(r.cfg.Repo)
+			baseBranch := r.cfg.BaseBranch
+			if baseBranch == "" {
+				baseBranch = gitops.DetectBaseBranch(r.cfg.Repo)
+			}
+			r.Log(fmt.Sprintf("Checking out and pulling latest from base branch %q...", baseBranch), colors.Cyan)
+			_, _, codeCheckout, _ := gitops.RunGit(r.cfg.Repo, "checkout", baseBranch)
+			if codeCheckout != 0 {
+				r.Log(fmt.Sprintf("⚠️ Failed to checkout branch %q", baseBranch), colors.Yellow)
+			} else {
+				_, _, codePull, _ := gitops.RunGit(r.cfg.Repo, "pull", "origin", baseBranch)
+				if codePull != 0 {
+					r.Log("⚠️ Failed to pull from origin", colors.Yellow)
+				}
+			}
 		}
 
 		r.ResetIssueState(issue)

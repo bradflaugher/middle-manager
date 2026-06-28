@@ -207,6 +207,9 @@ def main():
                 pass
         
         current_text = "\n".join(screen.display)
+        if "Loop finished. Press Enter to exit." in current_text:
+            os.write(master_fd, b"\r")
+            time.sleep(0.5)
         
         if last_text_hash is None or current_text != last_text_hash:
             img = render_screen_to_image(screen, font_reg, font_bold)

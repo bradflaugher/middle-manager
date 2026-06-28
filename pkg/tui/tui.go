@@ -16,6 +16,7 @@ import (
 
 	"github.com/bradflaugher/middle-manager/pkg/agents"
 	"github.com/bradflaugher/middle-manager/pkg/config"
+	"github.com/bradflaugher/middle-manager/pkg/gitops"
 )
 
 // ---------------------------------------------------------------------------
@@ -159,6 +160,7 @@ type wizardState int
 
 const (
 	stateRepo wizardState = iota
+	stateBaseBranch
 	stateMode
 	stateMission
 	stateIssueDetails
@@ -278,7 +280,7 @@ func (m *WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *WizardModel) isTextState() bool {
 	switch m.state {
-	case stateRepo, stateMission, stateIssueDetails, stateQueueFilters, stateMaxIters:
+	case stateRepo, stateBaseBranch, stateMission, stateIssueDetails, stateQueueFilters, stateMaxIters:
 		return true
 	}
 	return false
@@ -321,6 +323,16 @@ func (m *WizardModel) nextStep() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.cfg.Repo = abs
+		m.state = stateBaseBranch
+		m.resetInput("Base branch (e.g. main, dev, master)")
+		detected := gitops.DetectBaseBranch(m.cfg.Repo)
+		m.textInput.SetValue(detected)
+
+	case stateBaseBranch:
+		m.cfg.BaseBranch = strings.TrimSpace(m.textInput.Value())
+		if m.cfg.BaseBranch == "" {
+			m.cfg.BaseBranch = gitops.DetectBaseBranch(m.cfg.Repo)
+		}
 		m.state = stateMode
 
 	case stateMode:
@@ -421,9 +433,13 @@ func (m *WizardModel) prevStep() (tea.Model, tea.Cmd) {
 	m.err = nil
 	switch m.state {
 	case stateMode:
+		m.state = stateBaseBranch
+		m.resetInput("Base branch (e.g. main, dev, master)")
+		m.textInput.SetValue(m.cfg.BaseBranch)
+	case stateBaseBranch:
 		m.state = stateRepo
+		m.resetInput("Repository path")
 		m.textInput.SetValue(m.cfg.Repo)
-		m.textInput.Focus()
 	case stateMission, stateIssueDetails, stateQueueFilters:
 		m.state = stateMode
 	case stateAgents:
@@ -482,19 +498,22 @@ func (m *WizardModel) View() tea.View {
 	case stateRepo:
 		s.WriteString(stepHeader(1, "Repository"))
 		s.WriteString("  Where is the codebase?\n\n  " + m.textInput.View() + "\n")
+	case stateBaseBranch:
+		s.WriteString(stepHeader(2, "Base branch"))
+		s.WriteString("  Target base branch (e.g. main, dev, master)?\n\n  " + m.textInput.View() + "\n")
 	case stateMode:
-		s.WriteString(stepHeader(2, "What do you want to do?"))
+		s.WriteString(stepHeader(3, "What do you want to do?"))
 		for i, label := range m.modeLabels {
 			s.WriteString(radio(i == m.modeIndex, label))
 		}
 	case stateMission:
-		s.WriteString(stepHeader(3, "Mission"))
+		s.WriteString(stepHeader(4, "Mission"))
 		s.WriteString("  What should the agents build or fix?\n\n  " + m.textInput.View() + "\n")
 	case stateIssueDetails:
-		s.WriteString(stepHeader(3, "GitHub issue"))
+		s.WriteString(stepHeader(4, "GitHub issue"))
 		s.WriteString("  Issue number (e.g. 42) or URL:\n\n  " + m.textInput.View() + "\n")
 	case stateQueueFilters:
-		s.WriteString(stepHeader(3, "Queue filters"))
+		s.WriteString(stepHeader(4, "Queue filters"))
 		hint := "Filter by label (optional):"
 		if m.queueLabel != "" && m.queueAuthor == "" {
 			hint = "Filter by author login (optional):"
@@ -504,7 +523,7 @@ func (m *WizardModel) View() tea.View {
 		s.WriteString("  " + hint + "\n\n  " + m.textInput.View() + "\n")
 
 	case stateAgents:
-		s.WriteString(stepHeader(4, "Agents per step"))
+		s.WriteString(stepHeader(5, "Agents per step"))
 		if m.customAgents {
 			s.WriteString("  Pick an agent for each step (←/→ to change):\n\n")
 			for i, step := range stepLabels {
@@ -518,7 +537,7 @@ func (m *WizardModel) View() tea.View {
 			}
 			s.WriteString("\n" + stDim.Render("  c: done customizing"))
 		} else {
-			s.WriteString("  Autodetected agents:\n\n")
+			s.WriteString("  Autodetested agents:\n\n")
 			for _, step := range stepLabels {
 				s.WriteString(fmt.Sprintf("  %-12s %s\n", step+":", stGreen.Render(m.stepToAgent[step])))
 			}
@@ -526,21 +545,21 @@ func (m *WizardModel) View() tea.View {
 		}
 		s.WriteString("\n")
 	case stateSteps:
-		s.WriteString(stepHeader(5, "Loop shape"))
+		s.WriteString(stepHeader(6, "Loop shape"))
 		labels := []string{"4 steps  discover → execute → verify → commit  (opens PR)", "3 steps  discover → execute → verify  (local commit, no PR agent)"}
 		for i, label := range labels {
 			s.WriteString(radio(i == m.stepsIndex, label))
 		}
 	case stateOptions:
-		s.WriteString(stepHeader(6, "Options"))
+		s.WriteString(stepHeader(7, "Options"))
 		for i, name := range m.optionsList {
 			s.WriteString(checkbox(i == m.optionsIndex, m.optionsValues[i], name))
 		}
 	case stateMaxIters:
-		s.WriteString(stepHeader(7, "Iteration budget"))
+		s.WriteString(stepHeader(8, "Iteration budget"))
 		s.WriteString("  Max loop iterations per task:\n\n  " + m.textInput.View() + "\n")
 	case stateConfirm:
-		s.WriteString(stepHeader(8, "Review & launch"))
+		s.WriteString(stepHeader(9, "Review & launch"))
 		s.WriteString(m.confirmView())
 	}
 
@@ -554,6 +573,7 @@ func (m *WizardModel) confirmView() string {
 	}
 	var b strings.Builder
 	b.WriteString(row("repo", m.cfg.Repo))
+	b.WriteString(row("base branch", m.cfg.BaseBranch))
 	b.WriteString(row("mode", stCyan.Render(m.cfg.Mode)))
 
 	if m.cfg.Mission != "" {

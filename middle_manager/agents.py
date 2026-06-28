@@ -400,48 +400,90 @@ def draw_status_block(
     interactive: bool = False
 ) -> int:
     import sys
+    import shutil
+    import os
     from .colors import Colors
-    lines = []
-    lines.append(Colors.colored(f"  ┌── MONITORING {agent_name.upper()} ──────────────────────────────────────────────", Colors.MAGENTA))
-    lines.append(Colors.colored(f"  │  Status:         {status_str}", Colors.CYAN))
-    lines.append(Colors.colored(f"  │  Elapsed Time:  {elapsed_str}", Colors.CYAN))
-    lines.append(Colors.colored(f"  │  CPU Usage:     {cpu_str}", Colors.CYAN))
-    lines.append(Colors.colored(f"  │  Active Processes: {active_procs}", Colors.CYAN))
-    lines.append(Colors.colored(f"  │  Active Sockets:   {active_sockets}", Colors.CYAN))
+    
+    is_tty = sys.stdout.isatty() and os.environ.get("TERM") != "dumb"
+    
+    if is_tty:
+        cols, _ = shutil.get_terminal_size(fallback=(80, 24))
+        max_line_len = max(cols - 2, 40)
+    else:
+        max_line_len = None
+    
+    raw_lines = []
+    
+    header_prefix = f"  ┌── MONITORING {agent_name.upper()} "
+    if max_line_len is not None:
+        dash_count = max_line_len - len(header_prefix)
+        if dash_count > 0:
+            header_text = header_prefix + "─" * dash_count
+        else:
+            header_text = header_prefix[:max_line_len]
+    else:
+        header_text = header_prefix + "──────────────────────────────────────────────"
+    raw_lines.append((header_text, Colors.MAGENTA))
+    
+    raw_lines.append((f"  │  Status:         {status_str}", Colors.CYAN))
+    raw_lines.append((f"  │  Elapsed Time:  {elapsed_str}", Colors.CYAN))
+    raw_lines.append((f"  │  CPU Usage:     {cpu_str}", Colors.CYAN))
+    raw_lines.append((f"  │  Active Processes: {active_procs}", Colors.CYAN))
+    raw_lines.append((f"  │  Active Sockets:   {active_sockets}", Colors.CYAN))
 
     if tmux_session:
         is_agent_tui = interactive and any(name in agent_name.lower() for name in ("grok", "claude", "agy"))
         if is_agent_tui:
-            lines.append(Colors.colored(f"  │  Attach Session:  tmux attach-session -t {tmux_session} (Interactive TUI)", Colors.GREEN + Colors.BOLD))
-            lines.append(Colors.colored("  │  ⚠️  Loop is waiting for you to attach and interact in tmux!", Colors.YELLOW + Colors.BOLD))
+            raw_lines.append((f"  │  Attach Session:  tmux attach-session -t {tmux_session} (Interactive TUI)", Colors.GREEN + Colors.BOLD))
+            raw_lines.append(("  │  ⚠️  Loop is waiting for you to attach and interact in tmux!", Colors.YELLOW + Colors.BOLD))
         else:
-            lines.append(Colors.colored(f"  │  Attach Session:  tmux attach-session -t {tmux_session} (Headless logs; will exit)", Colors.GREEN + Colors.BOLD))
+            raw_lines.append((f"  │  Attach Session:  tmux attach-session -t {tmux_session} (Headless logs; will exit)", Colors.GREEN + Colors.BOLD))
 
     if last_line:
         cleaned_last_line = strip_ansi(last_line)
-        max_len = 62
-        if len(cleaned_last_line) > max_len:
-            truncated = cleaned_last_line[:max_len-3] + "..."
+        if max_line_len is not None:
+            prefix_len = 22
+            avail_len = max_line_len - prefix_len
+            if avail_len > 10:
+                if len(cleaned_last_line) > avail_len:
+                    truncated = cleaned_last_line[:avail_len - 3] + "..."
+                else:
+                    truncated = cleaned_last_line
+                raw_lines.append((f"  │  Last Output:   \"{truncated}\"", Colors.YELLOW))
         else:
-            truncated = cleaned_last_line
-        lines.append(Colors.colored(f"  │  Last Output:   \"{truncated}\"", Colors.YELLOW))
+            max_len = 62
+            if len(cleaned_last_line) > max_len:
+                truncated = cleaned_last_line[:max_len-3] + "..."
+            else:
+                truncated = cleaned_last_line
+            raw_lines.append((f"  │  Last Output:   \"{truncated}\"", Colors.YELLOW))
 
     if changed_files:
-        lines.append(Colors.colored("  │  Files Changed:", Colors.CYAN))
+        raw_lines.append(("  │  Files Changed:", Colors.CYAN))
         for f in changed_files[:5]:
-            lines.append(Colors.colored(f"  │    - {f}", Colors.GREEN))
+            raw_lines.append((f"  │    - {f}", Colors.GREEN))
         if len(changed_files) > 5:
-            lines.append(Colors.colored(f"  │    - ... and {len(changed_files) - 5} more", Colors.GREEN))
+            raw_lines.append((f"  │    - ... and {len(changed_files) - 5} more", Colors.GREEN))
     else:
-        lines.append(Colors.colored("  │  Files Changed: None yet", Colors.CYAN))
+        raw_lines.append(("  │  Files Changed: None yet", Colors.CYAN))
         
-    lines.append(Colors.colored("  └──────────────────────────────────────────────────────────────────────────", Colors.MAGENTA))
+    if max_line_len is not None:
+        footer_text = "  └" + "─" * (max_line_len - 3)
+    else:
+        footer_text = "  └──────────────────────────────────────────────────────────────────────────"
+    raw_lines.append((footer_text, Colors.MAGENTA))
     
-    if sys.stdout.isatty() and last_printed_lines_cnt > 0:
+    lines = []
+    for text, color in raw_lines:
+        if max_line_len is not None and len(text) > max_line_len:
+            text = text[:max_line_len - 3] + "..."
+        lines.append(Colors.colored(text, color))
+        
+    if is_tty and last_printed_lines_cnt > 0:
         sys.stdout.write(f"\033[{last_printed_lines_cnt}A")
         
     for line in lines:
-        if sys.stdout.isatty():
+        if is_tty:
             sys.stdout.write("\033[K" + line + "\n")
         else:
             sys.stdout.write(line + "\n")
@@ -713,6 +755,9 @@ def run_command_monitored(
             )
         else:
             print(Colors.colored(f"  │ [{elapsed_str}] Final status: {status_str}", Colors.CYAN))
+        
+        # kill the tmux session to clean up
+        subprocess.run(["tmux", "kill-session", "-t", session_name], capture_output=True)
 
         return subprocess.CompletedProcess(
             cmd_list,
@@ -987,9 +1032,8 @@ def run_agent(run: AgentRun, *, dry_run: bool = False, stream: bool = True, step
 
 
 def _quote(arg: str) -> str:
-    if not arg or any(c in arg for c in " \t\"'$\\"):
-        return '"' + arg.replace("\\", "\\\\").replace('"', '\\"') + '"'
-    return arg
+    import shlex
+    return shlex.quote(arg)
 
 
 def list_agents_status(binary_overrides: dict[str, str] | None = None) -> list[dict[str, str]]:

@@ -13,6 +13,7 @@ from .git_ops import (
     commit_all,
     create_pr,
     current_branch,
+    detect_base_branch,
     ensure_branch,
     ensure_issue_branch,
     fetch_issue,
@@ -480,7 +481,13 @@ class MiddleManagerLoop:
         self.ensure_gitignore()
         self.log(f"Target repo: {self.cfg.repo}")
         if repo_is_git(self.cfg.repo):
-            self.log(f"Git branch:  {current_branch(self.cfg.repo)}")
+            base_branch = self.cfg.base_branch or detect_base_branch(self.cfg.repo)
+            iteration = self.read_iteration()
+            if self.cfg.issue and self.cfg.issue.isdigit():
+                branch = ensure_issue_branch(self.cfg.repo, self.cfg.branch_prefix, self.cfg.issue, base_branch)
+            else:
+                branch = ensure_branch(self.cfg.repo, self.cfg.branch_prefix, iteration, base_branch)
+            self.log(f"Git branch:  {branch} (branched off {base_branch})")
         if self.cfg.mission:
             self.log(f"Mission: {self.cfg.mission[:80]}")
         self.log(f"Steps: {self.cfg.steps} ({', '.join(self.cfg.active_steps())})")

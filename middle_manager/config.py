@@ -52,6 +52,7 @@ class LoopConfig:
     fresh: bool = False
     issue_queue: IssueQueueConfig | None = None
     branch_prefix: str = "mm"
+    base_branch: str | None = None
     no_pr: bool = False
     no_merge: bool = True
 
@@ -85,6 +86,7 @@ DEFAULTS: dict[str, Any] = {
     "max_iterations": 10,
     "yolo": True,
     "branch_prefix": "mm",
+    "base_branch": None,
     "no_merge": True,
 
     "fix_unrelated_tests": False,
@@ -138,6 +140,7 @@ def config_from_dict(data: dict[str, Any], repo: Path) -> LoopConfig:
         max_iterations=int(data.get("max_iterations", 10)),
         yolo=bool(data.get("yolo", True)),
         branch_prefix=str(data.get("branch_prefix", "mm")),
+        base_branch=data.get("base_branch"),
         no_merge=bool(data.get("no_merge", True)),
 
         discover=step_from_dict(data.get("discover", DEFAULTS["discover"])),
@@ -196,6 +199,7 @@ Examples:
     p.add_argument("--interactive", "-i", action="store_true", help="Interactive menu between steps")
 
     p.add_argument("--branch-prefix", default=None)
+    p.add_argument("--base-branch", default=None, help="Base branch to start from (e.g. dev, main)")
     p.add_argument("--no-pr", action="store_true", help="Skip PR creation")
     p.add_argument("--state-dir", type=Path)
     p.add_argument("--fix-unrelated-tests", action="store_true", help="Allow agents to modify tests or other files to fix unrelated failures.")
@@ -285,6 +289,8 @@ def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, LoopC
 
     if args.branch_prefix:
         cfg.branch_prefix = args.branch_prefix
+    if args.base_branch:
+        cfg.base_branch = args.base_branch
     if args.no_pr:
         cfg.no_pr = True
     if args.state_dir:

@@ -32,13 +32,27 @@ def has_changes(repo: Path) -> bool:
     return bool(run_git(repo, "status", "--porcelain").stdout.strip())
 
 
-def ensure_branch(repo: Path, prefix: str, iteration: int) -> str:
+def detect_base_branch(repo: Path) -> str:
+    for candidate in ("dev", "main", "master"):
+        proc = run_git(repo, "rev-parse", "--verify", candidate, check=False)
+        if proc.returncode == 0:
+            return candidate
+    try:
+        return current_branch(repo)
+    except Exception:
+        return "main"
+
+
+def ensure_branch(repo: Path, prefix: str, iteration: int, base_branch: str | None = None) -> str:
     branch = f"{prefix}/loop-{iteration}"
     branches = run_git(repo, "branch", "--list", branch, check=False).stdout
     if branch in branches or f"* {branch}" in branches:
         run_git(repo, "checkout", branch)
     else:
-        run_git(repo, "checkout", "-b", branch)
+        cmd = ["checkout", "-b", branch]
+        if base_branch:
+            cmd.append(base_branch)
+        run_git(repo, *cmd)
     return branch
 
 
@@ -152,13 +166,16 @@ def close_issue(
     return True
 
 
-def ensure_issue_branch(repo: Path, prefix: str, issue_number: str) -> str:
+def ensure_issue_branch(repo: Path, prefix: str, issue_number: str, base_branch: str | None = None) -> str:
     branch = f"{prefix}/issue-{issue_number}"
     branches = run_git(repo, "branch", "--list", branch, check=False).stdout
     if branch in branches or f"* {branch}" in branches:
         run_git(repo, "checkout", branch)
     else:
-        run_git(repo, "checkout", "-b", branch)
+        cmd = ["checkout", "-b", branch]
+        if base_branch:
+            cmd.append(base_branch)
+        run_git(repo, *cmd)
     return branch
 
 

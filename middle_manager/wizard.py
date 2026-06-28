@@ -124,6 +124,7 @@ def save_last_config(cfg: LoopConfig, extra: dict | None = None) -> None:
         "mission": cfg.mission,
         "mode": cfg.mode,
         "issue": cfg.issue,
+        "base_branch": cfg.base_branch,
         "issue_queue": _issue_queue_to_dict(cfg),
         "fix_unrelated_tests": cfg.fix_unrelated_tests,
         "discover": _step_to_dict(cfg.discover),
@@ -269,12 +270,22 @@ def run_wizard(argv_repo: Path | None = None, mission: str | None = None) -> Loo
     except ValueError:
         max_iterations = 10
 
+    base_branch = None
+    if repo_is_git(repo):
+        from .git_ops import detect_base_branch
+        detected_base = detect_base_branch(repo)
+        if _yes_no(f"Checkout branch off of base branch '{detected_base}'?", default=True):
+            base_branch = detected_base
+        else:
+            base_branch = _prompt("Base branch to branch off of", default=detected_base)
+
     no_pr = True
     if steps == 4:
         no_pr = not _yes_no("Open PRs when commit step succeeds?", default=True)
 
     # Build config
     data = merge_config(DEFAULTS, {})
+    data["base_branch"] = base_branch
     data["steps"] = steps
     data["max_iterations"] = max_iterations
     data["yolo"] = yolo
@@ -295,6 +306,7 @@ def run_wizard(argv_repo: Path | None = None, mission: str | None = None) -> Loo
     cfg.no_pr = no_pr
     cfg.fix_unrelated_tests = fix_unrelated
     cfg.mode = mode
+    cfg.base_branch = base_branch
     cfg.mission = mission or None
     if mode == "feature" and mission:
         cfg.fresh = True

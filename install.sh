@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# middle-manager installer — pure bash, no dependencies beyond git + python3
+# middle-manager Go installer — pure bash + Go compiler
 set -euo pipefail
 
 REPO_URL="${MM_REPO:-https://github.com/bradflaugher/middle-manager.git}"
@@ -7,7 +7,7 @@ INSTALL_DIR="${MM_INSTALL_DIR:-${HOME}/.local/share/middle-manager}"
 BIN_DIR="${MM_BIN_DIR:-${HOME}/.local/bin}"
 BRANCH="${MM_BRANCH:-main}"
 
-echo "middle-manager installer (not for you — use claude)"
+echo "middle-manager Go installer"
 echo "  repo:    ${REPO_URL}"
 echo "  install: ${INSTALL_DIR}"
 echo "  bin:     ${BIN_DIR}/mm"
@@ -21,26 +21,31 @@ if [[ -d "${INSTALL_DIR}/.git" ]]; then
   git -C "${INSTALL_DIR}" checkout "${BRANCH}"
   git -C "${INSTALL_DIR}" pull --ff-only origin "${BRANCH}" || true
 else
-  echo "Cloning..."
-  git clone --depth 1 --branch "${BRANCH}" "${REPO_URL}" "${INSTALL_DIR}"
+  # Check if installing from current local dir
+  if [[ -f "./main.go" ]]; then
+    echo "Copying local files..."
+    cp -r ./* "${INSTALL_DIR}/"
+  else
+    echo "Cloning..."
+    git clone --depth 1 --branch "${BRANCH}" "${REPO_URL}" "${INSTALL_DIR}"
+  fi
 fi
 
-# Install Python dependencies
-echo "Installing python dependencies (agent-client-protocol, rich)..."
-python3 -m pip install --quiet agent-client-protocol rich --break-system-packages 2>/dev/null || \
-  python3 -m pip install --quiet agent-client-protocol rich || \
-  echo "Warning: could not install dependencies automatically. Please make sure agent-client-protocol and rich are installed."
+# Verify Go installation
+if ! command -v go &>/dev/null; then
+  echo "Error: Go compiler is not installed."
+  echo "Please install Go: https://go.dev/doc/install"
+  exit 1
+fi
 
-# Wrapper script — avoids PYTHONPATH hacks
-cat > "${BIN_DIR}/mm" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-MM_HOME="${INSTALL_DIR}"
-export PYTHONPATH="\${MM_HOME}:\${PYTHONPATH:-}"
-exec python3 "\${MM_HOME}/mm.py" "\$@"
-EOF
-
-chmod +x "${BIN_DIR}/mm" "${INSTALL_DIR}/mm.py"
+echo "Compiling middle-manager in Go..."
+(
+  cd "${INSTALL_DIR}"
+  # We might need to handle local replacement paths in go.mod
+  # But for a standard user clone we'll compile directly:
+  rm -f "${BIN_DIR}/mm"
+  go build -o "${BIN_DIR}/mm" main.go
+)
 
 # User config dir
 mkdir -p "${XDG_CONFIG_HOME:-${HOME}/.config}/middle-manager"
@@ -57,5 +62,3 @@ echo
 echo "✓ Installed. Run: mm"
 echo "  (or: mm agents / mm --help)"
 echo
-echo "One-liner for friends:"
-echo "  curl -fsSL https://raw.githubusercontent.com/bradflaugher/middle-manager/main/install.sh | bash"

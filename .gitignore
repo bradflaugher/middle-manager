@@ -220,3 +220,7 @@ __marimo__/
 
 # middle-manager plan
 fix_plan.md
+
+# Go compiled binaries
+mm
+test-repo/

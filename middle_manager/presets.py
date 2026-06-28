@@ -45,6 +45,23 @@ def reset_loop_state(cfg: LoopConfig) -> None:
     if issues_dir.exists():
         shutil.rmtree(issues_dir)
 
+    from .git_ops import repo_is_git, run_git, checkout_default_branch
+    if repo_is_git(cfg.repo):
+        try:
+            checkout_default_branch(cfg.repo)
+        except Exception:
+            pass
+        try:
+            prefix = cfg.branch_prefix
+            proc = run_git(cfg.repo, "branch", check=False)
+            if proc.returncode == 0:
+                for line in proc.stdout.splitlines():
+                    branch_name = line.replace("*", "").strip()
+                    if branch_name.startswith(f"{prefix}/loop-") or branch_name.startswith(f"{prefix}/issue-"):
+                        run_git(cfg.repo, "branch", "-D", branch_name, check=False)
+        except Exception:
+            pass
+
 
 def seed_feature_plan(cfg: LoopConfig, path: Path) -> None:
     """Write a fix_plan with the mission as the top task."""

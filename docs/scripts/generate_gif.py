@@ -135,16 +135,20 @@ def main():
         "--repo", target_repo,
         "--no-wizard",
         "--no-pr",
-        f"--binary=claude={mock_agent}",
-        f"--binary=opencode={mock_agent}",
-        f"--binary=grok={mock_agent}"
+        "--binary", f"claude={mock_agent}",
+        "--binary", f"opencode={mock_agent}",
+        "--binary", f"grok={mock_agent}"
     ]
     
     master_fd, slave_fd = pty.openpty()
     size = struct.pack("HHHH", rows, cols, 0, 0)
     fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, size)
     
-    p = subprocess.Popen(cmd, stdin=slave_fd, stdout=slave_fd, stderr=slave_fd, close_fds=True, cwd=repo_root)
+    env = os.environ.copy()
+    env["TERM"] = "xterm-256color"
+    env["COLORTERM"] = "truecolor"
+    
+    p = subprocess.Popen(cmd, stdin=slave_fd, stdout=slave_fd, stderr=slave_fd, close_fds=True, cwd=repo_root, env=env)
     os.close(slave_fd)
     
     frames = []

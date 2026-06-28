@@ -56,14 +56,14 @@ def run_discover():
 [THINK] The user wants to: Add a simple docstring to main.py.
 [THINK] Let's read main.py to understand its current content.
 [INFO] Reading main.py...
-[THINK] The file main.py has 24 lines, loading config from config.default.json.
+[THINK] The file main.py loads JSON settings with safe built-in defaults.
 [THINK] It does not have any module-level docstring.
 [THINK] We need to add a module-level docstring at the top of the file.
 [PLAN] Files to modify:
   - main.py: Add top-level docstring.
 [PLAN] Guidelines:
   - Insert a triple-quoted Python docstring at line 1.
-  - Explain that the script runs default settings and can override them using config.default.json.
+  - Explain that the script loads settings from JSON with safe defaults.
 [INFO] Completed discovery phase. Scoped 1 file.
 """
     stream_print(output)
@@ -75,7 +75,7 @@ def run_execute():
 [THINK] Now, let's write the modified main.py with the docstring:
 \"\"\"
 Middle Manager Test Repo
-This script loads a default configuration.
+This script loads JSON settings and falls back to safe defaults.
 \"\"\"
 [INFO] Successfully wrote updated content to main.py.
 [THINK] Let's verify by running a quick syntax check.
@@ -90,7 +90,7 @@ This script loads a default configuration.
         with open(target_file, "r") as f:
             content = f.read()
         if '"""' not in content:
-            docstring = '"""\nMiddle Manager Test Repo\nThis script loads a default configuration.\n"""\n'
+            docstring = '"""\nMiddle Manager Test Repo\nThis script loads JSON settings and falls back to safe defaults.\n"""\n'
             with open(target_file, "w") as f:
                 f.write(docstring + content)
 
@@ -100,7 +100,7 @@ def run_verify():
 [INFO] Running git diff main.py:
 + \"\"\"
 + Middle Manager Test Repo
-+ This script loads a default configuration.
++ This script loads JSON settings and falls back to safe defaults.
 + \"\"\"
 [THINK] Docstring looks correct and accurate.
 [INFO] Running test suite...

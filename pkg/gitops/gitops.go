@@ -4,12 +4,37 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strings"
 )
+
+type GitError struct {
+	Dir      string
+	Args     []string
+	Stdout   string
+	Stderr   string
+	Code     int
+	Original error
+}
+
+func (e *GitError) Error() string {
+	cmd := "git " + strings.Join(e.Args, " ")
+	detail := strings.TrimSpace(e.Stderr)
+	if detail == "" {
+		detail = strings.TrimSpace(e.Stdout)
+	}
+	if detail == "" && e.Original != nil {
+		detail = e.Original.Error()
+	}
+	if detail == "" {
+		detail = "unknown git error"
+	}
+	if e.Code >= 0 {
+		return fmt.Sprintf("%s failed in %s (exit %d): %s", cmd, e.Dir, e.Code, detail)
+	}
+	return fmt.Sprintf("%s failed in %s: %s", cmd, e.Dir, detail)
+}
 
 func RunGit(repo string, args ...string) (string, string, int, error) {
 	cmd := exec.Command("git", args...)
@@ -19,6 +44,8 @@ func RunGit(repo string, args ...string) (string, string, int, error) {
 	cmd.Stderr = &stderr
 
 	err := cmd.Run()
+	stdoutText := strings.TrimSpace(stdout.String())
+	stderrText := strings.TrimSpace(stderr.String())
 	code := 0
 	if err != nil {
 		if exitError, ok := err.(*exec.ExitError); ok {
@@ -26,13 +53,21 @@ func RunGit(repo string, args ...string) (string, string, int, error) {
 		} else {
 			code = -1
 		}
+		err = &GitError{
+			Dir:      repo,
+			Args:     append([]string(nil), args...),
+			Stdout:   stdoutText,
+			Stderr:   stderrText,
+			Code:     code,
+			Original: err,
+		}
 	}
-	return strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), code, err
+	return stdoutText, stderrText, code, err
 }
 
 func RepoIsGit(repo string) bool {
-	fi, err := os.Stat(filepath.Join(repo, ".git"))
-	return err == nil && fi.IsDir()
+	stdout, _, code, err := RunGit(repo, "rev-parse", "--is-inside-work-tree")
+	return err == nil && code == 0 && stdout == "true"
 }
 
 func CurrentBranch(repo string) (string, error) {
@@ -50,8 +85,15 @@ func HasChanges(repo string) bool {
 
 func DetectBaseBranch(repo string) string {
 	for _, candidate := range []string{"dev", "main", "master"} {
-		_, _, code, _ := RunGit(repo, "rev-parse", "--verify", candidate)
-		if code == 0 {
+		if RefExists(repo, candidate) {
+			return candidate
+		}
+	}
+	if originHead, _, code, err := RunGit(repo, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"); err == nil && code == 0 && originHead != "" {
+		return originHead
+	}
+	for _, candidate := range []string{"origin/dev", "origin/main", "origin/master"} {
+		if RefExists(repo, candidate) {
 			return candidate
 		}
 	}
@@ -61,36 +103,25 @@ func DetectBaseBranch(repo string) string {
 	return "main"
 }
 
+func RefExists(repo string, ref string) bool {
+	if strings.TrimSpace(ref) == "" {
+		return false
+	}
+	_, _, code, _ := RunGit(repo, "rev-parse", "--verify", ref+"^{commit}")
+	return code == 0
+}
+
 func EnsureBranch(repo string, prefix string, iteration int, baseBranch string) (string, error) {
 	branch := fmt.Sprintf("%s/loop-%d", prefix, iteration)
-	branches, _, _, _ := RunGit(repo, "branch", "--list", branch)
-
-	hasBranch := false
-	for _, b := range strings.Split(branches, "\n") {
-		b = strings.TrimSpace(b)
-		b = strings.TrimPrefix(b, "*")
-		b = strings.TrimSpace(b)
-		if b == branch {
-			hasBranch = true
-			break
-		}
-	}
-
-	if hasBranch {
-		_, _, _, err := RunGit(repo, "checkout", branch)
-		return branch, err
-	}
-
-	cmdArgs := []string{"checkout", "-b", branch}
-	if baseBranch != "" {
-		cmdArgs = append(cmdArgs, baseBranch)
-	}
-	_, _, _, err := RunGit(repo, cmdArgs...)
-	return branch, err
+	return ensureBranch(repo, branch, baseBranch)
 }
 
 func EnsureIssueBranch(repo string, prefix string, issueNumber string, baseBranch string) (string, error) {
 	branch := fmt.Sprintf("%s/issue-%s", prefix, issueNumber)
+	return ensureBranch(repo, branch, baseBranch)
+}
+
+func ensureBranch(repo string, branch string, baseBranch string) (string, error) {
 	branches, _, _, _ := RunGit(repo, "branch", "--list", branch)
 
 	hasBranch := false
@@ -107,6 +138,10 @@ func EnsureIssueBranch(repo string, prefix string, issueNumber string, baseBranc
 	if hasBranch {
 		_, _, _, err := RunGit(repo, "checkout", branch)
 		return branch, err
+	}
+
+	if baseBranch != "" && !RefExists(repo, baseBranch) {
+		return branch, fmt.Errorf("base branch %q was not found in %s; pass --base-branch or check out the intended base branch before running mm", baseBranch, repo)
 	}
 
 	cmdArgs := []string{"checkout", "-b", branch}
@@ -118,31 +153,56 @@ func EnsureIssueBranch(repo string, prefix string, issueNumber string, baseBranc
 }
 
 func CommitAll(repo string, message string) bool {
+	committed, _ := CommitAllWithError(repo, message)
+	return committed
+}
+
+func CommitAllWithError(repo string, message string) (bool, error) {
 	if !HasChanges(repo) {
-		return false
+		return false, nil
 	}
 	_, _, code, err := RunGit(repo, "add", "-A")
 	if err != nil || code != 0 {
-		return false
+		return false, err
 	}
 	_, _, code, err = RunGit(repo, "commit", "-m", message)
-	return err == nil && code == 0
+	if err != nil || code != 0 {
+		return false, err
+	}
+	return true, nil
 }
 
-func PushBranch(repo string, branch string, dryRun bool) {
+func PushBranch(repo string, branch string, dryRun bool) error {
 	if dryRun {
 		fmt.Printf("[dry-run] git push -u origin %s\n", branch)
-		return
+		return nil
 	}
-	remotes, _, _, err := RunGit(repo, "remote")
-	if err != nil || !strings.Contains(remotes, "origin") {
-		fmt.Printf("[git] No 'origin' remote found, skipping push of branch '%s'.\n", branch)
-		return
+	branch = strings.TrimSpace(branch)
+	if branch == "" || branch == "HEAD" {
+		return fmt.Errorf("cannot push detached or unknown branch %q", branch)
+	}
+	remotes, _, code, err := RunGit(repo, "remote")
+	if err != nil || code != 0 {
+		return fmt.Errorf("list git remotes: %w", err)
+	}
+	hasOrigin := false
+	for _, remote := range strings.Split(remotes, "\n") {
+		if strings.TrimSpace(remote) == "origin" {
+			hasOrigin = true
+			break
+		}
+	}
+	if !hasOrigin {
+		return fmt.Errorf("no 'origin' remote configured")
 	}
 	_, stderr, code, err := RunGit(repo, "push", "-u", "origin", branch)
 	if err != nil || code != 0 {
-		fmt.Printf("[git] Warning: Failed to push branch '%s' to origin: %s\n", branch, stderr)
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("git push -u origin %s failed: %s", branch, stderr)
 	}
+	return nil
 }
 
 func GHAvailable() bool {
@@ -323,7 +383,7 @@ type PullRequest struct {
 	URL            string
 	IsDraft        bool
 	Mergeable      string // MERGEABLE | CONFLICTING | UNKNOWN
-	MergeState	   string // CLEAN | BLOCKED | BEHIND | DIRTY | UNSTABLE | ...
+	MergeState     string // CLEAN | BLOCKED | BEHIND | DIRTY | UNSTABLE | ...
 	ReviewDecision string // APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED | ""
 	ChecksState    string // passing | pending | failing | none
 }
@@ -395,9 +455,11 @@ func ListOpenPRs(repo string, author string, label string, limit int) ([]PullReq
 	}
 
 	type ghPR struct {
-		Number            int       `json:"number"`
-		Title             string    `json:"title"`
-		Author            struct{ Login string `json:"login"` } `json:"author"`
+		Number int    `json:"number"`
+		Title  string `json:"title"`
+		Author struct {
+			Login string `json:"login"`
+		} `json:"author"`
 		HeadRefName       string    `json:"headRefName"`
 		URL               string    `json:"url"`
 		IsDraft           bool      `json:"isDraft"`

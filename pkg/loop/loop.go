@@ -273,12 +273,20 @@ func (l *MiddleManagerLoop) MaybeCommitAndPR(iteration int, issueData map[string
 			if len(msg) > 72 {
 				msg = msg[:72]
 			}
-			if gitops.CommitAll(l.cfg.Repo, msg) {
+			committed, err := gitops.CommitAllWithError(l.cfg.Repo, msg)
+			if err != nil {
+				l.Log(fmt.Sprintf("Commit failed: %v", err), colors.Yellow)
+				return
+			}
+			if committed {
 				l.Log("Committed changes (3-step mode, no PR agent)", colors.Green)
 				if gitops.RepoIsGit(l.cfg.Repo) {
 					branch, _ := gitops.CurrentBranch(l.cfg.Repo)
-					gitops.PushBranch(l.cfg.Repo, branch, l.cfg.DryRun)
-					l.Log(fmt.Sprintf("Pushed branch '%s' to origin", branch), colors.Green)
+					if err := gitops.PushBranch(l.cfg.Repo, branch, l.cfg.DryRun); err != nil {
+						l.Log(fmt.Sprintf("Could not push branch %q: %v", branch, err), colors.Yellow)
+					} else {
+						l.Log(fmt.Sprintf("Pushed branch %q to origin", branch), colors.Green)
+					}
 				}
 			}
 		}
@@ -295,9 +303,12 @@ func (l *MiddleManagerLoop) MaybeCommitAndPR(iteration int, issueData map[string
 		return
 	}
 
-		branch, _ := gitops.CurrentBranch(l.cfg.Repo)
+	branch, _ := gitops.CurrentBranch(l.cfg.Repo)
 	if !l.cfg.NoPR {
-		gitops.PushBranch(l.cfg.Repo, branch, l.cfg.DryRun)
+		if err := gitops.PushBranch(l.cfg.Repo, branch, l.cfg.DryRun); err != nil {
+			l.Log(fmt.Sprintf("Could not push branch %q; skipping PR creation: %v", branch, err), colors.Yellow)
+			return
+		}
 
 		title := fmt.Sprintf("middle-manager: %s", l.cfg.Mission)
 		if len(title) > 60 {
@@ -491,7 +502,7 @@ func (l *MiddleManagerLoop) ResolveStepAgents() {
 	}
 
 	assigned := make(map[string]string)
-	
+
 	// First pass: keep explicitly requested agents if they are installed
 	for _, step := range activeSteps {
 		sc := l.cfg.StepFor(step)
@@ -675,8 +686,6 @@ func (l *MiddleManagerLoop) checkTUIPause() {
 		time.Sleep(500 * time.Millisecond)
 	}
 }
-
-
 
 func (l *MiddleManagerLoop) trackResourcesBackground() {
 	var lastTicks *float64

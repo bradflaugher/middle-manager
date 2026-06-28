@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -373,8 +372,6 @@ func (m *WizardModel) nextStep() (tea.Model, tea.Cmd) {
 			m.state = stateAgents
 		}
 
-
-
 	case stateAgents:
 		m.cfg.Discover.Agent = m.stepToAgent["discover"]
 		m.cfg.Execute.Agent = m.stepToAgent["execute"]
@@ -713,22 +710,7 @@ func (m *MonitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resize()
 
 	case TUIUpdateMsg:
-		trimmed := trimAndLeftAlign(msg.Text)
-		if trimmed == "" {
-			break
-		}
-		var styled string
-		if msg.IsThought {
-			styled = stDim.Render(trimmed)
-		} else {
-			styled = stFg.Render(trimmed)
-		}
-		m.logs = append(m.logs, styled)
-		if len(m.logs) > 2000 {
-			m.logs = m.logs[len(m.logs)-2000:]
-		}
-		m.logViewport.SetContent(strings.Join(m.logs, ""))
-		m.logViewport.GotoBottom()
+		m.pushLog(renderLiveLog(msg.Text, msg.IsThought))
 
 	case TUIStatusMsg:
 		m.iteration = msg.Iteration
@@ -784,28 +766,71 @@ func (m *MonitorModel) handleInput() {
 		switch val {
 		case "/pause":
 			m.paused = true
-			m.pushLog(stAmber.Render("⏸ paused\n"))
+			m.pushLog(stAmber.Render("⏸ paused"))
 		case "/resume", "/unpause":
 			m.paused = false
-			m.pushLog(stGreen.Render("▶ resumed\n"))
+			m.pushLog(stGreen.Render("▶ resumed"))
 		case "/skip":
 			m.skipStep = true
-			m.pushLog(stAmber.Render("⏭ skipping current step\n"))
+			m.pushLog(stAmber.Render("⏭ skipping current step"))
 		case "/quit", "/abort":
 			m.quitting = true
 		default:
-			m.pushLog(stRed.Render("unknown command: " + val + "\n"))
+			m.pushLog(stRed.Render("unknown command: " + val))
 		}
 		return
 	}
 	m.interject = val
-	m.pushLog(stMag.Render("✎ note queued — added to the NEXT step's prompt (it can't change the step running now): ") + stFg.Render(val) + "\n")
+	m.pushLog(stMag.Render("✎ note queued — added to the NEXT step's prompt (it can't change the step running now): ") + stFg.Render(val))
 }
 
 func (m *MonitorModel) pushLog(s string) {
+	if s == "" {
+		return
+	}
+	if !strings.HasSuffix(s, "\n") {
+		s += "\n"
+	}
 	m.logs = append(m.logs, s)
+	if len(m.logs) > 2000 {
+		m.logs = m.logs[len(m.logs)-2000:]
+	}
 	m.logViewport.SetContent(strings.Join(m.logs, ""))
 	m.logViewport.GotoBottom()
+}
+
+func renderLiveLog(text string, isThought bool) string {
+	text = normalizeLiveLogText(text)
+	if text == "" {
+		return ""
+	}
+	style := stFg
+	if isThought {
+		style = stDim
+	}
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		if line == "" {
+			continue
+		}
+		lines[i] = style.Render(line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func normalizeLiveLogText(text string) string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	text = strings.ReplaceAll(text, "\t", "    ")
+	text = strings.TrimRight(text, "\n")
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		lines[i] = strings.TrimRight(line, " ")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m *MonitorModel) resize() {
@@ -1078,40 +1103,4 @@ func PendingInterjection() string {
 	GlobalModel.mu.Lock()
 	defer GlobalModel.mu.Unlock()
 	return GlobalModel.interject
-}
-
-var (
-	ansiPrefixRe = regexp.MustCompile(`^(?:\x1B(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-Z\\-_]))+`)
-	ansiSuffixRe = regexp.MustCompile(`(?:\x1B(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-Z\\-_]))+$`)
-)
-
-func trimAndLeftAlignLine(line string) string {
-	// Find leading ANSI sequences
-	leadPrefix := ansiPrefixRe.FindString(line)
-	line = line[len(leadPrefix):]
-
-	// Find trailing ANSI sequences
-	trailSuffix := ansiSuffixRe.FindString(line)
-	line = line[:len(line)-len(trailSuffix)]
-
-	// Now line is completely stripped of leading/trailing ANSI codes. Trim it!
-	line = strings.TrimSpace(line)
-
-	// Put it back together
-	return leadPrefix + line + trailSuffix
-}
-
-func trimAndLeftAlign(text string) string {
-	lines := strings.Split(text, "\n")
-	var processed []string
-	for _, line := range lines {
-		trimmed := trimAndLeftAlignLine(line)
-		if trimmed != "" {
-			processed = append(processed, trimmed)
-		}
-	}
-	if len(processed) == 0 {
-		return ""
-	}
-	return strings.Join(processed, "\n") + "\n"
 }

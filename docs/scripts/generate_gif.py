@@ -3,6 +3,7 @@ import os
 import sys
 import pty
 import select
+import shutil
 import subprocess
 import time
 import struct
@@ -75,6 +76,56 @@ def render_screen_to_image(screen, font_reg, font_bold):
                 
     return img
 
+def run_quiet(args, cwd=None, check=True):
+    return subprocess.run(
+        args,
+        cwd=cwd,
+        check=check,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+def write_file(path, content):
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+def prepare_demo_repo(target_repo):
+    if os.path.exists(target_repo):
+        shutil.rmtree(target_repo)
+
+    os.makedirs(target_repo, exist_ok=True)
+    run_quiet(["git", "init", "-b", "main"], cwd=target_repo)
+    run_quiet(["git", "config", "user.email", "demo@example.com"], cwd=target_repo)
+    run_quiet(["git", "config", "user.name", "Demo User"], cwd=target_repo)
+    write_file(
+        os.path.join(target_repo, "main.py"),
+        """import json
+
+
+def load_settings(path="settings.json"):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {"debug": False, "port": 8080}
+
+
+def main():
+    settings = load_settings()
+    print(f"server listening on :{settings['port']}")
+
+
+if __name__ == "__main__":
+    main()
+""",
+    )
+    write_file(
+        os.path.join(target_repo, "AGENTS.md"),
+        "# AGENTS.md\n\nRun `python3 -m py_compile main.py` for quick syntax checks.\n",
+    )
+    run_quiet(["git", "add", "main.py", "AGENTS.md"], cwd=target_repo)
+    run_quiet(["git", "commit", "-m", "initial demo repo"], cwd=target_repo)
+
 def main():
     cols = 100
     rows = 30
@@ -84,54 +135,39 @@ def main():
     target_repo = os.path.join(repo_root, "test-repo")
     mock_agent = os.path.join(repo_root, "docs", "scripts", "mock_agent.py")
     gif_path = os.path.join(repo_root, "docs", "interface_demo.gif")
-    
-    state_dir = os.path.join(target_repo, ".middle-manager")
-    if os.path.exists(state_dir):
-        subprocess.run(["rm", "-rf", state_dir])
-        
-    target_file = os.path.join(target_repo, "main.py")
-    if os.path.exists(target_file):
-        with open(target_file, "r") as f:
-            lines = f.readlines()
-        cleaned_lines = []
-        in_doc = False
-        for line in lines:
-            if line.strip() == '"""' or line.strip().startswith('"""'):
-                in_doc = not in_doc
-                continue
-            if in_doc:
-                continue
-            cleaned_lines.append(line)
-        with open(target_file, "w") as f:
-            f.writelines(cleaned_lines)
-            
-    subprocess.run(["git", "checkout", "main.py"], cwd=target_repo)
-    subprocess.run(["git", "reset", "--hard"], cwd=target_repo)
-    subprocess.run(["git", "checkout", "master"], cwd=target_repo)
-    subprocess.run(["git", "branch", "-D", "mm/loop-1"], cwd=target_repo)
+
+    run_quiet(["go", "build", "-o", "mm", "."], cwd=repo_root)
+    prepare_demo_repo(target_repo)
 
     screen = pyte.Screen(cols, rows)
     stream = pyte.Stream(screen)
     
-    # Locate fonts
-    font_path_reg = "/usr/share/fonts/liberation-mono-fonts/LiberationMono-Regular.ttf"
-    font_path_bold = "/usr/share/fonts/liberation-mono-fonts/LiberationMono-Bold.ttf"
-    
-    if not os.path.exists(font_path_reg):
-        # System fallback search
-        font_path_reg = "DejaVuSansMono.ttf"  # Try fallback
-        font_path_bold = "DejaVuSansMono-Bold.ttf"
-        
-    try:
-        font_reg = ImageFont.truetype(font_path_reg, 15)
-        font_bold = ImageFont.truetype(font_path_bold, 15)
-    except IOError:
-        # Fallback to default PIL font
-        font_reg = ImageFont.load_default()
-        font_bold = ImageFont.load_default()
+    font_pairs = [
+        (
+            "/usr/share/fonts/adwaita-mono-fonts/AdwaitaMono-Regular.ttf",
+            "/usr/share/fonts/adwaita-mono-fonts/AdwaitaMono-Bold.ttf",
+        ),
+        (
+            "/usr/share/fonts/liberation-mono-fonts/LiberationMono-Regular.ttf",
+            "/usr/share/fonts/liberation-mono-fonts/LiberationMono-Bold.ttf",
+        ),
+        (
+            "/usr/share/fonts/google-noto-vf/NotoSansMono[wght].ttf",
+            "/usr/share/fonts/google-noto-vf/NotoSansMono[wght].ttf",
+        ),
+    ]
+
+    font_reg = font_bold = None
+    for font_path_reg, font_path_bold in font_pairs:
+        if os.path.exists(font_path_reg) and os.path.exists(font_path_bold):
+            font_reg = ImageFont.truetype(font_path_reg, 15)
+            font_bold = ImageFont.truetype(font_path_bold, 15)
+            break
+    if font_reg is None:
+        raise RuntimeError("No usable monospace font found for GIF rendering")
     
     cmd = [
-        "./mm", "--mission", "Add a simple docstring to main.py",
+        "./mm", "--mission", "Add a simple module docstring to main.py",
         "--repo", target_repo,
         "--no-wizard",
         "--no-pr",

@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/bradflaugher/middle-manager/pkg/config"
@@ -68,4 +70,26 @@ func TestInterjectionNoTUIIsNoop(t *testing.T) {
 	if IsTUIPaused() || IsTUISkipStep() || IsTUIQuitting() {
 		t.Fatal("expected all controls inert with no TUI")
 	}
+}
+
+func TestLiveLogLeftAlignmentPreservesIndentation(t *testing.T) {
+	m := NewMonitorModel(&config.LoopConfig{Repo: "/tmp/x"})
+
+	m.pushLog(renderLiveLog("first line\n", false))
+	m.pushLog(renderLiveLog("  indented child\n", false))
+	m.pushLog(renderLiveLog("\tcode block\n", true))
+
+	content := stripANSITest(m.logViewport.GetContent())
+	if strings.Contains(content, "first line          indented child") {
+		t.Fatalf("live log lines were joined by lipgloss padding: %q", content)
+	}
+	if !strings.Contains(content, "first line\n  indented child\n    code block\n") {
+		t.Fatalf("live log did not preserve left alignment and indentation: %q", content)
+	}
+}
+
+var ansiTestRe = regexp.MustCompile(`\x1B(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])`)
+
+func stripANSITest(text string) string {
+	return ansiTestRe.ReplaceAllString(text, "")
 }

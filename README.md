@@ -281,6 +281,7 @@ mm quick "add resume link to index.html" \
   --verify-agent grok \
   --test-command "npm test"
 ```
+</details>
 
 ---
 

@@ -438,6 +438,8 @@ class MiddleManagerLoop:
                 else:
                     ensure_branch(self.cfg.repo, self.cfg.branch_prefix, iteration)
             self.maybe_commit_and_pr(iteration, issue_data)
+        elif self.cfg.steps < 4 or not self.cfg.step_for("commit").enabled:
+            self.maybe_commit_and_pr(iteration, issue_data)
 
         # Mark top items done if tests passed and we have a plan
         if tasks_before is not None:

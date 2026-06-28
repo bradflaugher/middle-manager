@@ -17,7 +17,7 @@ import (
 	"github.com/bradflaugher/middle-manager/pkg/tui"
 )
 
-const version = "v0.2.1"
+const version = "v0.2.2"
 
 func main() {
 	if len(os.Args) > 1 {

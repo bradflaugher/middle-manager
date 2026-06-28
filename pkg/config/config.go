@@ -51,7 +51,6 @@ type LoopConfig struct {
 	AgentMemoryFile   string            `json:"agent_memory_file"`
 	FixUnrelatedTests bool              `json:"fix_unrelated_tests"`
 	StreamOutput      bool              `json:"stream_output"`
-	Tmux              bool              `json:"tmux"`
 	BatchSize         int               `json:"batch_size"`
 
 	// Interactive Wizard overrides
@@ -68,7 +67,6 @@ func NewDefaultConfig() *LoopConfig {
 		NoMerge:         true,
 		AgentMemoryFile: "AGENTS.md",
 		StreamOutput:    false,
-		Tmux:            false, // Tmux is disabled for native UI wrapping as per ACP limitations
 		BatchSize:       1,
 		BinaryOverrides: make(map[string]string),
 		Discover: StepConfig{
@@ -210,9 +208,6 @@ func ConfigFromMap(data map[string]interface{}, repo string) *LoopConfig {
 	}
 	if v, ok := data["stream_output"].(bool); ok {
 		cfg.StreamOutput = v
-	}
-	if v, ok := data["tmux"].(bool); ok {
-		cfg.Tmux = v
 	}
 	if v, ok := data["batch_size"].(float64); ok {
 		cfg.BatchSize = int(v)
@@ -451,10 +446,6 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 			cfg.FixUnrelatedTests = true
 		case arg == "--stream-output":
 			cfg.StreamOutput = true
-		case arg == "--tmux":
-			cfg.Tmux = true
-		case arg == "--no-tmux":
-			cfg.Tmux = false
 		case arg == "--batch-size" && i+1 < len(restArgs):
 			bs, _ := strconv.Atoi(restArgs[i+1])
 			cfg.BatchSize = bs

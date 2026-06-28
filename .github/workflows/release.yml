@@ -81,7 +81,6 @@ jobs:
             CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
               go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o "$out" .
           done
-          cp config.default.json dist/
           ls -la dist
 
       - name: Publish GitHub Release

@@ -312,16 +312,6 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 	}
 
 	cfg := NewDefaultConfig()
-	// Default configuration path
-	execPath, _ := os.Executable()
-	execDir := filepath.Dir(execPath)
-	defaultConfigPath := filepath.Join(execDir, "config.default.json")
-	if _, err := os.Stat(defaultConfigPath); err != nil {
-		// Fallback to workspace relative
-		defaultConfigPath = "config.default.json"
-	}
-
-	baseMap, _ := LoadJSONConfig(defaultConfigPath)
 	var configFilePath string
 
 	// Manually parse important flags first (repo, config) to construct base config
@@ -348,18 +338,13 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 		cfg.Repo = wd
 	}
 
-	if baseMap != nil {
-		cfg = ConfigFromMap(baseMap, cfg.Repo)
-	}
-
-	if configFilePath != nilVal() && configFilePath != "" {
+	if configFilePath != "" {
 		overrideMap, err := LoadJSONConfig(configFilePath)
 		if err != nil {
 			return "", nil, fmt.Errorf("failed to load config file: %w", err)
 		}
 		if overrideMap != nil {
-			merged := MergeConfig(baseMap, overrideMap)
-			cfg = ConfigFromMap(merged, cfg.Repo)
+			cfg = ConfigFromMap(overrideMap, cfg.Repo)
 		}
 	}
 

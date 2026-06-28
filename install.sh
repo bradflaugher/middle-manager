@@ -43,10 +43,6 @@ install_prebuilt() {
   echo "  ${url}"
   curl -fsSL "${url}" -o "${BIN_DIR}/mm" || return 1
   chmod +x "${BIN_DIR}/mm"
-
-  # Best-effort: grab config.default.json from the same release.
-  cfg="$(echo "${url}" | sed "s#/${asset}\$#/config.default.json#")"
-  curl -fsSL "${cfg}" -o "${BIN_DIR}/config.default.json" 2>/dev/null || true
   return 0
 }
 
@@ -77,8 +73,7 @@ EOF
   fi
   ( cd "${INSTALL_DIR}"
     rm -f "${BIN_DIR}/mm"
-    go build -o "${BIN_DIR}/mm" .
-    [ -f config.default.json ] && cp -f config.default.json "${BIN_DIR}/config.default.json" || true )
+    go build -o "${BIN_DIR}/mm" . )
   return 0
 }
 

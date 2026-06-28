@@ -83,7 +83,7 @@ def main():
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     target_repo = os.path.join(repo_root, "test-repo")
     mock_agent = os.path.join(repo_root, "docs", "scripts", "mock_agent.py")
-    gif_path = os.path.join(repo_root, "interface_demo.gif")
+    gif_path = os.path.join(repo_root, "docs", "interface_demo.gif")
     
     state_dir = os.path.join(target_repo, ".middle-manager")
     if os.path.exists(state_dir):

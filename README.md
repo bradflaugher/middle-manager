@@ -1,4 +1,4 @@
-![middle-manager logo](./interface_demo.gif)
+![middle-manager logo](./docs/interface_demo.gif)
 
 # middle-manager
 

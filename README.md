@@ -126,7 +126,7 @@ middle-manager executes steps in the following order:
 3. **Verify**: Reviews the changes, runs tests, and applies critical backpressure on failure.
 4. **Commit**: Saves updates, registers context updates in repository memory (`AGENTS.md`), and submits pull requests for review (it never auto-merges — see Merge Mode).
 
-The loop also stops itself early if it stalls: if an iteration produces the same diff and the same verifier feedback as the last one, it bails instead of burning iterations.
+A change is only committed on an explicit `VERDICT: PASS` from the verifier — a `FAIL` or a missing/garbled verdict **fails closed** and loops back rather than shipping unverified work. (The verifier agent runs the tests; middle-manager never runs them for you.) The loop also stops itself early if it stalls: if an iteration produces the same diff and the same verifier feedback as the last one, it bails instead of burning iterations.
 
 ---
 

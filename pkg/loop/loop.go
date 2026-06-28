@@ -322,12 +322,18 @@ func (l *MiddleManagerLoop) MaybeCommitAndPR(iteration int, issueData map[string
 	}
 }
 
+// ParseVerifierUpdates extracts the verifier's verdict from its output. If both
+// PASS and FAIL appear it returns FAIL (conservative). No verdict line → UNKNOWN.
 func (l *MiddleManagerLoop) ParseVerifierUpdates(stdout string) string {
-	verdict := "UNKNOWN"
 	reVerdict := regexp.MustCompile(`(?i)VERDICT:\s*(PASS|FAIL)`)
-	m := reVerdict.FindStringSubmatch(stdout)
-	if len(m) > 1 {
-		verdict = strings.ToUpper(m[1])
+	matches := reVerdict.FindAllStringSubmatch(stdout, -1)
+	verdict := "UNKNOWN"
+	for _, m := range matches {
+		v := strings.ToUpper(m[1])
+		if v == "FAIL" {
+			return "FAIL" // any explicit FAIL wins
+		}
+		verdict = v // PASS
 	}
 	return verdict
 }
@@ -424,11 +430,18 @@ func (l *MiddleManagerLoop) RunOnce(iteration int, issueData map[string]string) 
 	if contains(activeSteps, "verify") && verifierPassed {
 		verdict := l.ParseVerifierUpdates(verifierStdout)
 		l.Log(fmt.Sprintf("🔍 Verifier Verdict: %s", verdict), colors.Green)
-		if verdict == "FAIL" {
+		// Fail closed: only an explicit PASS ships. A FAIL or a missing/garbled
+		// verdict (UNKNOWN) loops back rather than silently committing unverified
+		// work. The iteration cap + stall detector bound the retries.
+		if verdict != "PASS" {
 			verifierPassed = false
-			l.Log("⚠️ Verifier reported failure — will loop back", colors.Yellow)
+			if verdict == "FAIL" {
+				l.Log("⚠️ Verifier reported FAIL — will loop back", colors.Yellow)
+			} else {
+				l.Log("⚠️ No explicit 'VERDICT: PASS' from verifier — failing closed, will loop back", colors.Yellow)
+			}
 			existingErr := l.ReadText(l.errorLogPath, "")
-			header := fmt.Sprintf("\n=== VERIFIER FEEDBACK (Iteration %d) ===\n", iteration)
+			header := fmt.Sprintf("\n=== VERIFIER FEEDBACK (Iteration %d, verdict=%s) ===\n", iteration, verdict)
 			l.WriteText(l.errorLogPath, header+verifierStdout+"\n"+existingErr)
 		}
 	}

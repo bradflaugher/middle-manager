@@ -55,11 +55,19 @@ source ~/.bashrc  # or ~/.zshrc
 ```
 </details>
 
-### Quick reference
+### Quick Start (Wizard)
+
+To run the interactive wizard and configure your loop step-by-step:
+```bash
+mm
+```
+
+---
+
+### Advanced CLI Usage (Quick Reference)
 
 | I want to… | Command |
 |------------|---------|
-| Run the interactive wizard | `mm` |
 | Add a feature | `mm quick "add feature XYZ"` |
 | Shorthand feature | `mm "add feature XYZ"` |
 | One GitHub issue | `mm --issue 42` |

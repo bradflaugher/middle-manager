@@ -1,24 +1,32 @@
 name: Release
 
-# Releases are automatic: every push to main builds cross-platform `mm`
-# binaries and publishes a GitHub Release whose tag/version is a datestring
-# (e.g. v2026.06.28-190843-abc1234), so there's nothing to bump by hand.
-# Pushing an explicit v* tag, or running this workflow manually, still works.
+# A single rolling release tagged "latest" is updated on every push to main
+# that touches code (doc-only pushes are ignored). It is recreated at the newest
+# commit and marked --latest, so install.sh's releases/latest lookup always
+# resolves to it. The binary self-identifies with a datestring version baked in
+# via -ldflags, so `mm --version` tells you exactly which build you're on.
+#
+# To cut a permanent, versioned release, run this workflow manually
+# (workflow_dispatch) and pass a tag like v1.0.0.
 
 on:
   push:
     branches: [ main ]
-    tags: [ 'v*' ]
+    paths-ignore:
+      - '*.md'
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE'
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to release (blank = auto datestring)'
+        description: 'Permanent release tag (e.g. v1.0.0). Blank = update rolling "latest".'
         required: false
 
 permissions:
   contents: write
 
-# Don't pile up overlapping releases if several pushes land quickly.
+# Serialize releases so two quick pushes can't recreate "latest" concurrently.
 concurrency:
   group: release
   cancel-in-progress: false
@@ -44,15 +52,22 @@ jobs:
       - name: Compute version
         run: |
           set -euo pipefail
-          if [ -n "${{ github.event.inputs.tag }}" ]; then
-            V="${{ github.event.inputs.tag }}"
-          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            V="${GITHUB_REF_NAME}"
+          SHA="$(git rev-parse --short HEAD)"
+          DATE="$(date -u +'%Y.%m.%d-%H%M%S')"
+          TAGIN="${{ github.event.inputs.tag }}"
+          if [ -n "$TAGIN" ]; then
+            # Manual, permanent versioned release.
+            echo "REL_TAG=$TAGIN" >> "$GITHUB_ENV"
+            echo "VERSION=$TAGIN"  >> "$GITHUB_ENV"
+            echo "ROLLING=false"   >> "$GITHUB_ENV"
+            echo "Releasing permanent $TAGIN"
           else
-            V="v$(date -u +'%Y.%m.%d-%H%M%S')-$(git rev-parse --short HEAD)"
+            # Rolling "latest"; binary version is a datestring for traceability.
+            echo "REL_TAG=latest"          >> "$GITHUB_ENV"
+            echo "VERSION=v${DATE}-${SHA}"  >> "$GITHUB_ENV"
+            echo "ROLLING=true"            >> "$GITHUB_ENV"
+            echo "Updating rolling latest -> v${DATE}-${SHA}"
           fi
-          echo "VERSION=$V" >> "$GITHUB_ENV"
-          echo "Releasing $V"
 
       - name: Build cross-platform binaries
         run: |
@@ -74,10 +89,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          echo "Releasing $VERSION"
-          if gh release view "$VERSION" >/dev/null 2>&1; then
-            gh release upload "$VERSION" dist/* --clobber
+          if [ "$ROLLING" = "true" ]; then
+            # Recreate the single "latest" release so its tag points at the
+            # newest commit and its assets are the fresh build.
+            gh release delete "$REL_TAG" --yes --cleanup-tag 2>/dev/null || true
+            gh release create "$REL_TAG" dist/* \
+              --title "latest ($VERSION)" \
+              --notes "Rolling build of main ($VERSION), updated automatically on every code push." \
+              --target "$GITHUB_SHA" \
+              --latest
           else
-            gh release create "$VERSION" dist/* \
-              --title "$VERSION" --generate-notes --target "$GITHUB_SHA"
+            if gh release view "$REL_TAG" >/dev/null 2>&1; then
+              gh release upload "$REL_TAG" dist/* --clobber
+            else
+              gh release create "$REL_TAG" dist/* \
+                --title "$REL_TAG" --generate-notes --target "$GITHUB_SHA" --latest
+            fi
           fi

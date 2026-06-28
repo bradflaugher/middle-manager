@@ -42,6 +42,7 @@ func TestBuildCommand(t *testing.T) {
 		"opencode": {"opencode", "run", "--dangerously-skip-permissions", "--dir", dir, p},
 		"codex":    {"codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "-C", dir, p},
 		"agy":      {"agy", "-p", p, "--dangerously-skip-permissions"},
+		"crush":    {"crush", "run", "-c", dir, p},
 	}
 
 	for agent, want := range cases {

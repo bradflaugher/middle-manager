@@ -18,7 +18,7 @@ import (
 )
 
 // AgentNames is the ordered roster of coding-agent CLIs middle-manager can stack.
-var AgentNames = []string{"grok", "claude", "codex", "opencode", "agy"}
+var AgentNames = []string{"grok", "claude", "codex", "opencode", "agy", "crush"}
 
 // AgentSpec describes how to invoke one coding-agent CLI in plain headless mode.
 //
@@ -91,6 +91,16 @@ var AgentSpecs = map[string]AgentSpec{
 		YoloFlags: []string{"--dangerously-skip-permissions"},
 		ModelFlag: "--model",
 		Notes:     "Google Antigravity (agy) — agy -p PROMPT --dangerously-skip-permissions",
+	},
+	"crush": {
+		Name:       "crush",
+		Binary:     "crush",
+		Subcommand: []string{"run"},
+		// `crush run` is non-interactive and auto-applies tool calls — there is
+		// no permission prompt to bypass (and --yolo is rejected on `run`).
+		ModelFlag: "-m",
+		CwdFlag:   "-c",
+		Notes:     "Charmbracelet Crush — crush run PROMPT -c DIR",
 	},
 }
 
@@ -548,10 +558,10 @@ func AvailableAgents(binaryOverrides map[string]string) []string {
 // preference. Each agent is run in plain headless mode, so any of them is a
 // valid choice for any step — these are just opinionated defaults.
 var StepAgentPriority = map[string][]string{
-	"discover": {"claude", "grok", "opencode", "codex", "agy"},
-	"execute":  {"opencode", "codex", "claude", "grok", "agy"},
-	"verify":   {"claude", "grok", "codex", "opencode", "agy"},
-	"commit":   {"grok", "opencode", "claude", "codex", "agy"},
+	"discover": {"claude", "grok", "opencode", "crush", "codex", "agy"},
+	"execute":  {"opencode", "codex", "claude", "crush", "grok", "agy"},
+	"verify":   {"claude", "grok", "crush", "codex", "opencode", "agy"},
+	"commit":   {"grok", "opencode", "crush", "claude", "codex", "agy"},
 }
 
 func AutodetectAgent(step string, binaryOverrides map[string]string, fallback string) string {

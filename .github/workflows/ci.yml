@@ -17,19 +17,16 @@ jobs:
       with:
         go-version: '1.25.x'
 
-    - name: Drop local replacements for CI
-      run: |
-        go mod edit \
-          -dropreplace charm.land/bubbletea/v2 \
-          -dropreplace charm.land/lipgloss/v2 \
-          -dropreplace charm.land/bubbles/v2 \
-          -dropreplace github.com/charmbracelet/harmonica \
-          -dropreplace github.com/lrstanley/bubblezone/v2 \
-          -dropreplace github.com/coder/acp-go-sdk
-        go mod tidy
-
     - name: Build
-      run: go build -v -o mm main.go
+      run: go build -v ./...
+
+    - name: Vet
+      run: go vet ./...
 
     - name: Test
       run: go test -v ./...
+
+    - name: Cross-compile (darwin/windows)
+      run: |
+        GOOS=darwin  GOARCH=arm64 go build -o /dev/null .
+        GOOS=windows GOARCH=amd64 go build -o /dev/null .

@@ -20,6 +20,14 @@ import (
 const version = "v0.2.0"
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "--version", "-v", "version":
+			fmt.Printf("middle-manager %s\n", version)
+			return
+		}
+	}
+
 	// Parse CLI Arguments
 	cmdName, cfg, err := config.ParseArgs(os.Args[1:])
 	if err != nil {

@@ -12,41 +12,47 @@ Each agent runs as its own CLI in plain headless mode, so it uses whatever login
 
 ## Install (One-Liner)
 
-* **Go 1.25.0+** (requires Go compiler to compile the binary)
-* **Install command**:
-  ```bash
-  curl -fsSL https://raw.githubusercontent.com/bradflaugher/middle-manager/main/install.sh | bash
-  ```
+```bash
+curl -fsSL https://raw.githubusercontent.com/bradflaugher/middle-manager/main/install.sh | bash
+```
 
-This installs `mm` to `~/.local/bin/mm` and clones the repo to `~/.local/share/middle-manager`.
+The installer downloads a **prebuilt binary** for your platform from the latest
+[GitHub Release](https://github.com/bradflaugher/middle-manager/releases) — **no Go toolchain required**.
+If no prebuilt binary is available it falls back to building from source (which
+*does* need Go 1.25+). It installs `mm` to `~/.local/bin/mm`.
+
+`mm` shells out to whichever agent CLIs you have installed (`grok`, `claude`,
+`opencode`, `codex`, `agy`, `crush`) and to `git`/`gh` — install the ones you want.
 
 <details>
-<summary><b>Manual Installation & PATH Setup</b></summary>
+<summary><b>Other ways to install</b></summary>
 
-### 1. Manual Installation
-If you prefer to install manually without the automatic script:
-1. **Clone the repository**:
-   ```bash
-   git clone https://github.com/bradflaugher/middle-manager.git ~/.local/share/middle-manager
-   ```
-2. **Build and install the binary**:
-   ```bash
-   cd ~/.local/share/middle-manager
-   go build -o ~/.local/bin/mm .
-   ```
-3. **Create the configuration directory**:
-   ```bash
-   mkdir -p ~/.config/middle-manager
-   ```
-
-### 2. Adding to PATH (if needed)
-Make sure `~/.local/bin` is in your shell's `PATH`. If not, add this to your shell config (e.g., `~/.bashrc` or `~/.zshrc`):
+### Download a binary directly (no Go)
+Grab the asset for your OS/arch from the
+[Releases page](https://github.com/bradflaugher/middle-manager/releases), then:
 ```bash
-export PATH="$HOME/.local/bin:$PATH"
+chmod +x mm_linux_amd64 && mv mm_linux_amd64 ~/.local/bin/mm
 ```
-Then reload your configuration:
+
+### Build from source (needs Go 1.25+)
+Install Go from [go.dev/doc/install](https://go.dev/doc/install), then:
 ```bash
-source ~/.bashrc  # or ~/.zshrc
+git clone https://github.com/bradflaugher/middle-manager.git
+cd middle-manager
+go build -o ~/.local/bin/mm .
+```
+
+### Cut a release (maintainers)
+Releases (and their prebuilt binaries) are produced by the `Release` GitHub
+Action when you push a version tag:
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+### PATH
+Make sure `~/.local/bin` is on your `PATH`:
+```bash
+export PATH="$HOME/.local/bin:$PATH"   # add to ~/.bashrc or ~/.zshrc
 ```
 </details>
 

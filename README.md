@@ -282,7 +282,4 @@ mm quick "add resume link to index.html" \
   --test-command "npm test"
 ```
 </details>
-
-
-
-MIT. No warranty.
+This project is licensed under the [MIT License](LICENSE).

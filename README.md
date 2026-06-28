@@ -57,32 +57,6 @@ mm
 
 ---
 
-## Supported Agents
-
-The loop dynamically resolves, configures, and orchestrates any installed coding agents on your `PATH`. The following agents are supported out of the box:
-
-* **Grok**: Connected natively via stdio.
-* **Claude Code**: Connected via the official [`@agentclientprotocol/claude-agent-acp`](https://github.com/agentclientprotocol/agent-client-protocol) adapter.
-* **OpenCode**: Connected natively via stdio.
-* **OpenAI Codex**: Connected via the community [`acp-adapter`](https://github.com/beyond5959/acp-adapter) gateway (`acp-adapter --adapter codex`).
-* **Google Antigravity (agy)**: Connected via the community Rust-based [`agy-acp`](https://github.com/hicder/agy-acp) adapter.
-
-You can inspect the availability of your installed agents at any time by running:
-```bash
-mm agents
-```
-
----
-
-## Planless Loop Architecture
-
-Starting in version 2.0, `middle-manager` operates under a **Planless** architecture. 
-Rather than generating and writing task lists (`fix_plan.md`) to disk (which pollutes the working repository and causes gitignore conflicts), agents scope the necessary changes in memory, write guidelines to `discover_output.txt` (stored in your `.middle-manager` state directory), and execute/verify changes dynamically.
-
-This streamlines loop execution, reduces latency, and allows simple code tasks and issue queue tickets to complete in **exactly one iteration**.
-
----
-
 ## Advanced CLI Usage (Quick Reference)
 
 | I want to… | Command |

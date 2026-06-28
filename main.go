@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bradflaugher/middle-manager/pkg/agents"
 	"github.com/bradflaugher/middle-manager/pkg/colors"
@@ -50,6 +51,8 @@ func main() {
 		cmdIssues(cfg)
 	case "run", "quick":
 		cmdRun(cfg)
+	case "merge":
+		cmdMerge(cfg)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmdName)
 		os.Exit(1)
@@ -273,5 +276,65 @@ func printSummaryPanel(cfg *config.LoopConfig, l *loop.MiddleManagerLoop, result
 		}
 		fmt.Println(colors.Colored("\n💻 Pick up where it left off — launch your programmer agent directly:", colors.Cyan))
 		fmt.Println("   " + colors.Colored(agentCmd, colors.Green+colors.Bold))
+	}
+}
+
+func cmdMerge(cfg *config.LoopConfig) {
+	author := ""
+	label := ""
+	limit := 30
+	if cfg.IssueQueue != nil {
+		author = cfg.IssueQueue.Author
+		label = cfg.IssueQueue.Label
+		limit = cfg.IssueQueue.Limit
+	}
+
+	fmt.Println(colors.Colored("Scanning for open PRs to auto-merge...", colors.Cyan))
+
+	for {
+		prs, err := gitops.ListOpenPRs(cfg.Repo, author, label, limit)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error listing PRs: %v\n", err)
+			os.Exit(1)
+		}
+
+		if len(prs) == 0 {
+			fmt.Println("No open PRs found.")
+			return
+		}
+
+		pendingCount := 0
+		mergedCount := 0
+
+		for _, pr := range prs {
+			safe, reason := pr.IsSafeToMerge(true) // require checks to pass
+			if safe {
+				fmt.Printf("PR #%d (%s) is green. Merging...\n", pr.Number, pr.Title)
+				out, err := gitops.MergePR(cfg.Repo, pr.Number, "squash", true, cfg.DryRun)
+				if err != nil {
+					fmt.Printf("  Error merging PR #%d: %v\n", pr.Number, err)
+				} else {
+					if out != "" {
+						fmt.Printf("  Merged: %s\n", out)
+					}
+					mergedCount++
+				}
+			} else {
+				if reason == "checks pending" {
+					fmt.Printf("PR #%d (%s) has pending checks: waiting...\n", pr.Number, pr.Title)
+					pendingCount++
+				} else {
+					fmt.Printf("PR #%d (%s) cannot be merged: %s\n", pr.Number, pr.Title, reason)
+				}
+			}
+		}
+
+		if pendingCount == 0 {
+			fmt.Println("No more pending PRs. Exiting.")
+			return
+		}
+
+		fmt.Println(colors.Colored("Waiting 30 seconds for CI/CD checks...", colors.Dim))
+		time.Sleep(30 * time.Second)
 	}
 }

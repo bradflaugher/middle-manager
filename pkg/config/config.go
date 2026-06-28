@@ -263,7 +263,7 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 	var restArgs []string
 
 	cliCommands := map[string]bool{
-		"run": true, "quick": true, "agents": true, "init": true, "status": true, "issues": true, "install-path": true,
+		"run": true, "quick": true, "agents": true, "init": true, "status": true, "issues": true, "install-path": true, "merge": true,
 	}
 
 	if len(args) > 0 {

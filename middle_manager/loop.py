@@ -247,6 +247,11 @@ class MiddleManagerLoop:
             return subprocess.CompletedProcess([], 127, "", "")
 
         prompt = self.prompt_for_step(step, iteration, issue_data)
+        custom_interjection = getattr(sc, "custom_interjection", None)
+        if custom_interjection:
+            prompt += f"\n\n## Custom User Interjection / Direction\n{custom_interjection}\n"
+            sc.custom_interjection = None
+
         prompt_file = self.state / f"{step}_prompt.md"
         self.write_text(prompt_file, prompt)
 

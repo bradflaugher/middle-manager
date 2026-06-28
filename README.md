@@ -1,4 +1,4 @@
-![middle-manager logo](Logo.png)
+![middle-manager logo](interface_demo.gif)
 
 # middle-manager
 

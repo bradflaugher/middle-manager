@@ -19,7 +19,7 @@ import (
 	"github.com/coder/acp-go-sdk"
 )
 
-var AgentNames = []string{"grok", "claude", "codex", "opencode"}
+var AgentNames = []string{"grok", "claude", "opencode"}
 
 type AgentSpec struct {
 	Name         string
@@ -58,17 +58,6 @@ var AgentSpecs = map[string]AgentSpec{
 		ModelFlag:    "--model",
 		CwdFlag:      "",
 		Notes:        "Run from target repo cwd. Also: --permission-mode bypassPermissions",
-	},
-	"codex": {
-		Name:         "codex",
-		Binary:       "codex",
-		YoloFlag:     "--yolo",
-		YoloPosition: "before_prompt",
-		Subcommand:   []string{"exec"},
-		PromptMode:   "arg",
-		ModelFlag:    "-m",
-		CwdFlag:      "",
-		Notes:        "OpenAI Codex CLI: codex exec PROMPT --yolo. Also: --full-auto",
 	},
 	"opencode": {
 		Name:         "opencode",
@@ -460,20 +449,7 @@ func GetACPCommand(agent string, binaryOverride string) []string {
 		}
 		return []string{binName, "acp"}
 	} else if agent == "claude" {
-		binName := binary
-		if binName == "" {
-			binName = "claude"
-		}
-		if _, err := exec.LookPath(binName); err == nil {
-			return []string{binName, "agent", "stdio"}
-		}
 		return []string{"npx", "-y", "@agentclientprotocol/claude-agent-acp"}
-	} else if agent == "codex" {
-		binName := binary
-		if binName == "" {
-			binName = "codex"
-		}
-		return []string{binName, "app-server"}
 	}
 	binName := binary
 	if binName == "" {
@@ -789,6 +765,10 @@ func RunAgentACP(
 	// Initialize negotiation
 	_, err = conn.Initialize(ctx, acp.InitializeRequest{
 		ProtocolVersion: acp.ProtocolVersionNumber,
+		ClientInfo: &acp.Implementation{
+			Name:    "middle-manager",
+			Version: "1.0.0",
+		},
 		ClientCapabilities: acp.ClientCapabilities{
 			Fs:       acp.FileSystemCapabilities{ReadTextFile: true, WriteTextFile: true},
 			Terminal: true,
@@ -912,10 +892,10 @@ func AvailableAgents(binaryOverrides map[string]string) []string {
 }
 
 var StepAgentPriority = map[string][]string{
-	"discover": {"grok", "claude", "opencode", "codex"},
-	"execute":  {"claude", "grok", "opencode", "codex"},
-	"verify":   {"codex", "grok", "claude", "opencode"},
-	"commit":   {"grok", "claude", "opencode", "codex"},
+	"discover": {"grok", "claude", "opencode"},
+	"execute":  {"claude", "grok", "opencode"},
+	"verify":   {"grok", "claude", "opencode"},
+	"commit":   {"grok", "claude", "opencode"},
 }
 
 func AutodetectAgent(step string, binaryOverrides map[string]string, fallback string) string {
@@ -941,7 +921,7 @@ func AutodetectStepAgents(binaryOverrides map[string]string) map[string]string {
 		return map[string]string{
 			"discover": "grok",
 			"execute":  "claude",
-			"verify":   "codex",
+			"verify":   "grok",
 			"commit":   "grok",
 		}
 	}

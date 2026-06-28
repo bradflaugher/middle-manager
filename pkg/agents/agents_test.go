@@ -72,3 +72,28 @@ func TestBuildCommandUnknownAgent(t *testing.T) {
 		t.Error("expected error for unknown agent")
 	}
 }
+
+func TestWithRootSandbox(t *testing.T) {
+	has := func(env []string, want string) bool {
+		for _, e := range env {
+			if e == want {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Non-root: untouched.
+	if got := withRootSandbox([]string{"PATH=/x"}, 1000); has(got, "IS_SANDBOX=1") {
+		t.Error("non-root should not get IS_SANDBOX")
+	}
+	// Root: IS_SANDBOX=1 injected.
+	if got := withRootSandbox([]string{"PATH=/x"}, 0); !has(got, "IS_SANDBOX=1") {
+		t.Error("root should get IS_SANDBOX=1")
+	}
+	// Root with an explicit setting: respected, not overridden.
+	got := withRootSandbox([]string{"IS_SANDBOX=0"}, 0)
+	if has(got, "IS_SANDBOX=1") {
+		t.Error("explicit IS_SANDBOX must be respected")
+	}
+}

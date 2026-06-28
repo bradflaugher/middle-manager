@@ -219,6 +219,24 @@ func cleanAgentEnv(env []string) []string {
 	return cleaned
 }
 
+// withRootSandbox appends IS_SANDBOX=1 when running as root (euid 0) and it is
+// not already set. Claude Code refuses --dangerously-skip-permissions under
+// root/sudo unless IS_SANDBOX is set; middle-manager's YOLO mode is already an
+// explicit "I accept the risk" context, so we mirror the common
+// `IS_SANDBOX=1 claude …` workaround. It's harmless for agents that don't read
+// the variable. No-op for non-root users (and on Windows, where Geteuid is -1).
+func withRootSandbox(env []string, euid int) []string {
+	if euid != 0 {
+		return env
+	}
+	for _, e := range env {
+		if strings.HasPrefix(e, "IS_SANDBOX=") {
+			return env // respect an explicit user setting
+		}
+	}
+	return append(env, "IS_SANDBOX=1")
+}
+
 // RunAgentCLI runs one agent step as a plain subprocess in its own process
 // group, streaming stdout (foreground) and stderr (greyed "thinking") into
 // onUpdate line by line with ANSI stripped. Cancelling ctx terminates the whole
@@ -238,7 +256,7 @@ func RunAgentCLI(
 
 	cmd := exec.Command(run.Command[0], run.Command[1:]...)
 	cmd.Dir = run.Cwd
-	cmd.Env = cleanAgentEnv(run.Env)
+	cmd.Env = withRootSandbox(cleanAgentEnv(run.Env), os.Geteuid())
 	setProcGroup(cmd)
 
 	stdoutPipe, err := cmd.StdoutPipe()

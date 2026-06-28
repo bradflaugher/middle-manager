@@ -63,17 +63,6 @@ To run the interactive wizard and configure your loop step-by-step:
 mm
 ```
 
-### Watch it work — and steer it
-
-Run a loop without `--stream-output` and you get a live TUI: an animated `DISCOVER → EXECUTE → VERIFY → COMMIT` pipeline, a dashboard (branch · current step · agent · elapsed), a resource panel (CPU sparkline · processes · sockets), and the agent's output streaming in real time.
-
-Because it's *micromanaged*, you steer it **between steps** from the input box:
-
-- a typed note is **queued and folded into the next step's prompt** — it can't change the step that's running right now (each step is a one-shot agent CLI), but the loop pauses briefly to show your note landing on the next one.
-- `/pause` · `/resume` · `/skip` take effect at the next step boundary.
-- `/quit` aborts immediately — it kills the running agent's process group.
-
----
 
 ## Advanced CLI Usage (Quick Reference)
 
@@ -86,12 +75,8 @@ Because it's *micromanaged*, you steer it **between steps** from the input box:
 | All bugs by user | `mm --label bug --author @someuser --close-issues` |
 | Good-first-issues sprint | `mm --label "good first issue" --issue-limit 10 --close-issues` |
 | Fix the codebase generally | `mm --mode repair` |
-| Merge ready open PRs | `mm merge` |
-| Merge PRs by one author | `mm merge --merge-author @someuser` |
-| Preview a merge run | `mm merge --dry-run` |
 | Point at another repo | `mm quick "…" --repo ~/other-project` |
 | Pause between steps | `mm quick "…" -i` |
-| Use a config file | `mm --config examples/quick-feature.json --repo .` |
 
 State lives in `<repo>/.middle-manager/`. Issue queue state is per-issue under `.middle-manager/issues/<number>/`.
 
@@ -124,24 +109,9 @@ middle-manager executes steps in the following order:
 1. **Discover**: Scans codebase and active issues, determines the bounds and scope of changes, and writes implementation guidelines.
 2. **Execute**: Implements the changes in the target workspace.
 3. **Verify**: Reviews the changes, runs tests, and applies critical backpressure on failure.
-4. **Commit**: Saves updates, registers context updates in repository memory (`AGENTS.md`), and submits pull requests for review (it never auto-merges — see Merge Mode).
+4. **Commit**: Saves updates, registers context updates in repository memory (`AGENTS.md`), and submits pull requests for review.
 
 A change is only committed on an explicit `VERDICT: PASS` from the verifier — a `FAIL` or a missing/garbled verdict **fails closed** and loops back rather than shipping unverified work. (The verifier agent runs the tests; middle-manager never runs them for you.) The loop also stops itself early if it stalls: if an iteration produces the same diff and the same verifier feedback as the last one, it bails instead of burning iterations.
-
----
-
-## Merge Mode
-
-The loop opens PRs and leaves them for a human — it never auto-merges. When you're ready to ship the green ones, that's a separate, explicit command:
-
-```bash
-mm merge                      # merge every ready open PR
-mm merge --merge-author @me   # only PRs by a given author
-mm merge --merge-pr 42        # just one specific PR
-mm merge --dry-run            # preview what would merge, change nothing
-```
-
-A PR is merged only if it's mergeable (no conflicts), not a draft, has no requested changes, and — unless you pass `--no-require-checks` — has green CI. It uses `gh pr merge` under the hood: never a force-merge, never `--admin`.
 
 ---
 

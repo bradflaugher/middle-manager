@@ -120,83 +120,6 @@ func RenderInfo(msg string) string {
 	return stDim.Render("• ") + stFg.Render(msg)
 }
 
-// ---- merge-mode rendering ----
-
-type MergeRow struct {
-	Number int
-	Title  string
-	Author string
-	Status string // merged | skip | failed
-	Reason string
-}
-
-func RenderMergeHeader(repo, author, label string, requireChecks, dryRun bool) string {
-	title := titleBar.Render("merge mode") + " " +
-		stDim.Render(filepath.Base(repo))
-	var filters []string
-	if author != "" {
-		filters = append(filters, "author="+author)
-	}
-	if label != "" {
-		filters = append(filters, "label="+label)
-	}
-	if requireChecks {
-		filters = append(filters, "require green checks")
-	} else {
-		filters = append(filters, stAmber.Render("checks NOT required"))
-	}
-	if dryRun {
-		filters = append(filters, stAmber.Render("DRY RUN"))
-	}
-	return "\n" + title + "\n" + stDim.Render("  "+strings.Join(filters, " · ")) + "\n"
-}
-
-func RenderMergeTable(rows []MergeRow) string {
-	if len(rows) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	for _, r := range rows {
-		var badge string
-		switch r.Status {
-		case "merged":
-			badge = stGreen.Render("✓ merged")
-		case "failed":
-			badge = stRed.Render("✗ failed")
-		default:
-			badge = stDim.Render("· skip  ")
-		}
-		title := r.Title
-		if len(title) > 48 {
-			title = title[:47] + "…"
-		}
-		line := fmt.Sprintf("  %s  %s %s  %s",
-			badge,
-			stViol.Render(fmt.Sprintf("#%-4d", r.Number)),
-			stFg.Render(fmt.Sprintf("%-49s", title)),
-			stDim.Render(r.Reason),
-		)
-		b.WriteString(line + "\n")
-	}
-	return b.String()
-}
-
-func RenderMergeSummary(merged, skipped, failed int, dryRun bool) string {
-	verb := "merged"
-	if dryRun {
-		verb = "would merge"
-	}
-	parts := []string{
-		stGreen.Render(fmt.Sprintf("%d %s", merged, verb)),
-		stDim.Render(fmt.Sprintf("%d skipped", skipped)),
-	}
-	if failed > 0 {
-		parts = append(parts, stRed.Render(fmt.Sprintf("%d failed", failed)))
-	}
-	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(cGreen).Padding(0, 2)
-	return box.Render(strings.Join(parts, "   ")) + "\n"
-}
-
 // RenderSummaryPanel renders the end-of-run summary box for the loop.
 func RenderSummaryPanel(success bool, reason, prURL string, iterations int, mission string) string {
 	if success {
@@ -240,7 +163,6 @@ const (
 	stateMission
 	stateIssueDetails
 	stateQueueFilters
-	stateMergeFilters
 	stateAgents
 	stateSteps
 	stateOptions
@@ -295,13 +217,12 @@ func NewWizardModel(initialCfg *config.LoopConfig) *WizardModel {
 		state:     stateRepo,
 		cfg:       initialCfg,
 		textInput: ti,
-		modes:     []string{"feature", "repair", "issue", "queue", "merge"},
+		modes:     []string{"feature", "repair", "issue", "queue"},
 		modeLabels: []string{
 			"Build something new  —  \"add feature XYZ\"   (recommended)",
 			"Discover & fix problems across the codebase",
 			"Work a single GitHub issue",
 			"Batch-drain a filtered queue of GitHub issues",
-			"Merge ready open PRs (no agents, just ship green ones)",
 		},
 		stepToAgent:   stepToAgent,
 		stepsOptions:  []int{4, 3},
@@ -357,7 +278,7 @@ func (m *WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *WizardModel) isTextState() bool {
 	switch m.state {
-	case stateRepo, stateMission, stateIssueDetails, stateQueueFilters, stateMergeFilters, stateMaxIters:
+	case stateRepo, stateMission, stateIssueDetails, stateQueueFilters, stateMaxIters:
 		return true
 	}
 	return false
@@ -414,12 +335,6 @@ func (m *WizardModel) nextStep() (tea.Model, tea.Cmd) {
 		case "queue":
 			m.state = stateQueueFilters
 			m.resetInput("Label filter (blank for none)")
-		case "merge":
-			if m.cfg.MergeMethod == "" {
-				m.cfg.MergeMethod = "squash"
-			}
-			m.state = stateMergeFilters
-			m.resetInput("PR author filter (blank = all)")
 		}
 
 	case stateMission:
@@ -457,9 +372,7 @@ func (m *WizardModel) nextStep() (tea.Model, tea.Cmd) {
 			m.state = stateAgents
 		}
 
-	case stateMergeFilters:
-		m.cfg.MergeAuthor = strings.TrimSpace(m.textInput.Value())
-		m.state = stateConfirm
+
 
 	case stateAgents:
 		m.cfg.Discover.Agent = m.stepToAgent["discover"]
@@ -512,7 +425,7 @@ func (m *WizardModel) prevStep() (tea.Model, tea.Cmd) {
 		m.state = stateRepo
 		m.textInput.SetValue(m.cfg.Repo)
 		m.textInput.Focus()
-	case stateMission, stateIssueDetails, stateQueueFilters, stateMergeFilters:
+	case stateMission, stateIssueDetails, stateQueueFilters:
 		m.state = stateMode
 	case stateAgents:
 		switch m.cfg.Mode {
@@ -535,13 +448,7 @@ func (m *WizardModel) prevStep() (tea.Model, tea.Cmd) {
 	case stateMaxIters:
 		m.state = stateOptions
 	case stateConfirm:
-		if m.cfg.Mode == "merge" {
-			m.state = stateMergeFilters
-			m.textInput.SetValue(m.cfg.MergeAuthor)
-			m.textInput.Focus()
-		} else {
-			m.state = stateMaxIters
-		}
+		m.state = stateMaxIters
 	}
 	return m, nil
 }
@@ -596,10 +503,7 @@ func (m *WizardModel) View() tea.View {
 			hint = "Max issues (default 20):"
 		}
 		s.WriteString("  " + hint + "\n\n  " + m.textInput.View() + "\n")
-	case stateMergeFilters:
-		s.WriteString(stepHeader(3, "Merge filters"))
-		s.WriteString("  Only merge PRs by this author (blank = everyone):\n\n  " + m.textInput.View() + "\n")
-		s.WriteString("\n" + stDim.Render("  Only PRs that are mergeable with green checks will be merged.") + "\n")
+
 	case stateAgents:
 		s.WriteString(stepHeader(4, "Agents per step"))
 		if m.customAgents {
@@ -652,16 +556,7 @@ func (m *WizardModel) confirmView() string {
 	var b strings.Builder
 	b.WriteString(row("repo", m.cfg.Repo))
 	b.WriteString(row("mode", stCyan.Render(m.cfg.Mode)))
-	if m.cfg.Mode == "merge" {
-		author := m.cfg.MergeAuthor
-		if author == "" {
-			author = "(everyone)"
-		}
-		b.WriteString(row("pr author", author))
-		b.WriteString(row("method", m.cfg.MergeMethod))
-		b.WriteString("\n  " + stGreen.Render("Press enter to merge ready PRs."))
-		return b.String()
-	}
+
 	if m.cfg.Mission != "" {
 		b.WriteString(row("mission", stAmber.Render(truncate(m.cfg.Mission, 56))))
 	}

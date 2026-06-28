@@ -12,7 +12,6 @@ import (
 	"github.com/bradflaugher/middle-manager/pkg/config"
 	"github.com/bradflaugher/middle-manager/pkg/gitops"
 	"github.com/bradflaugher/middle-manager/pkg/loop"
-	"github.com/bradflaugher/middle-manager/pkg/merge"
 	"github.com/bradflaugher/middle-manager/pkg/queue"
 	"github.com/bradflaugher/middle-manager/pkg/tui"
 )
@@ -49,8 +48,6 @@ func main() {
 		cmdStatus(cfg)
 	case "issues":
 		cmdIssues(cfg)
-	case "merge":
-		os.Exit(merge.NewRunner(cfg).Run())
 	case "run", "quick":
 		cmdRun(cfg)
 	default:
@@ -172,10 +169,6 @@ func cmdRun(cfg *config.LoopConfig) {
 			os.Exit(0)
 		}
 		cfg = wizardCfg
-	}
-
-	if cfg.Mode == "merge" {
-		os.Exit(merge.NewRunner(cfg).Run())
 	}
 
 	if cfg.Mode == "queue" && cfg.IssueQueue != nil {

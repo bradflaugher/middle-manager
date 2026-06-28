@@ -6,6 +6,8 @@ Micromanaged multi-agent coding loop that orchestrates your favorite coding CLIs
 
 **Bring your own agents.** middle-manager dynamically chains **Grok**, **Claude Code**, **OpenCode**, **OpenAI Codex**, and **Google Antigravity (agy)** into a tight 4-step software factory. It reads your codebase, scopes out requirements, executes fixes, critiques its own work, runs tests, commits, and opens PRs—completely on autopilot. *(Agents are auto-detected and configured automatically).*
 
+Each agent runs as its own CLI in plain headless mode, so it uses whatever login that tool already has—OAuth session or API key—with **no extra keys or adapters to configure**. And because it's *micromanaged*, you can watch every step live and steer it mid-run.
+
 ---
 
 ## Install (One-Liner)
@@ -54,6 +56,15 @@ To run the interactive wizard and configure your loop step-by-step:
 ```bash
 mm
 ```
+
+### Watch it work — and butt in
+
+Run a loop without `--stream-output` and you get a live TUI: an animated `DISCOVER → EXECUTE → VERIFY → COMMIT` pipeline, a dashboard (branch · current step · agent · elapsed), a resource panel (CPU sparkline · processes · sockets), and the agent's output streaming in real time.
+
+Because it's *micromanaged*, you can steer mid-run by typing in the input box:
+
+- a plain instruction is **queued and injected into the next step's prompt**
+- `/pause` · `/resume` · `/skip` (skip the current step) · `/quit`
 
 ---
 
@@ -106,7 +117,24 @@ middle-manager executes steps in the following order:
 1. **Discover**: Scans codebase and active issues, determines the bounds and scope of changes, and writes implementation guidelines.
 2. **Execute**: Implements the changes in the target workspace.
 3. **Verify**: Reviews the changes, runs tests, and applies critical backpressure on failure.
-4. **Commit**: Saves updates, registers context updates in repository memory (`AGENTS.md`), and submits pull requests (never merges directly).
+4. **Commit**: Saves updates, registers context updates in repository memory (`AGENTS.md`), and submits pull requests for review (it never auto-merges — see Merge Mode).
+
+The loop also stops itself early if it stalls: if an iteration produces the same diff and the same verifier feedback as the last one, it bails instead of burning iterations.
+
+---
+
+## Merge Mode
+
+The loop opens PRs and leaves them for a human — it never auto-merges. When you're ready to ship the green ones, that's a separate, explicit command:
+
+```bash
+mm merge                      # merge every ready open PR
+mm merge --merge-author @me   # only PRs by a given author
+mm merge --merge-pr 42        # just one specific PR
+mm merge --dry-run            # preview what would merge, change nothing
+```
+
+A PR is merged only if it's mergeable (no conflicts), not a draft, has no requested changes, and — unless you pass `--no-require-checks` — has green CI. It uses `gh pr merge` under the hood: never a force-merge, never `--admin`.
 
 ---
 

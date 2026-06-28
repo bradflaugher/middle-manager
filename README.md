@@ -4,14 +4,13 @@
 
 Micromanaged multi-agent coding loop that orchestrates your favorite coding CLIs.
 
-**Bring your own agents.** middle-manager dynamically chains **Grok**, **Claude Code**, **Crush**, **Agy**, **Codex**, and **OpenCode** into a tight 4-step software factory. It reads your codebase, maps out a task list, executes fixes, critiques its own work, runs tests, commits, and opens PRs—completely on autopilot. *(Agents are auto-detected and configured automatically).*
+**Bring your own agents.** middle-manager dynamically chains **Grok**, **Claude Code**, **Crush**, **Codex**, and **OpenCode** into a tight 4-step software factory. It reads your codebase, maps out a task list, executes fixes, critiques its own work, runs tests, commits, and opens PRs—completely on autopilot. *(Agents are auto-detected and configured automatically).*
 
 ---
 
 ## Install (One-Liner)
 
-* **Pure Python 3.10+** (zero dependencies, no pip requirements)
-* **Tmux (Highly Recommended)**: If `tmux` is installed, `middle-manager` automatically runs all agents inside background tmux sessions. This preserves their native pseudo-terminal (PTY) environment—enabling full colored TUIs, spinners, and interactive prompt choices—while keeping the main terminal clean.
+* **Go 1.25.0+** (requires Go compiler to compile the binary)
 * **Install command**:
   ```bash
   curl -fsSL https://raw.githubusercontent.com/bradflaugher/middle-manager/main/install.sh | bash
@@ -28,18 +27,12 @@ If you prefer to install manually without the automatic script:
    ```bash
    git clone https://github.com/bradflaugher/middle-manager.git ~/.local/share/middle-manager
    ```
-2. **Create the wrapper executable** at `~/.local/bin/mm`:
+2. **Build and install the binary**:
    ```bash
-   #!/usr/bin/env bash
-   set -euo pipefail
-   export PYTHONPATH="$HOME/.local/share/middle-manager:${PYTHONPATH:-}"
-   exec python3 "$HOME/.local/share/middle-manager/mm.py" "$@"
+   cd ~/.local/share/middle-manager
+   go build -o ~/.local/bin/mm main.go
    ```
-3. **Make it executable**:
-   ```bash
-   chmod +x ~/.local/bin/mm
-   ```
-4. **Create the configuration directory**:
+3. **Create the configuration directory**:
    ```bash
    mkdir -p ~/.config/middle-manager
    ```

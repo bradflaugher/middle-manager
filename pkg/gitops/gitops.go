@@ -64,7 +64,7 @@ func DetectBaseBranch(repo string) string {
 func EnsureBranch(repo string, prefix string, iteration int, baseBranch string) (string, error) {
 	branch := fmt.Sprintf("%s/loop-%d", prefix, iteration)
 	branches, _, _, _ := RunGit(repo, "branch", "--list", branch)
-	
+
 	hasBranch := false
 	for _, b := range strings.Split(branches, "\n") {
 		b = strings.TrimSpace(b)

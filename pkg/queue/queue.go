@@ -32,7 +32,7 @@ func NewIssueQueueRunner(cfg *config.LoopConfig) (*IssueQueueRunner, error) {
 func (r *IssueQueueRunner) Log(msg string, colorCode string) {
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
 	rawLine := fmt.Sprintf("[%s] %s", timestamp, msg)
-	
+
 	if colorCode != "" {
 		fmt.Println(colors.Colored(rawLine, colorCode))
 	} else {
@@ -65,7 +65,7 @@ func (r *IssueQueueRunner) ResetIssueState(issue map[string]string) {
 	}
 	seed += "## Tasks\n\n"
 	seed += fmt.Sprintf("- [ ] Resolve issue #%s: %s\n", number, issue["title"])
-	
+
 	_ = os.WriteFile(planPath, []byte(seed), 0644)
 
 	// Override config state

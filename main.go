@@ -187,7 +187,7 @@ func shouldWizard(cfg *config.LoopConfig) bool {
 
 func cmdRun(cfg *config.LoopConfig) {
 	if shouldWizard(cfg) {
-		wizardCfg, err := tui.RunWizardTUI(cfg.Repo)
+		wizardCfg, err := tui.RunWizardTUI(cfg)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Wizard error: %v\n", err)
 			os.Exit(1)
@@ -293,7 +293,7 @@ func printSummaryPanel(cfg *config.LoopConfig, l *loop.MiddleManagerLoop, result
 
 		sc := cfg.StepFor("execute")
 		promptMsg := fmt.Sprintf("The last task %q failed verification. Please debug and fix.", l.TopPlanItem())
-		
+
 		// Build interactive command suggestion
 		agentCmd := ""
 		switch sc.Agent {

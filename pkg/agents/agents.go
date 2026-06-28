@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/coder/acp-go-sdk"
 	"github.com/bradflaugher/middle-manager/pkg/gitops"
+	"github.com/coder/acp-go-sdk"
 )
 
 var AgentNames = []string{"grok", "claude", "codex", "opencode"}
@@ -741,7 +741,7 @@ func RunAgentACP(
 ) (string, int, error) {
 	cmdArgs := GetACPCommand(agent, binaryOverride)
 	if model != "" {
-		if agent == "grok" || agent == "opencode" {
+		if agent == "grok" {
 			cmdArgs = append(cmdArgs, "-m", model)
 		}
 	}
@@ -755,6 +755,7 @@ func RunAgentACP(
 	if err != nil {
 		return "", -1, err
 	}
+	defer stdin.Close()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return "", -1, err
@@ -813,6 +814,9 @@ func RunAgentACP(
 		SessionId: sessionResp.SessionId,
 		Prompt:    []acp.ContentBlock{acp.TextBlock(prompt)},
 	})
+
+	// Close stdin pipe to signal EOF to the agent process and avoid deadlock
+	_ = stdin.Close()
 
 	// Wait for process to exit
 	err = cmd.Wait()

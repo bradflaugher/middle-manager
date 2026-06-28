@@ -6,6 +6,7 @@
   "no_merge": true,
   "agent_memory_file": "AGENTS.md",
   "stream_output": false,
+  "fresh": true,
   "discover": {
     "agent": "grok",
     "model": null,
@@ -22,7 +23,7 @@
     "extra_args": []
   },
   "commit": {
-    "agent": "agy",
+    "agent": "grok",
     "model": null,
     "extra_args": []
   }

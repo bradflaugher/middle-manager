@@ -68,6 +68,7 @@ func NewDefaultConfig() *LoopConfig {
 		AgentMemoryFile: "AGENTS.md",
 		StreamOutput:    false,
 		BatchSize:       1,
+		Fresh:           true,
 		BinaryOverrides: make(map[string]string),
 		Discover: StepConfig{
 			Agent:     "grok",
@@ -388,6 +389,8 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 			}
 		case arg == "--fresh":
 			cfg.Fresh = true
+		case arg == "--no-fresh" || arg == "--resume":
+			cfg.Fresh = false
 		case arg == "--label" && i+1 < len(restArgs):
 			if cfg.IssueQueue == nil {
 				cfg.IssueQueue = &IssueQueueConfig{State: "open", Limit: 20, CloseOnSuccess: true}

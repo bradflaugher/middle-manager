@@ -25,17 +25,17 @@ type LoopResult struct {
 }
 
 type MiddleManagerLoop struct {
-	cfg            *config.LoopConfig
-	state          string
-	fixPlanPath    string
-	errorLogPath   string
-	verifyLogPath  string
-	iterationPath  string
-	runID          string
-	lastPRURL      string
-	startTime      time.Time
-	ctx            context.Context
-	cancel         context.CancelFunc
+	cfg           *config.LoopConfig
+	state         string
+	fixPlanPath   string
+	errorLogPath  string
+	verifyLogPath string
+	iterationPath string
+	runID         string
+	lastPRURL     string
+	startTime     time.Time
+	ctx           context.Context
+	cancel        context.CancelFunc
 }
 
 func NewMiddleManagerLoop(cfg *config.LoopConfig) *MiddleManagerLoop {
@@ -224,7 +224,7 @@ func (l *MiddleManagerLoop) PromptForStep(step string, iteration int, issueData 
 		l.ReadText(l.fixPlanPath, ""),
 		topItemStr,
 		l.AgentMemory(),
-		l.ReadText(l.errorLogPath, ""),
+		l.ReadText(l.verifyLogPath, ""),
 		l.ReadText(l.errorLogPath, ""),
 		iteration,
 		l.cfg.Mission,
@@ -244,21 +244,36 @@ func (l *MiddleManagerLoop) RunStep(step string, iteration int, issueData map[st
 		return "", 0, nil
 	}
 
-	binary := l.cfg.BinaryOverrides[sc.Agent]
-	if !agents.AgentAvailable(sc.Agent, binary) && !l.cfg.DryRun {
-		l.Log(fmt.Sprintf("Agent %s not found on PATH — skipping %s", sc.Agent, step), "")
-		return "", 127, nil
+	agent := sc.Agent
+	binary := l.cfg.BinaryOverrides[agent]
+	model := sc.Model
+	if !agents.AgentAvailable(agent, binary) && !l.cfg.DryRun {
+		fallback := agents.AutodetectAgent(step, l.cfg.BinaryOverrides, "")
+		if fallback != "" && fallback != agent {
+			l.Log(fmt.Sprintf("⚠️ Agent %s not found on PATH — falling back to %s for step %s", agent, fallback, step), colors.Yellow)
+			agent = fallback
+			binary = l.cfg.BinaryOverrides[agent]
+			model = "" // Use fallback agent's default model
+		} else {
+			l.Log(fmt.Sprintf("Agent %s not found on PATH and no fallback available — skipping %s", agent, step), "")
+			return "", 127, nil
+		}
 	}
 
 	prompt := l.PromptForStep(step, iteration, issueData)
+	interjection := tui.GetTUIInterjection()
+	if interjection != "" {
+		prompt += fmt.Sprintf("\n\n## Custom User Interjection / Direction\n%s\n", interjection)
+		l.Log(fmt.Sprintf("Injected instruction into step %s: %q", step, interjection), colors.Green)
+	}
 	promptFile := filepath.Join(l.state, fmt.Sprintf("%s_prompt.md", step))
 	l.WriteText(promptFile, prompt)
 
 	run, err := agents.BuildCommand(
-		sc.Agent,
+		agent,
 		prompt,
 		l.cfg.Repo,
-		sc.Model,
+		model,
 		l.cfg.Yolo,
 		sc.ExtraArgs,
 		binary,
@@ -271,7 +286,7 @@ func (l *MiddleManagerLoop) RunStep(step string, iteration int, issueData map[st
 
 	// Update TUI Status to Running Step
 	if !l.cfg.StreamOutput {
-		tui.NotifyTUIStatus(iteration, step, sc.Agent, "running", l.branchName(), time.Since(l.startTime))
+		tui.NotifyTUIStatus(iteration, step, agent, "running", l.branchName(), time.Since(l.startTime))
 	}
 
 	// Callback to pipe output directly to stdout or monitor viewport
@@ -284,14 +299,14 @@ func (l *MiddleManagerLoop) RunStep(step string, iteration int, issueData map[st
 	}
 
 	stdout, exitCode, err := agents.RunAgent(l.ctx, run, l.cfg.DryRun, l.cfg.StreamOutput, step, onUpdate)
-	
+
 	outputFile := filepath.Join(l.state, fmt.Sprintf("%s_output.txt", step))
 	l.WriteText(outputFile, stdout)
 
 	if exitCode == 0 {
-		l.Log(fmt.Sprintf("✅ Step %s (%s) finished successfully (exit code 0).", strings.ToUpper(step), strings.ToUpper(sc.Agent)), colors.Green)
+		l.Log(fmt.Sprintf("✅ Step %s (%s) finished successfully (exit code 0).", strings.ToUpper(step), strings.ToUpper(agent)), colors.Green)
 	} else {
-		l.Log(fmt.Sprintf("❌ Step %s (%s) failed (exit code %d).", strings.ToUpper(step), strings.ToUpper(sc.Agent), exitCode), colors.Red)
+		l.Log(fmt.Sprintf("❌ Step %s (%s) failed (exit code %d).", strings.ToUpper(step), strings.ToUpper(agent), exitCode), colors.Red)
 	}
 
 	return stdout, exitCode, err
@@ -366,7 +381,7 @@ func (l *MiddleManagerLoop) ParseVerifierUpdates(stdout string) (string, []strin
 	lines := strings.Split(stdout, "\n")
 	inUpdates := false
 	reHeader := regexp.MustCompile(`(?i)^(FIX[-_]PLAN[-_]UPDATES|PLAN[-_]UPDATES):`)
-	
+
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
@@ -401,7 +416,7 @@ func (l *MiddleManagerLoop) AddTasksToPlan(newTasks []string) {
 	}
 	text := l.ReadText(l.fixPlanPath, "")
 	lines := strings.Split(text, "\n")
-	
+
 	tasksIndex := -1
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -420,7 +435,7 @@ func (l *MiddleManagerLoop) AddTasksToPlan(newTasks []string) {
 			}
 			insertIndex++
 		}
-		
+
 		// Insert in reverse order to maintain order
 		for i := len(newTasks) - 1; i >= 0; i-- {
 			lines = append(lines[:insertIndex], append([]string{newTasks[i]}, lines[insertIndex:]...)...)
@@ -473,11 +488,6 @@ func (l *MiddleManagerLoop) RunOnce(iteration int, issueData map[string]string) 
 		// Quit check
 		if tui.IsTUIQuitting() {
 			return false
-		}
-
-		// Prompt interjection check
-		if tui.CheckTUIInterjectPrompt() {
-			l.handleInterjectionPrompt(step)
 		}
 
 		stdout, exitCode, err := l.RunStep(step, iteration, issueData)
@@ -562,10 +572,89 @@ func (l *MiddleManagerLoop) CheckOffTopItems(count int) {
 	}
 }
 
+func (l *MiddleManagerLoop) ResolveStepAgents() {
+	activeSteps := l.cfg.ActiveSteps()
+	installed := agents.AvailableAgents(l.cfg.BinaryOverrides)
+	if len(installed) == 0 {
+		return
+	}
+
+	assigned := make(map[string]string)
+	
+	// First pass: keep explicitly requested agents if they are installed
+	for _, step := range activeSteps {
+		sc := l.cfg.StepFor(step)
+		binary := l.cfg.BinaryOverrides[sc.Agent]
+		if agents.AgentAvailable(sc.Agent, binary) {
+			assigned[step] = sc.Agent
+		}
+	}
+
+	// Second pass: for missing agents, assign available agents trying to diversify
+	for _, step := range activeSteps {
+		if _, ok := assigned[step]; ok {
+			continue
+		}
+
+		sc := l.cfg.StepFor(step)
+		priorityList := agents.StepAgentPriority[step]
+		if priorityList == nil {
+			priorityList = agents.AgentNames
+		}
+
+		chosen := ""
+		// Try to find an installed agent that is not yet assigned to any step
+		for _, name := range priorityList {
+			alreadyAssigned := false
+			for _, assignedAgent := range assigned {
+				if assignedAgent == name {
+					alreadyAssigned = true
+					break
+				}
+			}
+			isInstalled := false
+			for _, inst := range installed {
+				if inst == name {
+					isInstalled = true
+					break
+				}
+			}
+			if isInstalled && !alreadyAssigned {
+				chosen = name
+				break
+			}
+		}
+
+		// Fallback: pick the highest priority installed agent (allowing duplicate assignment)
+		if chosen == "" {
+			for _, name := range priorityList {
+				isInstalled := false
+				for _, inst := range installed {
+					if inst == name {
+						isInstalled = true
+						break
+					}
+				}
+				if isInstalled {
+					chosen = name
+					break
+				}
+			}
+		}
+
+		if chosen != "" {
+			l.Log(fmt.Sprintf("⚠️ Agent %s for step %s not found on PATH — falling back to %s to diversify agents", sc.Agent, step, chosen), colors.Yellow)
+			sc.Agent = chosen
+		}
+	}
+}
+
 func (l *MiddleManagerLoop) RunUntilComplete() (*LoopResult, error) {
 	if _, err := os.Stat(l.cfg.Repo); os.IsNotExist(err) {
 		return &LoopResult{Success: false, Reason: fmt.Sprintf("Repo not found: %s", l.cfg.Repo)}, nil
 	}
+
+	l.ResolveStepAgents()
 
 	if l.cfg.Fresh {
 		l.ResetLoopState()
@@ -676,35 +765,7 @@ func (l *MiddleManagerLoop) checkTUIPause() {
 	}
 }
 
-func (l *MiddleManagerLoop) handleInterjectionPrompt(step string) {
-	// Temporarily exit TUI screen
-	fmt.Print("\033[H\033[J") // Clear screen
-	fmt.Println("=== INTERJECT CUSTOM INSTRUCTIONS ===")
-	fmt.Printf("Enter custom instructions to inject into next step's (%s) prompt:\n", step)
-	fmt.Print("middle-manager> ")
-	
-	var customText string
-	// Simple scanner to read line
-	var input []byte
-	var b [1]byte
-	for {
-		_, err := os.Stdin.Read(b[:])
-		if err != nil || b[0] == '\n' {
-			break
-		}
-		input = append(input, b[0])
-	}
-	customText = strings.TrimSpace(string(input))
 
-	if customText != "" {
-		// We'll append custom instruction to execute step
-		promptFile := filepath.Join(l.state, fmt.Sprintf("%s_prompt.md", step))
-		existing := l.ReadText(promptFile, "")
-		existing += fmt.Sprintf("\n\n## Custom User Interjection / Direction\n%s\n", customText)
-		l.WriteText(promptFile, existing)
-		l.Log(fmt.Sprintf("Injected instruction into step %s: %q", step, customText), colors.Green)
-	}
-}
 
 func (l *MiddleManagerLoop) trackResourcesBackground() {
 	var lastTicks *float64

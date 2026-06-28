@@ -72,41 +72,47 @@ const (
 )
 
 type WizardModel struct {
-	state          wizardState
-	cfg            *config.LoopConfig
-	textInput      textinput.Model
-	err            error
-	done           bool
-	quitting       bool
-	modeIndex      int
-	modes          []string
-	modeLabels     []string
-	customAgents   bool
-	agentIndex     int
-	stepToAgent    map[string]string
-	stepsIndex     int
-	stepsOptions   []int
-	optionsIndex   int
-	optionsList    []string
-	optionsValues  []bool
-	issueInput     string
-	queueLabel     string
-	queueAuthor    string
-	queueLimit     string
-	maxIters       string
-	confirmed      bool
+	state         wizardState
+	cfg           *config.LoopConfig
+	textInput     textinput.Model
+	err           error
+	done          bool
+	quitting      bool
+	modeIndex     int
+	modes         []string
+	modeLabels    []string
+	customAgents  bool
+	agentIndex    int
+	stepToAgent   map[string]string
+	stepsIndex    int
+	stepsOptions  []int
+	optionsIndex  int
+	optionsList   []string
+	optionsValues []bool
+	issueInput    string
+	queueLabel    string
+	queueAuthor   string
+	queueLimit    string
+	maxIters      string
+	confirmed     bool
 }
 
-func NewWizardModel(initialRepo string) *WizardModel {
+func NewWizardModel(initialCfg *config.LoopConfig) *WizardModel {
 	ti := textinput.New()
 	ti.Placeholder = "Repository Path"
 	ti.Focus()
-	ti.SetValue(initialRepo)
+	ti.SetValue(initialCfg.Repo)
 	ti.CharLimit = 250
 	ti.SetWidth(60)
 
-	cfg := config.NewDefaultConfig()
-	cfg.Repo = initialRepo
+	cfg := initialCfg
+
+	stepToAgent := map[string]string{
+		"discover": cfg.Discover.Agent,
+		"execute":  cfg.Execute.Agent,
+		"verify":   cfg.Verify.Agent,
+		"commit":   cfg.Commit.Agent,
+	}
 
 	return &WizardModel{
 		state:     stateRepo,
@@ -119,11 +125,11 @@ func NewWizardModel(initialRepo string) *WizardModel {
 			"Work a single GitHub issue",
 			"Batch loop: drain a filtered queue of GitHub issues",
 		},
-		stepToAgent:  agents.AutodetectStepAgents(nil),
-		stepsOptions: []int{4, 3},
-		optionsList:  []string{"YOLO Mode (Auto-approve permissions)", "Interactive Pause Between Steps", "Allow fixing unrelated test failures"},
-		optionsValues: []bool{true, false, false},
-		maxIters:     "10",
+		stepToAgent:   stepToAgent,
+		stepsOptions:  []int{4, 3},
+		optionsList:   []string{"YOLO Mode (Auto-approve permissions)", "Interactive Pause Between Steps", "Allow fixing unrelated test failures", "Fresh Mode (Reset loop state and start clean)"},
+		optionsValues: []bool{cfg.Yolo, cfg.Interactive, cfg.FixUnrelatedTests, cfg.Fresh},
+		maxIters:      strconv.Itoa(cfg.MaxIterations),
 	}
 }
 
@@ -144,6 +150,11 @@ func (m *WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.nextStep()
 		case "esc":
 			return m.prevStep()
+		case "c", "C":
+			if m.state == stateAgents {
+				m.customAgents = !m.customAgents
+				m.agentIndex = 0
+			}
 		case "up", "k":
 			if m.state == stateMode {
 				m.modeIndex--
@@ -159,6 +170,11 @@ func (m *WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.optionsIndex--
 				if m.optionsIndex < 0 {
 					m.optionsIndex = len(m.optionsList) - 1
+				}
+			} else if m.state == stateAgents && m.customAgents {
+				m.agentIndex--
+				if m.agentIndex < 0 {
+					m.agentIndex = 3
 				}
 			}
 		case "down", "j":
@@ -177,6 +193,19 @@ func (m *WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.optionsIndex >= len(m.optionsList) {
 					m.optionsIndex = 0
 				}
+			} else if m.state == stateAgents && m.customAgents {
+				m.agentIndex++
+				if m.agentIndex > 3 {
+					m.agentIndex = 0
+				}
+			}
+		case "left", "h":
+			if m.state == stateAgents && m.customAgents {
+				m.cycleAgent(m.agentIndex, -1)
+			}
+		case "right", "l":
+			if m.state == stateAgents && m.customAgents {
+				m.cycleAgent(m.agentIndex, 1)
 			}
 		case "space":
 			if m.state == stateOptions {
@@ -293,7 +322,8 @@ func (m *WizardModel) nextStep() (tea.Model, tea.Cmd) {
 		m.cfg.Yolo = m.optionsValues[0]
 		m.cfg.Interactive = m.optionsValues[1]
 		m.cfg.FixUnrelatedTests = m.optionsValues[2]
-		
+		m.cfg.Fresh = m.optionsValues[3]
+
 		m.state = stateMaxIters
 		m.textInput.Reset()
 		m.textInput.Placeholder = "Max iterations per task (default 10)"
@@ -360,6 +390,30 @@ func (m *WizardModel) prevStep() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *WizardModel) cycleAgent(stepIdx int, dir int) {
+	steps := []string{"discover", "execute", "verify", "commit"}
+	step := steps[stepIdx]
+	current := m.stepToAgent[step]
+	if current == "" {
+		current = "grok"
+	}
+	
+	// Find index in AgentNames
+	idx := -1
+	for i, name := range agents.AgentNames {
+		if name == current {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		idx = 0
+	}
+	
+	idx = (idx + dir + len(agents.AgentNames)) % len(agents.AgentNames)
+	m.stepToAgent[step] = agents.AgentNames[idx]
+}
+
 func (m *WizardModel) View() tea.View {
 	if m.quitting {
 		return tea.NewView("Wizard aborted.\n")
@@ -417,14 +471,30 @@ func (m *WizardModel) View() tea.View {
 		s += greyStyle.Render("Press Enter to continue, Esc to go back")
 
 	case stateAgents:
-		s += boldStyle.Render("Step 4: Autodetected Agents") + "\n"
-		s += "The following agents were found on your PATH and assigned to steps:\n\n"
-		s += fmt.Sprintf("  %-12s %s\n", "discover:", greenStyle.Render(m.stepToAgent["discover"]))
-		s += fmt.Sprintf("  %-12s %s\n", "execute:", greenStyle.Render(m.stepToAgent["execute"]))
-		s += fmt.Sprintf("  %-12s %s\n", "verify:", greenStyle.Render(m.stepToAgent["verify"]))
-		s += fmt.Sprintf("  %-12s %s\n", "commit:", greenStyle.Render(m.stepToAgent["commit"]))
-		s += "\n"
-		s += greyStyle.Render("Press Enter to accept, Esc to go back")
+		s += boldStyle.Render("Step 4: Configure Steps & Agents") + "\n"
+		if m.customAgents {
+			s += "Customize the agent assigned to each loop step:\n\n"
+			steps := []string{"discover", "execute", "verify", "commit"}
+			for i, step := range steps {
+				cursor := " "
+				style := normalStyle
+				if i == m.agentIndex {
+					cursor = ">"
+					style = accentStyle
+				}
+				s += style.Render(fmt.Sprintf(" %s %-12s < %s >", cursor, step+":", m.stepToAgent[step])) + "\n"
+			}
+			s += "\n"
+			s += greyStyle.Render("Use Up/Down to navigate, Left/Right to change agent, [c] to finish, Enter to confirm, Esc to go back")
+		} else {
+			s += "The following agents were autodetected and assigned to steps:\n\n"
+			s += fmt.Sprintf("  %-12s %s\n", "discover:", greenStyle.Render(m.stepToAgent["discover"]))
+			s += fmt.Sprintf("  %-12s %s\n", "execute:", greenStyle.Render(m.stepToAgent["execute"]))
+			s += fmt.Sprintf("  %-12s %s\n", "verify:", greenStyle.Render(m.stepToAgent["verify"]))
+			s += fmt.Sprintf("  %-12s %s\n", "commit:", greenStyle.Render(m.stepToAgent["commit"]))
+			s += "\n"
+			s += greyStyle.Render("Press [c] to customize agents, Enter to accept, Esc to go back")
+		}
 
 	case stateSteps:
 		s += boldStyle.Render("Step 5: Select loop steps count") + "\n"
@@ -479,6 +549,7 @@ func (m *WizardModel) View() tea.View {
 		s += fmt.Sprintf("  Steps Count:%d (%s)\n", m.cfg.Steps, strings.Join(m.cfg.ActiveSteps(), ", "))
 		s += fmt.Sprintf("  YOLO Mode:  %t\n", m.cfg.Yolo)
 		s += fmt.Sprintf("  Interactive:%t\n", m.cfg.Interactive)
+		s += fmt.Sprintf("  Fresh Mode: %t\n", m.cfg.Fresh)
 		s += fmt.Sprintf("  Max Iters:  %d\n", m.cfg.MaxIterations)
 		s += "\n"
 		s += greenStyle.Render(" Press Enter to START middle-manager loop, Esc to go back")
@@ -488,8 +559,8 @@ func (m *WizardModel) View() tea.View {
 	return tea.NewView(s)
 }
 
-func RunWizardTUI(initialRepo string) (*config.LoopConfig, error) {
-	m := NewWizardModel(initialRepo)
+func RunWizardTUI(initialCfg *config.LoopConfig) (*config.LoopConfig, error) {
+	m := NewWizardModel(initialCfg)
 	p := tea.NewProgram(m)
 	_, err := p.Run()
 	if err != nil {
@@ -551,6 +622,7 @@ type MonitorModel struct {
 	skipStep      bool
 	interjectText string
 	promptInter   bool
+	textInput     textinput.Model
 }
 
 func NewMonitorModel(cfg *config.LoopConfig) *MonitorModel {
@@ -558,12 +630,19 @@ func NewMonitorModel(cfg *config.LoopConfig) *MonitorModel {
 	vp.Style = logBorder
 	vp.SetContent("Waiting for loop to start...")
 
+	ti := textinput.New()
+	ti.Placeholder = "Type instruction to interject, or /pause, /skip, /quit (Press Enter to send)"
+	ti.Focus()
+	ti.CharLimit = 250
+	ti.SetWidth(100)
+
 	return &MonitorModel{
 		cfg:         cfg,
 		state:       "waiting",
 		logViewport: vp,
 		logs:        []string{},
 		pauseChan:   make(chan struct{}),
+		textInput:   ti,
 	}
 }
 
@@ -574,6 +653,8 @@ func (m *MonitorModel) Init() tea.Cmd {
 func (m *MonitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
 	case TUIUpdateMsg:
@@ -621,25 +702,57 @@ func (m *MonitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "ctrl+c", "q":
+		case "ctrl+c":
 			m.quitting = true
 			return m, tea.Quit
-		case "p":
-			m.paused = !m.paused
-			if m.paused {
-				m.state = "paused"
-			} else {
-				m.state = "running"
+		case "pageup":
+			m.logViewport.HalfPageUp()
+			return m, nil
+		case "pagedown":
+			m.logViewport.HalfPageDown()
+			return m, nil
+		case "enter":
+			val := strings.TrimSpace(m.textInput.Value())
+			if val != "" {
+				m.textInput.Reset()
+				if strings.HasPrefix(val, "/") {
+					// Handle slash commands
+					switch val {
+					case "/pause":
+						m.paused = !m.paused
+						if m.paused {
+							m.state = "paused"
+							m.logs = append(m.logs, yellowStyle.Render("\n[TUI] Paused by user command.\n"))
+						} else {
+							m.state = "running"
+							m.logs = append(m.logs, greenStyle.Render("\n[TUI] Resumed by user command.\n"))
+						}
+					case "/skip":
+						m.skipStep = true
+						m.logs = append(m.logs, yellowStyle.Render("\n[TUI] Skipping current step by user command.\n"))
+					case "/quit":
+						m.quitting = true
+						return m, tea.Quit
+					default:
+						m.logs = append(m.logs, redStyle.Render(fmt.Sprintf("\n[TUI] Unknown command: %s\n", val)))
+					}
+				} else {
+					// Interject instruction
+					m.interjectText = val
+					m.logs = append(m.logs, greenStyle.Render(fmt.Sprintf("\n[TUI Interjection] %s\n", val)))
+				}
+				m.logViewport.SetContent(strings.Join(m.logs, ""))
+				m.logViewport.GotoBottom()
 			}
-		case "s":
-			m.skipStep = true
-		case "i":
-			m.promptInter = true
-			return m, tea.Quit // Exit program so user can type instruction on main stdout
+			return m, nil
 		}
 	}
 
-	return m, nil
+	var tiCmd tea.Cmd
+	m.textInput, tiCmd = m.textInput.Update(msg)
+	cmds = append(cmds, tiCmd)
+
+	return m, tea.Batch(cmds...)
 }
 
 func (m *MonitorModel) View() tea.View {
@@ -705,8 +818,12 @@ func (m *MonitorModel) View() tea.View {
 	s += boldStyle.Render("Agent Real-time Console output:") + "\n"
 	s += m.logViewport.View() + "\n\n"
 
+	// Text input for interjection / slash commands
+	s += boldStyle.Render("Interject / Command Input:") + "\n"
+	s += m.textInput.View() + "\n\n"
+
 	// Keyboard controls legend
-	s += greyStyle.Render("Controls: [p] Pause/Resume | [s] Skip Step | [i] Interject Instructions | [q] Quit loop") + "\n"
+	s += greyStyle.Render("Commands: /pause | /skip | /quit | Or type instructions to interject directly (PageUp/PageDown to scroll)") + "\n"
 
 	return tea.NewView(s)
 }
@@ -799,15 +916,4 @@ func GetTUIInterjection() string {
 	return res
 }
 
-func CheckTUIInterjectPrompt() bool {
-	if GlobalModel == nil {
-		return false
-	}
-	GlobalModel.mu.Lock()
-	defer GlobalModel.mu.Unlock()
-	if GlobalModel.promptInter {
-		GlobalModel.promptInter = false // Reset
-		return true
-	}
-	return false
-}
+

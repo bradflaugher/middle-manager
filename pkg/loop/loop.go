@@ -366,6 +366,18 @@ func (l *MiddleManagerLoop) RunOnce(iteration int, issueData map[string]string) 
 			return false
 		}
 
+		// If the operator queued a note, make its application visible: announce
+		// it at the boundary and pause briefly so they see it land on this step
+		// (RunStep then folds it into the prompt). Skipped in stream mode.
+		if note := tui.PendingInterjection(); note != "" && !l.cfg.StreamOutput {
+			shown := note
+			if len(shown) > 80 {
+				shown = shown[:79] + "…"
+			}
+			l.Log(fmt.Sprintf("📨 Applying your queued note to the %s step → %q", strings.ToUpper(step), shown), colors.Magenta+colors.Bold)
+			time.Sleep(1500 * time.Millisecond)
+		}
+
 		stdout, exitCode, err := l.RunStep(step, iteration, issueData)
 		if err != nil {
 			l.Log(fmt.Sprintf("Step %s failed with error: %v", step, err), colors.Red)

@@ -57,14 +57,15 @@ To run the interactive wizard and configure your loop step-by-step:
 mm
 ```
 
-### Watch it work — and butt in
+### Watch it work — and steer it
 
 Run a loop without `--stream-output` and you get a live TUI: an animated `DISCOVER → EXECUTE → VERIFY → COMMIT` pipeline, a dashboard (branch · current step · agent · elapsed), a resource panel (CPU sparkline · processes · sockets), and the agent's output streaming in real time.
 
-Because it's *micromanaged*, you can steer mid-run by typing in the input box:
+Because it's *micromanaged*, you steer it **between steps** from the input box:
 
-- a plain instruction is **queued and injected into the next step's prompt**
-- `/pause` · `/resume` · `/skip` (skip the current step) · `/quit`
+- a typed note is **queued and folded into the next step's prompt** — it can't change the step that's running right now (each step is a one-shot agent CLI), but the loop pauses briefly to show your note landing on the next one.
+- `/pause` · `/resume` · `/skip` take effect at the next step boundary.
+- `/quit` aborts immediately — it kills the running agent's process group.
 
 ---
 

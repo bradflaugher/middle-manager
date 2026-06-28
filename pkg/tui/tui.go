@@ -772,7 +772,7 @@ func NewMonitorModel(cfg *config.LoopConfig) *MonitorModel {
 	vp.SetContent(stDim.Render("waiting for the loop to start…"))
 
 	ti := textinput.New()
-	ti.Placeholder = "type to interject · /pause /resume /skip /quit"
+	ti.Placeholder = "queue a note for the NEXT step · /pause /resume /skip /quit"
 	ti.Focus()
 	ti.CharLimit = 400
 	ti.SetWidth(90)
@@ -888,7 +888,7 @@ func (m *MonitorModel) handleInput() {
 		return
 	}
 	m.interject = val
-	m.pushLog(stMag.Render("✎ interjection queued (applies next step): ") + stFg.Render(val) + "\n")
+	m.pushLog(stMag.Render("✎ note queued — added to the NEXT step's prompt (it can't change the step running now): ") + stFg.Render(val) + "\n")
 }
 
 func (m *MonitorModel) pushLog(s string) {
@@ -927,7 +927,7 @@ func (m *MonitorModel) View() tea.View {
 	b.WriteString(panelLabel.Render(" live agent output") + "\n")
 	b.WriteString(logPanel.Render(m.logViewport.View()) + "\n")
 	b.WriteString(inputBar.Render(m.textInput.View()) + "\n")
-	b.WriteString(stDim.Render(" ↑↓/pgup pgdn scroll · enter send · /pause /resume /skip /quit · ^c quit"))
+	b.WriteString(stDim.Render(" pgup/pgdn scroll · enter: queue note for next step · /pause /resume /skip · /quit aborts now · ^c quit"))
 	return tea.NewView(b.String())
 }
 
@@ -1125,4 +1125,16 @@ func GetTUIInterjection() string {
 	res := GlobalModel.interject
 	GlobalModel.interject = ""
 	return res
+}
+
+// PendingInterjection peeks at a queued note without consuming it, so the loop
+// can announce "your note is being applied now" at the step boundary before
+// GetTUIInterjection folds it into the prompt.
+func PendingInterjection() string {
+	if GlobalModel == nil {
+		return ""
+	}
+	GlobalModel.mu.Lock()
+	defer GlobalModel.mu.Unlock()
+	return GlobalModel.interject
 }

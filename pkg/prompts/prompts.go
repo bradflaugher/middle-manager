@@ -141,7 +141,7 @@ You are the **Ship** agent. Persist learnings and commit verified work.
 3. Commit with message: ` + "`" + `middle-manager: {mission}` + "`" + ` (truncate to 72 chars).
 4. Push the current branch to origin.
 5. Create a PR with ` + "`" + `gh pr create` + "`" + ` if ` + "`" + `gh` + "`" + ` is available. Link issue {issue_number} if set.
-6. **Do not merge the PR manually.** However, if auto-merge is requested in repository memory or conventions, you may enable GitHub auto-merge on the PR using ` + "`" + `gh pr merge --auto --squash` + "`" + ` (or ` + "`" + `--merge` + "`" + `/` + "`" + `--rebase` + "`" + `). Otherwise, leave the PR open for human review.
+6. **Never merge the PR.** Human review required.
 
 If there is nothing to commit, say so and exit cleanly.`
 

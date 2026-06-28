@@ -298,15 +298,23 @@ func cmdMerge(cfg *config.LoopConfig) {
 			os.Exit(1)
 		}
 
-		if len(prs) == 0 {
-			fmt.Println("No open PRs found.")
+		// Filter to only middle-manager created branches
+		var mmPrs []gitops.PullRequest
+		for _, pr := range prs {
+			if strings.HasPrefix(pr.HeadRef, cfg.BranchPrefix+"/loop-") || strings.HasPrefix(pr.HeadRef, cfg.BranchPrefix+"/issue-") {
+				mmPrs = append(mmPrs, pr)
+			}
+		}
+
+		if len(mmPrs) == 0 {
+			fmt.Println("No open middle-manager PRs found.")
 			return
 		}
 
 		pendingCount := 0
 		mergedCount := 0
 
-		for _, pr := range prs {
+		for _, pr := range mmPrs {
 			safe, reason := pr.IsSafeToMerge(true) // require checks to pass
 			if safe {
 				fmt.Printf("PR #%d (%s) is green. Merging...\n", pr.Number, pr.Title)
@@ -330,7 +338,7 @@ func cmdMerge(cfg *config.LoopConfig) {
 		}
 
 		if pendingCount == 0 {
-			fmt.Println("No more pending PRs. Exiting.")
+			fmt.Println("No more pending middle-manager PRs. Exiting.")
 			return
 		}
 

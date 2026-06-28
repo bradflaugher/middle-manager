@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -19,7 +20,7 @@ import (
 	"github.com/coder/acp-go-sdk"
 )
 
-var AgentNames = []string{"grok", "claude", "opencode"}
+var AgentNames = []string{"grok", "claude", "codex", "opencode"}
 
 type AgentSpec struct {
 	Name         string
@@ -58,6 +59,17 @@ var AgentSpecs = map[string]AgentSpec{
 		ModelFlag:    "--model",
 		CwdFlag:      "",
 		Notes:        "Run from target repo cwd. Also: --permission-mode bypassPermissions",
+	},
+	"codex": {
+		Name:         "codex",
+		Binary:       "codex",
+		YoloFlag:     "--yolo",
+		YoloPosition: "before_prompt",
+		Subcommand:   []string{"exec"},
+		PromptMode:   "arg",
+		ModelFlag:    "-m",
+		CwdFlag:      "",
+		Notes:        "OpenAI Codex CLI: codex exec PROMPT --yolo. Also: --full-auto",
 	},
 	"opencode": {
 		Name:         "opencode",
@@ -817,6 +829,57 @@ func RunAgentACP(
 	return strings.Join(accumulatedText, ""), exitCode, nil
 }
 
+func RunAgentCLI(
+	ctx context.Context,
+	run *AgentRun,
+	onUpdate func(text string, isThought bool),
+) (string, int, error) {
+	cmd := exec.CommandContext(ctx, run.Command[0], run.Command[1:]...)
+	cmd.Dir = run.Cwd
+	cmd.Env = run.Env
+	cmd.Stdin = bytes.NewReader(nil)
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", -1, err
+	}
+	cmd.Stderr = cmd.Stdout // Merge stdout and stderr
+
+	if err := cmd.Start(); err != nil {
+		return "", -1, err
+	}
+
+	var accumulated []string
+	reader := bufio.NewReader(stdout)
+	
+	// Read output in real-time
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err != io.EOF && err != io.ErrClosedPipe {
+				// Handle read error if needed
+			}
+			break
+		}
+		accumulated = append(accumulated, line)
+		if onUpdate != nil {
+			onUpdate(line, false)
+		}
+	}
+
+	err = cmd.Wait()
+	exitCode := 0
+	if err != nil {
+		if exitError, ok := err.(*exec.ExitError); ok {
+			exitCode = exitError.ExitCode()
+		} else {
+			exitCode = -1
+		}
+	}
+
+	return strings.Join(accumulated, ""), exitCode, nil
+}
+
 func RunAgent(
 	ctx context.Context,
 	run *AgentRun,
@@ -827,6 +890,10 @@ func RunAgent(
 ) (string, int, error) {
 	if dryRun {
 		return fmt.Sprintf("[DRY RUN] Would run agent %s with prompt: %s\n", run.Agent, run.Prompt), 0, nil
+	}
+
+	if run.Agent == "codex" {
+		return RunAgentCLI(ctx, run, onUpdate)
 	}
 
 	binaryOverride := ""
@@ -892,10 +959,10 @@ func AvailableAgents(binaryOverrides map[string]string) []string {
 }
 
 var StepAgentPriority = map[string][]string{
-	"discover": {"grok", "claude", "opencode"},
-	"execute":  {"claude", "grok", "opencode"},
-	"verify":   {"grok", "claude", "opencode"},
-	"commit":   {"grok", "claude", "opencode"},
+	"discover": {"grok", "claude", "opencode", "codex"},
+	"execute":  {"claude", "grok", "opencode", "codex"},
+	"verify":   {"codex", "grok", "claude", "opencode"},
+	"commit":   {"grok", "claude", "opencode", "codex"},
 }
 
 func AutodetectAgent(step string, binaryOverrides map[string]string, fallback string) string {
@@ -921,7 +988,7 @@ func AutodetectStepAgents(binaryOverrides map[string]string) map[string]string {
 		return map[string]string{
 			"discover": "grok",
 			"execute":  "claude",
-			"verify":   "grok",
+			"verify":   "codex",
 			"commit":   "grok",
 		}
 	}

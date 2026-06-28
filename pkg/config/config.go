@@ -81,7 +81,8 @@ func NewDefaultConfig() *LoopConfig {
 			Enabled: true,
 		},
 		Verify: StepConfig{
-			Agent:   "grok",
+			Agent:   "codex",
+			Model:   "o4-mini",
 			Enabled: true,
 		},
 		Commit: StepConfig{

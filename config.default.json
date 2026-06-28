@@ -18,8 +18,8 @@
     "extra_args": []
   },
   "verify": {
-    "agent": "grok",
-    "model": null,
+    "agent": "codex",
+    "model": "o4-mini",
     "extra_args": []
   },
   "commit": {

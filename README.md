@@ -281,5 +281,10 @@ mm quick "add resume link to index.html" \
   --verify-agent grok \
   --test-command "npm test"
 ```
-</details>
+
+---
+
+## License
+
 This project is licensed under the [MIT License](LICENSE).
+

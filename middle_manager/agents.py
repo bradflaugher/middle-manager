@@ -382,7 +382,7 @@ def calculate_cpu_percent(pid: int, last_ticks: float | None, last_time: float) 
 
 def strip_ansi(text: str) -> str:
     import re
-    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+    ansi_escape = re.compile(r'\x1B(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])')
     return ansi_escape.sub('', text)
 
 
@@ -467,7 +467,7 @@ def draw_status_block(
         if is_agent_tui:
             raw_lines.append((f"   ⚠️  Waiting for interaction: tmux attach-session -t {tmux_session} (Interactive TUI)", Colors.GREEN + Colors.BOLD))
         else:
-            raw_lines.append((f"   💡 Headless logs: tmux attach-session -t {tmux_session}", Colors.GREEN + Colors.BOLD))
+            raw_lines.append((f"   💻 Headless logs: tmux attach-session -t {tmux_session}", Colors.GREEN + Colors.BOLD))
             
     lines = []
     for text, color in raw_lines:
@@ -619,9 +619,10 @@ def run_command_monitored(
         log_file = None
         returncode = 0
 
-        # Notify user they can attach
-        attach_msg = f"  💡 Attach to this session: tmux attach-session -t {session_name}"
-        print(Colors.colored(attach_msg, Colors.GREEN + Colors.BOLD))
+        # Notify user they can attach (only if not a TTY to avoid duplicate tmux messages on interactive runs)
+        if not sys.stdout.isatty():
+            attach_msg = f"  💻 Attach to this session: tmux attach-session -t {session_name}"
+            print(Colors.colored(attach_msg, Colors.GREEN + Colors.BOLD))
 
         try:
             while True:
@@ -667,7 +668,7 @@ def run_command_monitored(
                     status_line = f"{spinner_char} RUNNING IN TMUX ({session_name})..."
                     last_line = ""
                     for line in reversed(accumulated.splitlines()):
-                        cleaned = line.strip()
+                        cleaned = strip_ansi(line).strip()
                         if cleaned:
                             last_line = cleaned
                             break
@@ -729,7 +730,7 @@ def run_command_monitored(
         if sys.stdout.isatty():
             last_line = ""
             for line in reversed(accumulated.splitlines()):
-                cleaned = line.strip()
+                cleaned = strip_ansi(line).strip()
                 if cleaned:
                     last_line = cleaned
                     break
@@ -743,7 +744,7 @@ def run_command_monitored(
                 changed_files=changed_files,
                 last_printed_lines_cnt=last_printed_lines,
                 last_line=last_line,
-                tmux_session=session_name,
+                tmux_session=None,
                 interactive=interactive
             )
         else:
@@ -901,7 +902,7 @@ def run_command_monitored(
                     
                     last_line = ""
                     for line in reversed(accumulated.splitlines()):
-                        cleaned = line.strip()
+                        cleaned = strip_ansi(line).strip()
                         if cleaned:
                             last_line = cleaned
                             break
@@ -974,7 +975,7 @@ def run_command_monitored(
         if sys.stdout.isatty():
             last_line = ""
             for line in reversed(accumulated.splitlines()):
-                cleaned = line.strip()
+                cleaned = strip_ansi(line).strip()
                 if cleaned:
                     last_line = cleaned
                     break

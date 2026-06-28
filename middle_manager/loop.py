@@ -558,7 +558,7 @@ class MiddleManagerLoop:
                 
                 agent_cmd = self._build_interactive_command(sc.agent, prompt_msg)
                 
-                print(Colors.colored("💡 To launch an interactive session with your programmer agent, run:", Colors.CYAN))
+                print(Colors.colored("💻 To launch an interactive session with your programmer agent, run:", Colors.CYAN))
                 print(Colors.colored(f"   {agent_cmd}", Colors.GREEN + Colors.BOLD))
                 print()
                 
@@ -586,7 +586,7 @@ class MiddleManagerLoop:
             
             agent_cmd = self._build_interactive_command(sc.agent, prompt_msg)
                 
-            print(Colors.colored("💡 To launch an interactive session on this branch, run:", Colors.CYAN))
+            print(Colors.colored("💻 To launch an interactive session on this branch, run:", Colors.CYAN))
             print(Colors.colored(f"   {agent_cmd}", Colors.GREEN + Colors.BOLD))
             print()
             return 130

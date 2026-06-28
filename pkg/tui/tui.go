@@ -80,6 +80,21 @@ var brailleFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 
 func spinFrame(frame int) string { return brailleFrames[frame%len(brailleFrames)] }
 
+// altView wraps full-screen content in the alternate screen buffer. Both the
+// wizard and the monitor are fixed full-screen layouts, so they MUST render in
+// the alt screen. In bubbletea v2 the only way to request it is the View's
+// AltScreen field (there is no WithAltScreen program option). Without it the
+// renderer runs in inline mode and repaints each frame with relative cursor
+// moves that scroll the real terminal whenever the content is as tall as the
+// screen — which flickers violently on a small terminal (e.g. a phone inside
+// tmux). Alt-screen gives a fixed terminal-sized buffer with absolute cursor
+// positioning and per-cell diffing, so only changed cells are redrawn.
+func altView(content string) tea.View {
+	v := tea.NewView(content)
+	v.AltScreen = true
+	return v
+}
+
 // stepGlyph returns the emoji-free icon shown for each pipeline step.
 var stepLabels = []string{"discover", "execute", "verify", "commit"}
 
@@ -295,21 +310,12 @@ func NewWizardModel(initialCfg *config.LoopConfig) *WizardModel {
 	}
 }
 
-type wizardTickMsg struct{}
-
-func wizardTick() tea.Cmd {
-	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return wizardTickMsg{} })
-}
-
-func (m *WizardModel) Init() tea.Cmd { return tea.Batch(textinput.Blink, wizardTick()) }
+func (m *WizardModel) Init() tea.Cmd { return textinput.Blink }
 
 func (m *WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 
 	switch msg := msg.(type) {
-	case wizardTickMsg:
-		m.frame++
-		return m, wizardTick()
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c":
@@ -556,7 +562,7 @@ func (m *WizardModel) cycleAgent(stepIdx, dir int) {
 
 func (m *WizardModel) View() tea.View {
 	if m.quitting {
-		return tea.NewView(stDim.Render("Aborted.\n"))
+		return altView(stDim.Render("Aborted.\n"))
 	}
 
 	var s strings.Builder
@@ -636,7 +642,7 @@ func (m *WizardModel) View() tea.View {
 	}
 
 	s.WriteString("\n" + stDim.Render("  enter: continue   esc: back   ^c: quit") + "\n")
-	return tea.NewView(s.String())
+	return altView(s.String())
 }
 
 func (m *WizardModel) confirmView() string {
@@ -739,7 +745,7 @@ type TUIPlanMsg struct{ PlanText string }
 type monitorTickMsg struct{}
 
 func monitorTick() tea.Cmd {
-	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return monitorTickMsg{} })
+	return tea.Tick(300*time.Millisecond, func(time.Time) tea.Msg { return monitorTickMsg{} })
 }
 
 type MonitorModel struct {
@@ -798,7 +804,12 @@ func (m *MonitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case monitorTickMsg:
 		m.frame++
-		cmds = append(cmds, monitorTick())
+		// Only keep the spinner animating while the loop is live; once it has
+		// finished there is nothing to animate, so stop re-arming the tick and
+		// let the TUI sit idle (no needless redraws).
+		if m.state != "completed" && m.state != "failed" {
+			cmds = append(cmds, monitorTick())
+		}
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -898,37 +909,60 @@ func (m *MonitorModel) pushLog(s string) {
 }
 
 func (m *MonitorModel) resize() {
-	w := m.width - 4
-	if w < 40 {
-		w = 40
-	}
-	h := m.height - 18
-	if h < 6 {
-		h = 6
+	// Width only — View() computes the log viewport's height each frame from
+	// the space the chrome actually leaves, so it adapts to the real terminal
+	// (including a tiny phone screen) instead of a fixed minimum that overflows.
+	w := m.width - 4 // log panel border + padding
+	if w < 10 {
+		w = 10
 	}
 	m.logViewport.SetWidth(w)
-	m.logViewport.SetHeight(h)
-	m.textInput.SetWidth(w - 4)
+	tiw := w - 4
+	if tiw < 8 {
+		tiw = 8
+	}
+	m.textInput.SetWidth(tiw)
 }
+
+// panelsStacked reports whether the dashboard/resources panels should stack
+// vertically because the terminal is too narrow to sit them side by side.
+func (m *MonitorModel) panelsStacked() bool { return m.width < 56 }
 
 func (m *MonitorModel) View() tea.View {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	inner := m.width - 2
-	if inner < 40 {
-		inner = 40
+	if inner < 20 {
+		inner = 20
+	}
+
+	// Build the fixed chrome above and below the scrolling log first, measure
+	// how many rows it occupies, then size the log viewport to whatever is
+	// left so the whole frame fits the terminal exactly. In the alt screen any
+	// content taller than the screen would be clipped, so we fit rather than
+	// overflow — this is what keeps a small phone screen usable.
+	header := m.titleRow(inner) + "\n\n" +
+		m.pipelineRow() + "\n\n" +
+		m.panelsRow() + "\n" +
+		panelLabel.Render(" live agent output")
+	footer := inputBar.Render(m.textInput.View()) + "\n" +
+		stDim.Render(" pgup/pgdn scroll · enter: queue note for next step · /pause /resume /skip · /quit aborts now · ^c quit")
+
+	// logPanel adds a top and bottom border row around the viewport (2 rows).
+	avail := m.height - lipgloss.Height(header) - lipgloss.Height(footer) - 2
+	if avail < 1 {
+		avail = 1
+	}
+	if avail != m.logViewport.Height() {
+		m.logViewport.SetHeight(avail)
 	}
 
 	var b strings.Builder
-	b.WriteString(m.titleRow(inner) + "\n\n")
-	b.WriteString(m.pipelineRow() + "\n\n")
-	b.WriteString(m.panelsRow() + "\n")
-	b.WriteString(panelLabel.Render(" live agent output") + "\n")
+	b.WriteString(header + "\n")
 	b.WriteString(logPanel.Render(m.logViewport.View()) + "\n")
-	b.WriteString(inputBar.Render(m.textInput.View()) + "\n")
-	b.WriteString(stDim.Render(" pgup/pgdn scroll · enter: queue note for next step · /pause /resume /skip · /quit aborts now · ^c quit"))
-	return tea.NewView(b.String())
+	b.WriteString(footer)
+	return altView(b.String())
 }
 
 func (m *MonitorModel) titleRow(width int) string {
@@ -995,7 +1029,14 @@ func (m *MonitorModel) panelsRow() string {
 		kv("sockets", stFg.Render(strconv.Itoa(m.sockets))) +
 		kv("mode", stFg.Render(m.cfg.Mode))
 
-	half := (m.width-6)/2
+	if m.panelsStacked() {
+		pw := m.width - 4
+		if pw < 16 {
+			pw = 16
+		}
+		return panel.Width(pw).Render(dash) + "\n" + panel.Width(pw).Render(res)
+	}
+	half := (m.width - 6) / 2
 	if half < 22 {
 		half = 22
 	}

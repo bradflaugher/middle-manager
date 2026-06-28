@@ -354,6 +354,31 @@ func (l *MiddleManagerLoop) RunOnce(iteration int, issueData map[string]string) 
 		stdout, exitCode, err := l.RunStep(step, iteration, issueData)
 		if err != nil {
 			l.Log(fmt.Sprintf("Step %s failed with error: %v", step, err), colors.Red)
+			existingErr := l.ReadText(l.errorLogPath, "")
+			l.WriteText(l.errorLogPath, fmt.Sprintf("Step %s failed with error: %v\n\n%s", step, err, existingErr))
+
+			errStr := err.Error()
+			if strings.Contains(errStr, "Authentication required") || strings.Contains(errStr, "-32000") {
+				authMsg := []string{
+					"----------------------------------------------------------------",
+					"🔑 CLAUDE AUTHENTICATION ERROR DETECTED",
+					"----------------------------------------------------------------",
+					"The Claude ACP adapter (@agentclientprotocol/claude-agent-acp)",
+					"requires an Anthropic API Key to communicate with the model.",
+					"It does NOT support OAuth login sessions from the Claude CLI.",
+					"",
+					"To fix this, please:",
+					"1. Get an API key from the Anthropic Console (console.anthropic.com)",
+					"2. Export it in your terminal environment:",
+					"   export ANTHROPIC_API_KEY=\"your-api-key\"",
+					"3. Re-run middle-manager.",
+					"----------------------------------------------------------------",
+				}
+				for _, line := range authMsg {
+					l.Log(line, colors.Red)
+					l.WriteText(l.errorLogPath, fmt.Sprintf("%s\n", line)+l.ReadText(l.errorLogPath, ""))
+				}
+			}
 		}
 
 		if step == "verify" {

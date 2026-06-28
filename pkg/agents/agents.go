@@ -737,6 +737,20 @@ func (c *middleManagerClient) WaitForTerminalExit(ctx context.Context, params ac
 	}
 }
 
+func cleanAgentEnv(env []string) []string {
+	var cleaned []string
+	for _, envVar := range env {
+		if strings.HasPrefix(envVar, "CLAUDECODE=") ||
+			strings.HasPrefix(envVar, "CLAUDE_CODE_ENTRYPOINT=") ||
+			strings.HasPrefix(envVar, "CLAUDE_CODE_SSE_PORT=") ||
+			strings.HasPrefix(envVar, "CLAUDE_AGENT_SDK_VERSION=") {
+			continue
+		}
+		cleaned = append(cleaned, envVar)
+	}
+	return cleaned
+}
+
 func RunAgentACP(
 	ctx context.Context,
 	agent string,
@@ -759,7 +773,7 @@ func RunAgentACP(
 	// Spawn agent process
 	cmd := exec.CommandContext(ctx, cmdArgs[0], cmdArgs[1:]...)
 	cmd.Dir = cwd
-	cmd.Env = env
+	cmd.Env = cleanAgentEnv(env)
 	cmd.Stderr = os.Stderr
 
 	stdin, err := cmd.StdinPipe()

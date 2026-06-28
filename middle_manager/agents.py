@@ -536,6 +536,12 @@ async def run_agent_acp(
             if not p.is_absolute():
                 p = Path(cwd) / p
             
+            try:
+                rel_path = p.relative_to(Path(cwd))
+            except Exception:
+                rel_path = p
+            console.print(f"   [dim]📖 [ACP] Reading file: {rel_path}[/dim]")
+            
             if not p.exists():
                 return ReadTextFileResponse(content="")
                 
@@ -556,6 +562,13 @@ async def run_agent_acp(
             p = Path(path)
             if not p.is_absolute():
                 p = Path(cwd) / p
+            
+            try:
+                rel_path = p.relative_to(Path(cwd))
+            except Exception:
+                rel_path = p
+            console.print(f"   [bold yellow]✏️  [ACP] Writing file: {rel_path}[/bold yellow]")
+            
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(content, encoding="utf-8")
             return WriteTextFileResponse()
@@ -571,9 +584,10 @@ async def run_agent_acp(
         ) -> CreateTerminalResponse:
             from acp.schema import CreateTerminalResponse
             
+            console.print(f"   [bold blue]🖥️  [ACP] Executing terminal command: {command}[/bold blue]")
+            
             terminal_id = f"term_{len(self.terminals) + 1}"
             
-            # Build env dict
             env_dict = None
             if env:
                 env_dict = {item.name: item.value for item in env if hasattr(item, 'name')}

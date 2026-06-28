@@ -398,7 +398,7 @@ class MiddleManagerLoop:
             if step == "execute":
                 tasks_before = len([line for line in self.read_text(self.fix_plan_path).splitlines() if line.strip().startswith("- [ ]")])
             sc = self.cfg.step_for(step)
-            self.log(f"⚡ [Step: {step.upper()}] Starting step with agent '{sc.agent.upper()}'...", Colors.CYAN + Colors.BOLD)
+            self.log(f"[Step: {step.upper()}] Starting step with agent '{sc.agent.upper()}'...", Colors.CYAN + Colors.BOLD)
             if self.cfg.interactive:
                 action = pause(self.cfg, step)
                 if action == "quit":

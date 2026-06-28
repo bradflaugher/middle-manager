@@ -521,7 +521,7 @@ def run_command_monitored(
     dry_prefix = Colors.colored("[DRY RUN] ", Colors.YELLOW) if dry_run else ""
     printed_cmd = format_cmd_for_display(command)
     
-    print(Colors.colored(f"⚡ {dry_prefix}Running {label}", Colors.CYAN + Colors.BOLD))
+    print(Colors.colored(f"{dry_prefix}Running {label}", Colors.CYAN + Colors.BOLD))
     print(Colors.colored(f"   Cwd:     {cwd}", Colors.CYAN))
     print(Colors.colored(f"   Command: {printed_cmd}", Colors.CYAN))
 

@@ -224,15 +224,11 @@ def run_wizard(argv_repo: Path | None = None, mission: str | None = None) -> Loo
         for step in ("discover", "execute", "verify", "commit"):
             detected[step] = _pick_agent(step, detected[step], overrides)
 
-    if mode == "feature":
-        steps = 3
-        print("\n  Using 3-agent stack: discover → execute → verify")
-    else:
+    steps = 4
+    if _yes_no("Use 4-step loop (discover→execute→verify→commit)?", default=True):
         steps = 4
-        if _yes_no("Use 4-step loop (discover→execute→verify→commit)?", default=True):
-            steps = 4
-        else:
-            steps = 3
+    else:
+        steps = 3
 
     yolo = _yes_no("YOLO mode (auto-approve agent permissions)?", default=True)
     dry_run = _yes_no("Dry-run (print commands only)?", default=False)
@@ -246,7 +242,9 @@ def run_wizard(argv_repo: Path | None = None, mission: str | None = None) -> Loo
     except ValueError:
         max_iterations = 10
 
-    no_pr = not _yes_no("Open PRs when commit step succeeds?", default=True)
+    no_pr = True
+    if steps == 4:
+        no_pr = not _yes_no("Open PRs when commit step succeeds?", default=True)
 
     # Build config
     data = merge_config(DEFAULTS, {})
@@ -273,11 +271,6 @@ def run_wizard(argv_repo: Path | None = None, mission: str | None = None) -> Loo
     cfg.mission = mission or None
     if mode == "feature" and mission:
         cfg.fresh = True
-        from .presets import apply_quick_preset
-
-        apply_quick_preset(cfg)
-        for step in ("discover", "execute", "verify"):
-            data[step]["agent"] = cfg.step_for(step).agent
 
     if issue_queue:
         from .config import IssueQueueConfig

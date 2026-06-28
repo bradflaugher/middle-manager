@@ -279,6 +279,10 @@ class MiddleManagerLoop:
                 msg = f"middle-manager: iteration {iteration} — {self.top_plan_item()[:72]}"
                 if commit_all(self.cfg.repo, msg):
                     self.log("Committed changes (3-step mode, no PR agent)")
+                    if repo_is_git(self.cfg.repo):
+                        branch = current_branch(self.cfg.repo)
+                        push_branch(self.cfg.repo, branch, dry_run=self.cfg.dry_run)
+                        self.log(f"Pushed branch '{branch}' to origin")
             return
 
         result = self.run_step("commit", iteration, issue_data)

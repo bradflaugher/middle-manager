@@ -72,7 +72,6 @@ func NewDefaultConfig() *LoopConfig {
 		BinaryOverrides: make(map[string]string),
 		Discover: StepConfig{
 			Agent:   "claude",
-			Model:   "claude-sonnet-4-20250514",
 			Enabled: true,
 		},
 		Execute: StepConfig{
@@ -81,7 +80,6 @@ func NewDefaultConfig() *LoopConfig {
 		},
 		Verify: StepConfig{
 			Agent:   "claude",
-			Model:   "claude-sonnet-4-20250514",
 			Enabled: true,
 		},
 		Commit: StepConfig{

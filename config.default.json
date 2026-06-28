@@ -9,7 +9,7 @@
   "fresh": true,
   "discover": {
     "agent": "claude",
-    "model": "claude-sonnet-4-20250514",
+    "model": null,
     "extra_args": []
   },
   "execute": {
@@ -19,7 +19,7 @@
   },
   "verify": {
     "agent": "claude",
-    "model": "claude-sonnet-4-20250514",
+    "model": null,
     "extra_args": []
   },
   "commit": {

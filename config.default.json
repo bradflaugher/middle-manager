@@ -8,18 +8,18 @@
   "stream_output": false,
   "fresh": true,
   "discover": {
-    "agent": "grok",
-    "model": null,
-    "extra_args": ["--check"]
-  },
-  "execute": {
     "agent": "claude",
     "model": "claude-sonnet-4-20250514",
     "extra_args": []
   },
-  "verify": {
-    "agent": "grok",
+  "execute": {
+    "agent": "opencode",
     "model": null,
+    "extra_args": []
+  },
+  "verify": {
+    "agent": "claude",
+    "model": "claude-sonnet-4-20250514",
     "extra_args": []
   },
   "commit": {

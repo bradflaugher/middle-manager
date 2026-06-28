@@ -71,17 +71,17 @@ func NewDefaultConfig() *LoopConfig {
 		Fresh:           true,
 		BinaryOverrides: make(map[string]string),
 		Discover: StepConfig{
-			Agent:     "grok",
-			ExtraArgs: []string{"--check"},
-			Enabled:   true,
-		},
-		Execute: StepConfig{
 			Agent:   "claude",
 			Model:   "claude-sonnet-4-20250514",
 			Enabled: true,
 		},
+		Execute: StepConfig{
+			Agent:   "opencode",
+			Enabled: true,
+		},
 		Verify: StepConfig{
-			Agent:   "grok",
+			Agent:   "claude",
+			Model:   "claude-sonnet-4-20250514",
 			Enabled: true,
 		},
 		Commit: StepConfig{

@@ -19,7 +19,7 @@ import (
 	"github.com/bradflaugher/middle-manager/pkg/gitops"
 )
 
-var AgentNames = []string{"grok", "claude", "codex", "opencode", "agy"}
+var AgentNames = []string{"grok", "claude", "codex", "opencode"}
 
 type AgentSpec struct {
 	Name         string
@@ -80,17 +80,6 @@ var AgentSpecs = map[string]AgentSpec{
 		ModelFlag:    "-m",
 		CwdFlag:      "--dir",
 		Notes:        "opencode run PROMPT --dangerously-skip-permissions --dir DIR",
-	},
-	"agy": {
-		Name:         "agy",
-		Binary:       "agy",
-		YoloFlag:     "--dangerously-skip-permissions",
-		YoloPosition: "print_flag",
-		PromptMode:   "print_flag",
-		PrintFlag:    "--print",
-		ModelFlag:    "--model",
-		CwdFlag:      "",
-		Notes:        "agy --print PROMPT --dangerously-skip-permissions",
 	},
 }
 
@@ -173,10 +162,8 @@ func BuildCommand(
 		cmd = append(cmd, spec.ExtraYolo...)
 	}
 
-	if interactive && (agent == "grok" || agent == "claude" || agent == "opencode" || agent == "agy") {
-		if agent == "agy" {
-			cmd = append(cmd, "--prompt-interactive", prompt)
-		} else if spec.PromptMode == "arg" {
+	if interactive && (agent == "grok" || agent == "claude" || agent == "opencode") {
+		if spec.PromptMode == "arg" {
 			cmd = append(cmd, prompt)
 		}
 		cmd = append(cmd, extras...)
@@ -199,7 +186,7 @@ func BuildCommand(
 		}, nil
 	}
 
-	usePromptFile := promptFile != "" && spec.Name != "agy" // Python did check: prompt_file and spec.prompt_file_flag and spec.prompt_mode != "print_flag"
+	usePromptFile := promptFile != "" // Python did check: prompt_file and spec.prompt_file_flag and spec.prompt_mode != "print_flag"
 	// Wait, does Python specify a prompt_file_flag for grok?
 	// Yes! Grok spec: prompt_file_flag = "--prompt-file"
 	promptFileFlag := ""
@@ -486,18 +473,6 @@ func GetACPCommand(agent string, binaryOverride string) []string {
 			binName = "codex"
 		}
 		return []string{binName, "app-server"}
-	} else if agent == "agy" {
-		if binary != "" && binary != "agy" {
-			if _, err := exec.LookPath(binary); err == nil {
-				return []string{binary, "--acp"}
-			}
-		}
-		// Embed the agy bridge subcommand in middle-manager itself!
-		self, err := os.Executable()
-		if err == nil {
-			return []string{self, "agy-acp"}
-		}
-		return []string{"mm", "agy-acp"}
 	}
 	binName := binary
 	if binName == "" {
@@ -767,8 +742,6 @@ func RunAgentACP(
 	if model != "" {
 		if agent == "grok" || agent == "opencode" {
 			cmdArgs = append(cmdArgs, "-m", model)
-		} else if agent == "agy" {
-			cmdArgs = append(cmdArgs, "--model", model)
 		}
 	}
 
@@ -934,10 +907,10 @@ func AvailableAgents(binaryOverrides map[string]string) []string {
 }
 
 var StepAgentPriority = map[string][]string{
-	"discover": {"grok", "claude", "opencode", "agy", "codex"},
-	"execute":  {"claude", "grok", "opencode", "agy", "codex"},
-	"verify":   {"codex", "grok", "claude", "opencode", "agy"},
-	"commit":   {"agy", "grok", "claude", "opencode", "codex"},
+	"discover": {"grok", "claude", "opencode", "codex"},
+	"execute":  {"claude", "grok", "opencode", "codex"},
+	"verify":   {"codex", "grok", "claude", "opencode"},
+	"commit":   {"grok", "claude", "opencode", "codex"},
 }
 
 func AutodetectAgent(step string, binaryOverrides map[string]string, fallback string) string {
@@ -964,7 +937,7 @@ func AutodetectStepAgents(binaryOverrides map[string]string) map[string]string {
 			"discover": "grok",
 			"execute":  "claude",
 			"verify":   "codex",
-			"commit":   "agy",
+			"commit":   "grok",
 		}
 	}
 

@@ -8,7 +8,6 @@ import (
 	"sync"
 
 	"github.com/bradflaugher/middle-manager/pkg/agents"
-	"github.com/bradflaugher/middle-manager/pkg/agy"
 	"github.com/bradflaugher/middle-manager/pkg/colors"
 	"github.com/bradflaugher/middle-manager/pkg/config"
 	"github.com/bradflaugher/middle-manager/pkg/gitops"
@@ -36,8 +35,6 @@ func main() {
 		cmdStatus(cfg)
 	case "issues":
 		cmdIssues(cfg)
-	case "agy-acp":
-		agy.StartAgyACPBridge()
 	case "run", "quick":
 		cmdRun(cfg)
 	default:
@@ -306,10 +303,6 @@ func printSummaryPanel(cfg *config.LoopConfig, l *loop.MiddleManagerLoop, result
 			agentCmd = fmt.Sprintf("claude %q", promptMsg)
 		case "opencode":
 			agentCmd = fmt.Sprintf("opencode run %q --dir %s", promptMsg, cfg.Repo)
-		case "codex":
-			agentCmd = fmt.Sprintf("codex exec %q", promptMsg)
-		case "agy":
-			agentCmd = fmt.Sprintf("agy --prompt-interactive %q", promptMsg)
 		default:
 			agentCmd = fmt.Sprintf("%s %q", sc.Agent, promptMsg)
 		}

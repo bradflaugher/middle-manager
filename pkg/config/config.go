@@ -87,7 +87,7 @@ func NewDefaultConfig() *LoopConfig {
 			Enabled: true,
 		},
 		Commit: StepConfig{
-			Agent:   "agy",
+			Agent:   "grok",
 			Enabled: true,
 		},
 	}
@@ -270,7 +270,7 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 	var restArgs []string
 
 	cliCommands := map[string]bool{
-		"run": true, "quick": true, "agents": true, "init": true, "status": true, "issues": true, "install-path": true, "agy-acp": true,
+		"run": true, "quick": true, "agents": true, "init": true, "status": true, "issues": true, "install-path": true,
 	}
 
 	if len(args) > 0 {

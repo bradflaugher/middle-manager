@@ -19,7 +19,7 @@ import (
 	"github.com/coder/acp-go-sdk"
 )
 
-var AgentNames = []string{"grok", "claude", "opencode"}
+var AgentNames = []string{"grok", "claude", "codex", "opencode", "agy"}
 
 type AgentSpec struct {
 	Name         string
@@ -59,6 +59,17 @@ var AgentSpecs = map[string]AgentSpec{
 		CwdFlag:      "",
 		Notes:        "Run from target repo cwd. Also: --permission-mode bypassPermissions",
 	},
+	"codex": {
+		Name:         "codex",
+		Binary:       "codex",
+		YoloFlag:     "--yolo",
+		YoloPosition: "before_prompt",
+		Subcommand:   []string{"exec"},
+		PromptMode:   "arg",
+		ModelFlag:    "-m",
+		CwdFlag:      "",
+		Notes:        "OpenAI Codex CLI: codex exec PROMPT --yolo. Also: --full-auto",
+	},
 	"opencode": {
 		Name:         "opencode",
 		Binary:       "opencode",
@@ -69,6 +80,17 @@ var AgentSpecs = map[string]AgentSpec{
 		ModelFlag:    "-m",
 		CwdFlag:      "--dir",
 		Notes:        "opencode run PROMPT --dangerously-skip-permissions --dir DIR",
+	},
+	"agy": {
+		Name:         "agy",
+		Binary:       "agy",
+		YoloFlag:     "--always-approve",
+		YoloPosition: "before_prompt",
+		PromptMode:   "arg",
+		PrintFlag:    "-p",
+		ModelFlag:    "-m",
+		CwdFlag:      "--cwd",
+		Notes:        "Google Antigravity CLI: agy -p PROMPT --always-approve --cwd DIR",
 	},
 }
 
@@ -450,6 +472,18 @@ func GetACPCommand(agent string, binaryOverride string) []string {
 		return []string{binName, "acp"}
 	} else if agent == "claude" {
 		return []string{"npx", "-y", "@agentclientprotocol/claude-agent-acp"}
+	} else if agent == "codex" {
+		binName := "acp-adapter"
+		if binary != "" && !strings.Contains(binary, "codex") {
+			binName = binary
+		}
+		return []string{binName, "--adapter", "codex"}
+	} else if agent == "agy" {
+		binName := "agy-acp"
+		if binary != "" && !strings.Contains(binary, "agy") {
+			binName = binary
+		}
+		return []string{binName}
 	}
 	binName := binary
 	if binName == "" {
@@ -726,6 +760,7 @@ func RunAgentACP(
 	cmd := exec.CommandContext(ctx, cmdArgs[0], cmdArgs[1:]...)
 	cmd.Dir = cwd
 	cmd.Env = env
+	cmd.Stderr = os.Stderr
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -892,10 +927,10 @@ func AvailableAgents(binaryOverrides map[string]string) []string {
 }
 
 var StepAgentPriority = map[string][]string{
-	"discover": {"grok", "claude", "opencode"},
-	"execute":  {"opencode", "claude", "grok"},
-	"verify":   {"claude", "grok", "opencode"},
-	"commit":   {"grok", "opencode", "claude"},
+	"discover": {"grok", "claude", "opencode", "codex", "agy"},
+	"execute":  {"opencode", "claude", "grok", "codex", "agy"},
+	"verify":   {"claude", "grok", "opencode", "codex", "agy"},
+	"commit":   {"grok", "opencode", "claude", "codex", "agy"},
 }
 
 func AutodetectAgent(step string, binaryOverrides map[string]string, fallback string) string {

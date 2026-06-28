@@ -380,6 +380,7 @@ type PullRequest struct {
 	Title          string
 	Author         string
 	HeadRef        string
+	BaseRef        string
 	URL            string
 	IsDraft        bool
 	Mergeable      string // MERGEABLE | CONFLICTING | UNKNOWN
@@ -437,7 +438,7 @@ func ListOpenPRs(repo string, author string, label string, limit int) ([]PullReq
 		limit = 30
 	}
 	args := []string{"pr", "list", "--state", "open", "--limit", fmt.Sprintf("%d", limit),
-		"--json", "number,title,author,headRefName,url,isDraft,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup"}
+		"--json", "number,title,author,headRefName,baseRefName,url,isDraft,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup"}
 	if author != "" {
 		args = append(args, "--author", strings.TrimPrefix(author, "@"))
 	}
@@ -461,6 +462,7 @@ func ListOpenPRs(repo string, author string, label string, limit int) ([]PullReq
 			Login string `json:"login"`
 		} `json:"author"`
 		HeadRefName       string    `json:"headRefName"`
+		BaseRefName       string    `json:"baseRefName"`
 		URL               string    `json:"url"`
 		IsDraft           bool      `json:"isDraft"`
 		Mergeable         string    `json:"mergeable"`
@@ -481,6 +483,7 @@ func ListOpenPRs(repo string, author string, label string, limit int) ([]PullReq
 			Title:          it.Title,
 			Author:         it.Author.Login,
 			HeadRef:        it.HeadRefName,
+			BaseRef:        it.BaseRefName,
 			URL:            it.URL,
 			IsDraft:        it.IsDraft,
 			Mergeable:      it.Mergeable,
@@ -544,6 +547,43 @@ func MergePR(repo string, number int, method string, deleteBranch bool, dryRun b
 		methodFlag = "--rebase"
 	}
 	args := []string{"pr", "merge", fmt.Sprintf("%d", number), methodFlag}
+	if deleteBranch {
+		args = append(args, "--delete-branch")
+	}
+	if dryRun {
+		return fmt.Sprintf("[dry-run] gh %s", strings.Join(args, " ")), nil
+	}
+	if !GHAvailable() {
+		return "", fmt.Errorf("gh CLI not available")
+	}
+	cmd := exec.Command("gh", args...)
+	cmd.Dir = repo
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = strings.TrimSpace(stdout.String())
+		}
+		return "", fmt.Errorf("%s", msg)
+	}
+	return strings.TrimSpace(stdout.String()), nil
+}
+
+// EnableAutoMerge configures auto-merge on a PR via the gh CLI.
+func EnableAutoMerge(repo string, number int, method string, deleteBranch bool, dryRun bool) (string, error) {
+	if method == "" {
+		method = "squash"
+	}
+	methodFlag := "--squash"
+	switch method {
+	case "merge":
+		methodFlag = "--merge"
+	case "rebase":
+		methodFlag = "--rebase"
+	}
+	args := []string{"pr", "merge", fmt.Sprintf("%d", number), methodFlag, "--auto"}
 	if deleteBranch {
 		args = append(args, "--delete-branch")
 	}

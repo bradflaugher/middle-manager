@@ -226,8 +226,8 @@ func NewWizardModel(initialCfg *config.LoopConfig) *WizardModel {
 		},
 		stepToAgent:   stepToAgent,
 		stepsOptions:  []int{4, 3},
-		optionsList:   []string{"YOLO mode (auto-approve)", "Interactive pause between steps", "Allow fixing unrelated test failures", "Fresh run (reset loop state)"},
-		optionsValues: []bool{initialCfg.Yolo, initialCfg.Interactive, initialCfg.FixUnrelatedTests, initialCfg.Fresh},
+		optionsList:   []string{"YOLO mode (auto-approve)", "Interactive pause between steps", "Allow fixing unrelated test failures", "Fresh run (reset loop state)", "Auto-merge PRs when green"},
+		optionsValues: []bool{initialCfg.Yolo, initialCfg.Interactive, initialCfg.FixUnrelatedTests, initialCfg.Fresh, !initialCfg.NoMerge},
 	}
 }
 
@@ -389,6 +389,7 @@ func (m *WizardModel) nextStep() (tea.Model, tea.Cmd) {
 		m.cfg.Interactive = m.optionsValues[1]
 		m.cfg.FixUnrelatedTests = m.optionsValues[2]
 		m.cfg.Fresh = m.optionsValues[3]
+		m.cfg.NoMerge = !m.optionsValues[4]
 		m.state = stateMaxIters
 		m.resetInput("Max iterations per task (default 10)")
 		m.textInput.SetValue("10")

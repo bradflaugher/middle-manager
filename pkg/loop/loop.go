@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -329,6 +330,27 @@ func (l *MiddleManagerLoop) MaybeCommitAndPR(iteration int, issueData map[string
 		if err == nil && prURL != "" {
 			l.lastPRURL = prURL
 			l.Log(fmt.Sprintf("PR created: %s", prURL), colors.Green)
+
+			if !l.cfg.NoMerge {
+				parts := strings.Split(strings.TrimSpace(prURL), "/")
+				if len(parts) > 0 {
+					prNumStr := parts[len(parts)-1]
+					prNum, err := strconv.Atoi(prNumStr)
+					if err == nil {
+						l.Log(fmt.Sprintf("Enabling GitHub auto-merge on PR #%d...", prNum), colors.Cyan)
+						out, err := gitops.EnableAutoMerge(l.cfg.Repo, prNum, "squash", true, l.cfg.DryRun)
+						if err != nil {
+							l.Log(fmt.Sprintf("⚠️ Could not enable auto-merge: %v", err), colors.Yellow)
+						} else {
+							if out != "" {
+								l.Log(fmt.Sprintf("Auto-merge enabled: %s", out), colors.Green)
+							} else {
+								l.Log("Auto-merge enabled.", colors.Green)
+							}
+						}
+					}
+				}
+			}
 		}
 	}
 }

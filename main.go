@@ -289,7 +289,12 @@ func cmdMerge(cfg *config.LoopConfig) {
 		limit = cfg.IssueQueue.Limit
 	}
 
-	fmt.Println(colors.Colored("Scanning for open PRs to auto-merge...", colors.Cyan))
+	baseBranch := cfg.BaseBranch
+	if baseBranch == "" {
+		baseBranch = gitops.DetectBaseBranch(cfg.Repo)
+	}
+
+	fmt.Println(colors.Colored(fmt.Sprintf("Scanning for open PRs targeting %q to auto-merge...", baseBranch), colors.Cyan))
 
 	for {
 		prs, err := gitops.ListOpenPRs(cfg.Repo, author, label, limit)
@@ -298,16 +303,18 @@ func cmdMerge(cfg *config.LoopConfig) {
 			os.Exit(1)
 		}
 
-		// Filter to only middle-manager created branches
+		// Filter to only middle-manager created branches targeting our target base branch
 		var mmPrs []gitops.PullRequest
 		for _, pr := range prs {
-			if strings.HasPrefix(pr.HeadRef, cfg.BranchPrefix+"/loop-") || strings.HasPrefix(pr.HeadRef, cfg.BranchPrefix+"/issue-") {
+			branchMatch := strings.HasPrefix(pr.HeadRef, cfg.BranchPrefix+"/loop-") || strings.HasPrefix(pr.HeadRef, cfg.BranchPrefix+"/issue-")
+			baseMatch := pr.BaseRef == baseBranch
+			if branchMatch && baseMatch {
 				mmPrs = append(mmPrs, pr)
 			}
 		}
 
 		if len(mmPrs) == 0 {
-			fmt.Println("No open middle-manager PRs found.")
+			fmt.Printf("No open middle-manager PRs targeting %q found.\n", baseBranch)
 			return
 		}
 
@@ -317,7 +324,7 @@ func cmdMerge(cfg *config.LoopConfig) {
 		for _, pr := range mmPrs {
 			safe, reason := pr.IsSafeToMerge(true) // require checks to pass
 			if safe {
-				fmt.Printf("PR #%d (%s) is green. Merging...\n", pr.Number, pr.Title)
+				fmt.Printf("PR #%d (%s) targeting %q is green. Merging...\n", pr.Number, pr.Title, pr.BaseRef)
 				out, err := gitops.MergePR(cfg.Repo, pr.Number, "squash", true, cfg.DryRun)
 				if err != nil {
 					fmt.Printf("  Error merging PR #%d: %v\n", pr.Number, err)

@@ -273,21 +273,6 @@ mm quick "add resume link to index.html" \
 ```
 </details>
 
----
 
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `mm` | Interactive wizard → loop |
-| `mm quick "…"` | 3-agent feature preset |
-| `mm "…"` | Shorthand for `mm quick "…"` |
-| `mm agents` | Show installed agents + YOLO flags |
-| `mm init --repo PATH` | Seed `.middle-manager/` and AGENTS.md |
-| `mm status --repo PATH` | Show loop state |
-| `mm issues --author @user` | Issue queue batch mode |
-| `mm install-path` | Print PATH export for installer |
-
----
 
 MIT. No warranty.

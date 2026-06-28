@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
 
-AGENT_NAMES = ("grok", "claude", "codex", "crush", "opencode", "agy")
+AGENT_NAMES = ("grok", "claude", "codex", "opencode", "agy")
 
 
 @dataclass(frozen=True)
@@ -62,16 +62,7 @@ AGENT_SPECS: dict[str, AgentSpec] = {
         cwd_flag=None,
         notes="OpenAI Codex CLI: codex exec PROMPT --yolo. Also: --full-auto",
     ),
-    "crush": AgentSpec(
-        name="crush",
-        binary="crush",
-        yolo_flag="",  # crush run does not accept global -y flag in headless mode
-        prompt_mode="arg",
-        subcommand=("run",),
-        model_flag="-m",
-        cwd_flag="-c",
-        notes="crush run PROMPT -c DIR (no YOLO flag needed for run command)",
-    ),
+
     "opencode": AgentSpec(
         name="opencode",
         binary="opencode",
@@ -157,7 +148,7 @@ def build_command(
     if spec.yolo_position == "extra" and yolo:
         cmd.extend(spec.extra_yolo)
 
-    if interactive and agent in ("grok", "claude", "crush", "opencode", "agy"):
+    if interactive and agent in ("grok", "claude", "opencode", "agy"):
         if agent == "agy":
             cmd.extend(["--prompt-interactive", prompt])
         elif spec.prompt_mode == "arg":
@@ -200,7 +191,7 @@ def build_command(
         if spec.yolo_flag:
             cmd.append(spec.yolo_flag)
 
-    # opencode/crush: yolo often works as trailing flag too
+    # opencode: yolo often works as trailing flag too
     if yolo and agent == "opencode" and spec.yolo_flag and spec.yolo_flag not in cmd:
         cmd.append(spec.yolo_flag)
 
@@ -410,629 +401,336 @@ def format_cmd_for_display(command: list[str] | str) -> str:
     return " ".join(formatted_args)
 
 
-def draw_status_block(
-    agent_name: str,
-    status_str: str,
-    elapsed_str: str,
-    cpu_str: str,
-    active_procs: int,
-    active_sockets: int,
-    changed_files: list[str],
-    last_printed_lines_cnt: int = 0,
-    last_line: str = "",
-    tmux_session: str | None = None,
-    interactive: bool = False,
-    is_final: bool = False
-) -> int:
-    import sys
-    import os
-    from .colors import Colors
-    
-    is_tty = sys.stdout.isatty() and os.environ.get("TERM") != "dumb"
-    
-    raw_lines = []
-    
-    # Line 1: Status & Stats
-    status_part = f"   {status_str} | Time: {elapsed_str} | CPU: {cpu_str} | Procs: {active_procs}"
-    if active_sockets > 0:
-        status_part += f" | Sockets: {active_sockets}"
-    raw_lines.append((status_part, Colors.CYAN))
-    
-    # Line 2: Output & Changes
-    out_part = ""
-    if last_line:
-        cleaned_last_line = strip_ansi(last_line).strip()
-        limit = 60
-        if len(cleaned_last_line) > limit:
-            cleaned_last_line = cleaned_last_line[:limit - 3] + "..."
-        if cleaned_last_line:
-            out_part = f"Output: \"{cleaned_last_line}\""
-            
-    changes_part = ""
-    if changed_files:
-        changes_part = f"Changed: {', '.join(changed_files[:3])}"
-        if len(changed_files) > 3:
-            changes_part += f" (+{len(changed_files) - 3} more)"
-    else:
-        changes_part = "Changed: None"
-        
-    if out_part:
-        line2 = f"   {changes_part} | {out_part}"
-    else:
-        line2 = f"   {changes_part}"
-    raw_lines.append((line2, Colors.CYAN))
-
-    # Line 3: Tmux info (only if needed)
-    if tmux_session:
-        is_agent_tui = interactive and any(name in agent_name.lower() for name in ("grok", "claude", "agy"))
-        if is_agent_tui:
-            raw_lines.append((f"   ⚠️  Waiting for interaction: tmux attach-session -t {tmux_session} (Interactive TUI)", Colors.GREEN + Colors.BOLD))
-        else:
-            raw_lines.append((f"   💻 Headless logs: tmux attach-session -t {tmux_session}", Colors.GREEN + Colors.BOLD))
-            
-    lines = []
-    for text, color in raw_lines:
-        lines.append(Colors.colored(text, color))
-        
-    if is_tty and last_printed_lines_cnt > 1:
-        sys.stdout.write(f"\r\033[{last_printed_lines_cnt - 1}A")
-    elif is_tty and last_printed_lines_cnt == 1:
-        sys.stdout.write("\r")
-        
-    for i in range(max(len(lines), last_printed_lines_cnt)):
-        if is_tty:
-            line = lines[i] if i < len(lines) else ""
-            if i < max(len(lines), last_printed_lines_cnt) - 1:
-                sys.stdout.write("\033[K" + line + "\n")
-            else:
-                if is_final:
-                    sys.stdout.write("\033[K" + line + "\n")
-                else:
-                    sys.stdout.write("\033[K" + line)
-        else:
-            if i < len(lines):
-                sys.stdout.write(lines[i] + "\n")
-            
-    sys.stdout.flush()
-    return len(lines)
+def get_acp_command(agent: str, binary_override: str | None = None) -> list[str]:
+    import shutil
+    binary = binary_override
+    if agent == "grok":
+        bin_name = binary or "grok"
+        if not shutil.which(bin_name) and shutil.which("agent"):
+            bin_name = "agent"
+        return [bin_name, "agent", "stdio"]
+    elif agent == "opencode":
+        return [binary or "opencode", "acp"]
+    elif agent == "claude":
+        bin_name = binary or "claude"
+        if shutil.which(bin_name):
+            return [bin_name, "agent", "stdio"]
+        return ["npx", "-y", "@agentclientprotocol/claude-agent-acp"]
+    elif agent == "codex":
+        return [binary or "codex", "app-server"]
+    elif agent == "agy":
+        if binary and binary != "agy" and shutil.which(binary):
+            return [binary, "--acp"]
+        return ["npx", "-y", "@google/gemini-cli@0.49.0", "--acp"]
+    return [binary or agent]
 
 
-def read_available(stream) -> str:
-    try:
-        data = stream.read()
-        return data if data is not None else ""
-    except (BlockingIOError, TypeError):
-        return ""
-    except Exception:
-        return ""
-
-
-def run_command_monitored(
-    command: list[str] | str,
-    *,
+async def run_agent_acp(
+    agent: str,
+    prompt: str,
     cwd: Path,
+    *,
+    model: str | None = None,
     env: dict[str, str] | None = None,
-    timeout: int | None = None,
-    stream: bool = False,
-    label: str = "COMMAND",
-    dry_run: bool = False,
-    tmux: bool = False,
-    tmux_session: str | None = None,
-    interactive: bool = False,
-) -> subprocess.CompletedProcess[str]:
-    import sys
-    import time
-    import fcntl
-    import os
-    from .colors import Colors
-    
-    cmd_list = [command] if isinstance(command, str) else command
-    cmd_str = " ".join(_quote(a) for a in cmd_list) if isinstance(command, list) else command
-    
-    dry_prefix = Colors.colored("[DRY RUN] ", Colors.YELLOW) if dry_run else ""
-    printed_cmd = format_cmd_for_display(command)
-    
-    print(Colors.colored(f"{dry_prefix}Running {label}", Colors.CYAN + Colors.BOLD))
-    print(Colors.colored(f"   Cwd:     {cwd}", Colors.CYAN))
-    print(Colors.colored(f"   Command: {printed_cmd}", Colors.CYAN))
+    extra_args: list[str] | None = None,
+    binary_override: str | None = None,
+    step: str | None = None,
+) -> str:
+    import asyncio
+    from acp import Client, connect_to_agent, text_block, PROTOCOL_VERSION, RequestError
+    from acp.schema import (
+        ClientCapabilities,
+        Implementation,
+        PermissionOption,
+        RequestPermissionResponse,
+        AllowedOutcome,
+        AgentMessageChunk,
+        AgentThoughtChunk,
+    )
+    from rich.console import Console
+    from typing import Any
 
-    if dry_run:
-        return subprocess.CompletedProcess(cmd_list, 0, stdout="", stderr="")
+    console = Console()
 
-    if tmux and not shutil.which("tmux"):
-        print(Colors.colored("  ⚠ tmux not found on PATH — running agent normally without tmux", Colors.YELLOW))
-        tmux = False
+    # Determine command
+    cmd = get_acp_command(agent, binary_override)
+    if model:
+        if agent == "grok":
+            cmd.extend(["-m", model])
+        elif agent == "opencode":
+            cmd.extend(["-m", model])
+        elif agent == "agy":
+            cmd.extend(["--model", model])
 
-    if tmux:
-        session_name = tmux_session or "mm-agent"
-        # Kill existing session if any
-        subprocess.run(["tmux", "kill-session", "-t", session_name], capture_output=True)
+    label = f"{step.upper()} STEP ({agent.upper()})" if step else f"AGENT: {agent.upper()}"
+    console.print(f"[bold cyan]Connecting to {label} via ACP...[/bold cyan]")
+    console.print(f"   [cyan]Cwd:     {cwd}[/cyan]")
+    console.print(f"   [cyan]Command: {' '.join(cmd)}[/cyan]\n")
 
-        mm_dir = cwd / ".middle-manager"
-        mm_dir.mkdir(parents=True, exist_ok=True)
-        log_path = mm_dir / f"tmux_{session_name}.log"
-        exit_path = mm_dir / f"tmux_{session_name}.exit"
-        script_path = mm_dir / f"tmux_{session_name}.sh"
+    # Spawn agent process
+    proc = await asyncio.create_subprocess_exec(
+        cmd[0],
+        *cmd[1:],
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=None,
+        cwd=str(cwd),
+        env=env,
+    )
 
-        # Remove old files
-        for p in (log_path, exit_path, script_path):
-            if p.exists():
-                try:
-                    p.unlink()
-                except Exception:
-                    pass
+    if proc.stdin is None or proc.stdout is None:
+        raise RuntimeError("Agent process does not expose stdio pipes")
 
-        # Write execution script
-        with open(script_path, "w", encoding="utf-8") as f:
-            f.write("#!/usr/bin/env bash\n")
-            f.write("set -e\n")
-            if env:
-                for k, v in env.items():
-                    safe_v = v.replace("'", "'\\''")
-                    f.write(f"export {k}='{safe_v}'\n")
-            if isinstance(command, str):
-                f.write(f"{command}\n")
-            else:
-                cmd_escaped = " ".join(_quote(a) for a in command)
-                f.write(f"{cmd_escaped}\n")
-        script_path.chmod(0o755)
+    accumulated_text = []
 
-        # Start tmux session
-        cols, rows = shutil.get_terminal_size(fallback=(120, 40))
-        cols = max(cols, 80)
-        rows = max(rows, 24)
+    class MiddleManagerACPClient(Client):
+        def __init__(self):
+            super().__init__()
+            self.terminals = {}
 
-        tmux_cmd = [
-            "tmux", "new-session", "-d",
-            "-s", session_name,
-            "-x", str(cols),
-            "-y", str(rows),
-            "-c", str(cwd),
-            f"/bin/bash -c 'sleep 0.1; {script_path}; echo $? > {exit_path}'"
-        ]
-        subprocess.run(tmux_cmd, check=True)
-        # Set remain-on-exit so the pane doesn't close and TUI scrollback is preserved
-        subprocess.run(["tmux", "set-option", "-t", session_name, "remain-on-exit", "on"], capture_output=True)
+        async def request_permission(
+            self, options: list[PermissionOption], session_id: str, tool_call: Any, **kwargs: Any
+        ) -> RequestPermissionResponse:
+            desc = getattr(tool_call, "description", "")
+            if not desc:
+                desc = f"tool '{getattr(tool_call, 'name', 'unknown')}'"
+            console.print(f"\n[bold green]⚡ [ACP] Auto-approving permission: {desc}[/bold green]")
+            selected_option = options[0].option_id
+            return RequestPermissionResponse(
+                outcome=AllowedOutcome(
+                    outcome="selected",
+                    optionId=selected_option
+                )
+            )
 
-        # Start piping pane output to log_path
-        subprocess.run([
-            "tmux", "pipe-pane", "-t", session_name,
-            f"cat > {log_path}"
-        ], capture_output=True, check=False)
-        
-        # We need a process-like object or pid to monitor.
-        # Find pane_pid of the newly created session.
-        pane_pid = None
-        for _ in range(10): # retry for up to 1 second
-            res = subprocess.run(["tmux", "list-panes", "-t", session_name, "-F", "#{pane_pid}"], capture_output=True, text=True)
-            if res.returncode == 0 and res.stdout.strip().isdigit():
-                pane_pid = int(res.stdout.strip())
-                break
-            time.sleep(0.1)
-        if not pane_pid:
-            # fallback
-            pane_pid = os.getpid()
-
-        # Monitoring loop variables
-        output_parts = []
-        start_time = time.time()
-        last_cpu_time = start_time
-        last_ticks = get_process_tree_cpu_ticks(pane_pid)
-        cpu_percent = 0.0
-        last_git_check = 0.0
-        changed_files = []
-        last_printed_lines = 0
-        step_counter = 0
-        SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-        last_log_time = start_time
-        known_changed_files = set()
-
-        log_file = None
-        returncode = 0
-
-        # Notify user they can attach (only if not a TTY to avoid duplicate tmux messages on interactive runs)
-        if not sys.stdout.isatty():
-            attach_msg = f"  💻 Attach to this session: tmux attach-session -t {session_name}"
-            print(Colors.colored(attach_msg, Colors.GREEN + Colors.BOLD))
-
-        try:
-            while True:
-                # Check exit condition
-                if exit_path.exists():
-                    # Wait a tiny bit for tee to flush
-                    time.sleep(0.2)
-                    try:
-                        returncode = int(exit_path.read_text(encoding="utf-8").strip())
-                    except Exception:
-                        returncode = 0
-                    break
-
-                # Read new output logs
-                if log_path.exists() and log_file is None:
-                    log_file = open(log_path, "r", encoding="utf-8", errors="ignore")
-                if log_file:
-                    chunk = log_file.read()
-                    if chunk:
-                        output_parts.append(chunk)
-
-                now = time.time()
-                # CPU check
-                if now - last_cpu_time >= 0.5:
-                    cpu_val, last_ticks, last_cpu_time = calculate_cpu_percent(pane_pid, last_ticks, last_cpu_time)
-                    if cpu_val is not None:
-                        cpu_percent = cpu_val
-
-                # Git status check
-                if now - last_git_check >= 1.5:
-                    changed_files = get_changed_files_with_status(cwd)
-                    last_git_check = now
-
-                elapsed = now - start_time
-                mins, secs = divmod(int(elapsed), 60)
-                elapsed_str = f"{mins:02d}:{secs:02d}"
-
-                accumulated = "".join(output_parts)
-                cpu_str = f"{cpu_percent:.1f}%"
-
-                if sys.stdout.isatty():
-                    spinner_char = SPINNER[step_counter % len(SPINNER)]
-                    status_line = f"{spinner_char} RUNNING IN TMUX ({session_name})..."
-                    last_line = ""
-                    for line in reversed(accumulated.splitlines()):
-                        cleaned = strip_ansi(line).strip()
-                        if cleaned:
-                            last_line = cleaned
-                            break
-                    active_procs, active_sockets = get_process_tree_stats(pane_pid)
-                    last_printed_lines = draw_status_block(
-                        agent_name=label,
-                        status_str=status_line,
-                        elapsed_str=elapsed_str,
-                        cpu_str=cpu_str,
-                        active_procs=active_procs,
-                        active_sockets=active_sockets,
-                        changed_files=changed_files,
-                        last_printed_lines_cnt=last_printed_lines,
-                        last_line=last_line,
-                        tmux_session=session_name,
-                        interactive=interactive
-                    )
+        async def session_update(
+            self,
+            session_id: str,
+            update: Any,
+            **kwargs: Any,
+        ) -> None:
+            if isinstance(update, AgentThoughtChunk):
+                console.print(update.thought, style="italic dim", end="")
+            elif isinstance(update, AgentMessageChunk):
+                content = update.content
+                text = ""
+                if hasattr(content, "text"):
+                    text = content.text
+                elif hasattr(content, "uri"):
+                    text = content.uri
                 else:
-                    new_files_set = set(changed_files)
-                    added_changes = new_files_set - known_changed_files
-                    for f in added_changes:
-                        print(Colors.colored(f"  │ [{elapsed_str}] File changed: {f}", Colors.GREEN))
-                    known_changed_files = new_files_set
-                    if now - last_log_time >= 10.0:
-                        active_procs, active_sockets = get_process_tree_stats(pane_pid)
-                        print(Colors.colored(f"  │ [{elapsed_str}] CPU: {cpu_percent:.1f}% | Procs: {active_procs} | Sockets: {active_sockets}", Colors.CYAN))
-                        last_log_time = now
+                    text = str(content)
+                console.print(text, style="green", end="")
+                accumulated_text.append(text)
+            elif hasattr(update, "type") and update.type == "tool_call_start":
+                console.print(f"\n[cyan]🔨 Running tool: {getattr(update, 'name', 'unknown')}[/cyan]")
 
-                time.sleep(0.1)
-                step_counter += 1
+        async def read_text_file(
+            self, path: str, session_id: str, limit: int | None = None, line: int | None = None, **kwargs: Any
+        ) -> ReadTextFileResponse:
+            from acp.schema import ReadTextFileResponse
+            p = Path(path)
+            if not p.is_absolute():
+                p = Path(cwd) / p
+            
+            if not p.exists():
+                return ReadTextFileResponse(content="")
+                
+            lines = p.read_text(encoding="utf-8", errors="ignore").splitlines()
+            start = (line - 1) if line is not None else 0
+            if start < 0:
+                start = 0
+            if limit is not None:
+                lines = lines[start : start + limit]
+            else:
+                lines = lines[start :]
+            return ReadTextFileResponse(content="\n".join(lines))
 
-        except KeyboardInterrupt:
-            # kill the tmux session on Ctrl+C to clean up
-            subprocess.run(["tmux", "kill-session", "-t", session_name], capture_output=True)
-            raise
-        finally:
-            if log_file:
+        async def write_text_file(
+            self, content: str, path: str, session_id: str, **kwargs: Any
+        ) -> WriteTextFileResponse | None:
+            from acp.schema import WriteTextFileResponse
+            p = Path(path)
+            if not p.is_absolute():
+                p = Path(cwd) / p
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content, encoding="utf-8")
+            return WriteTextFileResponse()
+
+        async def create_terminal(
+            self,
+            command: str,
+            session_id: str,
+            args: list[str] | None = None,
+            cwd: str | None = None,
+            env: list[Any] | None = None,
+            **kwargs: Any,
+        ) -> CreateTerminalResponse:
+            from acp.schema import CreateTerminalResponse
+            
+            terminal_id = f"term_{len(self.terminals) + 1}"
+            
+            # Build env dict
+            env_dict = None
+            if env:
+                env_dict = {item.name: item.value for item in env if hasattr(item, 'name')}
+            
+            target_cwd = cwd or str(cwd)
+            
+            # Execute shell command asynchronously
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                cwd=target_cwd,
+                env=env_dict
+            )
+            
+            term_info = {
+                "proc": proc,
+                "output": bytearray(),
+                "exit_code": None
+            }
+            self.terminals[terminal_id] = term_info
+            
+            async def read_stdout():
                 try:
-                    log_file.close()
+                    while True:
+                        chunk = await proc.stdout.read(65536)
+                        if not chunk:
+                            break
+                        term_info["output"].extend(chunk)
                 except Exception:
                     pass
+                finally:
+                    code = await proc.wait()
+                    term_info["exit_code"] = code
+            
+            asyncio.create_task(read_stdout())
+            return CreateTerminalResponse(terminalId=terminal_id)
 
-        # Final draw after completion
-        elapsed = time.time() - start_time
-        mins, secs = divmod(int(elapsed), 60)
-        elapsed_str = f"{mins:02d}:{secs:02d}"
-        changed_files = get_changed_files_with_status(cwd)
+        async def terminal_output(
+            self, session_id: str, terminal_id: str, **kwargs: Any
+        ) -> TerminalOutputResponse:
+            from acp.schema import TerminalOutputResponse, TerminalExitStatus
+            term_info = self.terminals.get(terminal_id)
+            if not term_info:
+                raise RequestError.invalid_params(f"Terminal {terminal_id} not found")
+                
+            out_str = term_info["output"].decode("utf-8", errors="ignore")
+            
+            exit_status = None
+            if term_info["exit_code"] is not None:
+                exit_status = TerminalExitStatus(exitCode=term_info["exit_code"])
+                
+            return TerminalOutputResponse(
+                output=out_str,
+                truncated=False,
+                exitStatus=exit_status
+            )
 
-        # Read any remaining output
-        if log_path.exists():
+        async def wait_for_terminal_exit(
+            self, session_id: str, terminal_id: str, **kwargs: Any
+        ) -> WaitForTerminalExitResponse:
+            from acp.schema import WaitForTerminalExitResponse, TerminalExitStatus
+            term_info = self.terminals.get(terminal_id)
+            if not term_info:
+                raise RequestError.invalid_params(f"Terminal {terminal_id} not found")
+                
+            while term_info["exit_code"] is None:
+                await asyncio.sleep(0.1)
+                
+            return WaitForTerminalExitResponse(
+                exitStatus=TerminalExitStatus(exitCode=term_info["exit_code"])
+            )
+
+        async def release_terminal(self, session_id: str, terminal_id: str, **kwargs: Any) -> Any:
+            term_info = self.terminals.get(terminal_id)
+            if term_info and term_info["exit_code"] is None:
+                try:
+                    term_info["proc"].terminate()
+                except Exception:
+                    pass
+            return None
+
+        async def kill_terminal(self, session_id: str, terminal_id: str, **kwargs: Any) -> Any:
+            term_info = self.terminals.get(terminal_id)
+            if term_info and term_info["exit_code"] is None:
+                try:
+                    term_info["proc"].kill()
+                except Exception:
+                    pass
+            return None
+
+        async def ext_method(self, method: str, params: dict) -> dict:
+            raise RequestError.method_not_found(method)
+
+        async def ext_notification(self, method: str, params: dict) -> None:
+            raise RequestError.method_not_found(method)
+
+    client_impl = MiddleManagerACPClient()
+    conn = connect_to_agent(client_impl, proc.stdin, proc.stdout)
+
+    await conn.initialize(
+        protocol_version=PROTOCOL_VERSION,
+        client_capabilities=ClientCapabilities(),
+        client_info=Implementation(name="middle-manager", title="Middle Manager", version="0.1.0"),
+    )
+
+    session = await conn.new_session(mcp_servers=[], cwd=str(cwd))
+
+    try:
+        await conn.prompt(
+            session_id=session.session_id,
+            prompt=[text_block(prompt)],
+        )
+    finally:
+        if proc.returncode is None:
             try:
-                content = log_path.read_text(encoding="utf-8", errors="ignore")
-                output_parts = [content]
+                proc.terminate()
+                await proc.wait()
             except Exception:
                 pass
-        accumulated = "".join(output_parts)
-        status_str = "✅ COMPLETED" if returncode == 0 else f"❌ FAILED (exit code {returncode})"
 
-        if sys.stdout.isatty():
-            last_line = ""
-            for line in reversed(accumulated.splitlines()):
-                cleaned = strip_ansi(line).strip()
-                if cleaned:
-                    last_line = cleaned
-                    break
-            draw_status_block(
-                agent_name=label,
-                status_str=status_str,
-                elapsed_str=elapsed_str,
-                cpu_str="0.0% (stopped)",
-                active_procs=0,
-                active_sockets=0,
-                changed_files=changed_files,
-                last_printed_lines_cnt=last_printed_lines,
-                last_line=last_line,
-                tmux_session=None,
-                interactive=interactive,
-                is_final=True
+    console.print()
+    return "".join(accumulated_text)
+
+
+def run_agent(
+    run: AgentRun,
+    *,
+    dry_run: bool = False,
+    stream: bool = True,
+    step: str | None = None,
+    tmux: bool = False,
+    run_id: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    import asyncio
+    import sys
+    if dry_run:
+        print(f"[DRY RUN] Would run agent {run.agent} with prompt: {run.prompt}")
+        return subprocess.CompletedProcess(run.command, 0, stdout="", stderr="")
+
+    try:
+        binary_override = run.command[0] if run.command else None
+        stdout = asyncio.run(
+            run_agent_acp(
+                run.agent,
+                run.prompt,
+                run.cwd,
+                model=run.model,
+                env=run.env,
+                extra_args=run.extra_args,
+                binary_override=binary_override,
+                step=step,
             )
-        else:
-            print(Colors.colored(f"  │ [{elapsed_str}] Final status: {status_str}", Colors.CYAN))
-        
-        # kill the tmux session to clean up
-        subprocess.run(["tmux", "kill-session", "-t", session_name], capture_output=True)
-
-        return subprocess.CompletedProcess(
-            cmd_list,
-            returncode,
-            stdout=accumulated,
-            stderr=""
         )
-
-    if stream:
-        print(Colors.colored(f"--- {label} Output ---", Colors.MAGENTA + Colors.BOLD))
-
-        proc = subprocess.Popen(
-            command,
-            cwd=cwd,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            shell=isinstance(command, str),
-        )
-        output_lines: list[str] = []
-        assert proc.stdout is not None
-        
-        start_of_line = True
-        try:
-            for line in proc.stdout:
-                output_lines.append(line)
-                for char in line:
-                    if start_of_line:
-                        sys.stdout.write(Colors.colored("  │ ", Colors.MAGENTA))
-                        start_of_line = False
-                    sys.stdout.write(char)
-                    if char == "\n":
-                        start_of_line = True
-                sys.stdout.flush()
-        except KeyboardInterrupt:
-            try:
-                proc.terminate()
-                proc.wait(timeout=2)
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-            raise
-
-        proc.wait(timeout=timeout)
-        try:
-            proc.stdout.close()
-        except Exception:
-            pass
-        if not start_of_line:
-            print()
-        print(Colors.colored(f"--- End of {label} Output ---", Colors.MAGENTA + Colors.BOLD))
-        return subprocess.CompletedProcess(
-            cmd_list,
-            proc.returncode or 0,
-            stdout="".join(output_lines),
-            stderr="",
-        )
-    else:
-        # Monitoring mode (default)
-        proc = subprocess.Popen(
-            command,
-            cwd=cwd,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            shell=isinstance(command, str),
-        )
-        
-        # Make stdout non-blocking
-        fd = proc.stdout.fileno()
-        fl = fcntl.fcntl(fd, fcntl.F_GETFL)
-        fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
-        
-        output_parts: list[str] = []
-        start_time = time.time()
-        last_cpu_time = start_time
-        last_ticks = get_process_tree_cpu_ticks(proc.pid)
-        cpu_percent = 0.0
-        
-        last_git_check = 0.0
-        changed_files: list[str] = []
-        
-        last_printed_lines = 0
-        step_counter = 0
-        
-        SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-        
-        # Track for non-TTY logging
-        last_log_time = start_time
-        known_changed_files = set()
-        
-        if not sys.stdout.isatty():
-            print(Colors.colored(f"   Monitoring {label}...", Colors.MAGENTA))
-        
-        try:
-            while True:
-                poll_status = proc.poll()
-                is_running = (poll_status is None)
-                
-                chunk = read_available(proc.stdout)
-                if chunk:
-                    output_parts.append(chunk)
-                    
-                if not is_running:
-                    final_chunk = read_available(proc.stdout)
-                    if final_chunk:
-                        output_parts.append(final_chunk)
-                    break
-                    
-                now = time.time()
-                
-                # CPU check
-                if now - last_cpu_time >= 0.5:
-                    cpu_val, last_ticks, last_cpu_time = calculate_cpu_percent(proc.pid, last_ticks, last_cpu_time)
-                    if cpu_val is not None:
-                        cpu_percent = cpu_val
-                        
-                # Git Status check
-                if now - last_git_check >= 1.5:
-                    changed_files = get_changed_files_with_status(cwd)
-                    last_git_check = now
-                    
-                elapsed = now - start_time
-                mins, secs = divmod(int(elapsed), 60)
-                elapsed_str = f"{mins:02d}:{secs:02d}"
-                
-                accumulated = "".join(output_parts)
-                out_lines = len(accumulated.splitlines())
-                out_bytes = len(accumulated.encode("utf-8", errors="ignore"))
-                if out_bytes < 1024:
-                    size_str = f"{out_bytes} B"
-                elif out_bytes < 1024 * 1024:
-                    size_str = f"{out_bytes / 1024:.1f} KB"
-                else:
-                    size_str = f"{out_bytes / (1024 * 1024):.1f} MB"
-                    
-                cpu_str = f"{cpu_percent:.1f}%"
-                
-                if sys.stdout.isatty():
-                    spinner_char = SPINNER[step_counter % len(SPINNER)]
-                    status_line = f"{spinner_char} RUNNING..."
-                    
-                    last_line = ""
-                    for line in reversed(accumulated.splitlines()):
-                        cleaned = strip_ansi(line).strip()
-                        if cleaned:
-                            last_line = cleaned
-                            break
-
-                    active_procs, active_sockets = get_process_tree_stats(proc.pid)
-
-                    last_printed_lines = draw_status_block(
-                        agent_name=label,
-                        status_str=status_line,
-                        elapsed_str=elapsed_str,
-                        cpu_str=cpu_str,
-                        active_procs=active_procs,
-                        active_sockets=active_sockets,
-                        changed_files=changed_files,
-                        last_printed_lines_cnt=last_printed_lines,
-                        last_line=last_line,
-                        tmux_session=None
-                    )
-                else:
-                    # Non-TTY logic
-                    new_files_set = set(changed_files)
-                    added_changes = new_files_set - known_changed_files
-                    for f in added_changes:
-                        print(Colors.colored(f"  │ [{elapsed_str}] File changed: {f}", Colors.GREEN))
-                    known_changed_files = new_files_set
-                    
-                    if now - last_log_time >= 10.0:
-                        active_procs, active_sockets = get_process_tree_stats(proc.pid)
-                        print(Colors.colored(f"  │ [{elapsed_str}] CPU: {cpu_percent:.1f}% | Procs: {active_procs} | Sockets: {active_sockets}", Colors.CYAN))
-                        last_log_time = now
-                        
-                time.sleep(0.1)
-                step_counter += 1
-                
-        except KeyboardInterrupt:
-            try:
-                proc.terminate()
-                proc.wait(timeout=2)
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-            raise
-            
-        proc.wait(timeout=timeout)
-        try:
-            proc.stdout.close()
-        except Exception:
-            pass
-        
-        # Final stats
-        elapsed = time.time() - start_time
-        mins, secs = divmod(int(elapsed), 60)
-        elapsed_str = f"{mins:02d}:{secs:02d}"
-        
-        changed_files = get_changed_files_with_status(cwd)
-        accumulated = "".join(output_parts)
-        out_lines = len(accumulated.splitlines())
-        out_bytes = len(accumulated.encode("utf-8", errors="ignore"))
-        if out_bytes < 1024:
-            size_str = f"{out_bytes} B"
-        elif out_bytes < 1024 * 1024:
-            size_str = f"{out_bytes / 1024:.1f} KB"
-        else:
-            size_str = f"{out_bytes / (1024 * 1024):.1f} MB"
-            
-        status_str = "✅ COMPLETED" if proc.returncode == 0 else f"❌ FAILED (exit code {proc.returncode})"
-        
-        if sys.stdout.isatty():
-            last_line = ""
-            for line in reversed(accumulated.splitlines()):
-                cleaned = strip_ansi(line).strip()
-                if cleaned:
-                    last_line = cleaned
-                    break
-
-            draw_status_block(
-                agent_name=label,
-                status_str=status_str,
-                elapsed_str=elapsed_str,
-                cpu_str="0.0% (stopped)",
-                active_procs=0,
-                active_sockets=0,
-                changed_files=changed_files,
-                last_printed_lines_cnt=last_printed_lines,
-                last_line=last_line,
-                tmux_session=None,
-                is_final=True
-            )
-        else:
-            print(Colors.colored(f"   Finished: {status_str} (Time: {elapsed_str})", Colors.CYAN + Colors.BOLD))
-            if changed_files:
-                print(Colors.colored(f"   Final changed files: {', '.join(changed_files)}", Colors.GREEN))
-            
-        return subprocess.CompletedProcess(
-            cmd_list,
-            proc.returncode or 0,
-            stdout="".join(output_parts),
-            stderr="",
-        )
-
-
-def run_agent(run: AgentRun, *, dry_run: bool = False, stream: bool = True, step: str | None = None, tmux: bool = False, run_id: str | None = None) -> subprocess.CompletedProcess[str]:
-    label = f"{step.upper()} STEP ({run.agent.upper()})" if step else f"AGENT: {run.agent.upper()}"
-    suffix = f"-{run_id}" if run_id else ""
-    return run_command_monitored(
-        command=run.command,
-        cwd=run.cwd,
-        env=run.env,
-        timeout=run.timeout,
-        stream=stream,
-        label=label,
-        dry_run=dry_run,
-        tmux=tmux,
-        tmux_session=f"mm-{step}{suffix}" if step else f"mm-agent{suffix}",
-        interactive=run.interactive
-    )
+        return subprocess.CompletedProcess(run.command, 0, stdout=stdout, stderr="")
+    except Exception as e:
+        print(f"Error running agent via ACP: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        return subprocess.CompletedProcess(run.command, 1, stdout="", stderr=str(e))
 
 
 def _quote(arg: str) -> str:
@@ -1058,12 +756,11 @@ def list_agents_status(binary_overrides: dict[str, str] | None = None) -> list[d
     return rows
 
 
-# Preference order per step when autodetecting installed agents.
 STEP_AGENT_PRIORITY: dict[str, tuple[str, ...]] = {
-    "discover": ("grok", "claude", "crush", "opencode", "agy", "codex"),
-    "execute": ("claude", "grok", "opencode", "crush", "agy", "codex"),
-    "verify": ("codex", "grok", "claude", "opencode", "crush", "agy"),
-    "commit": ("agy", "grok", "claude", "opencode", "crush", "codex"),
+    "discover": ("grok", "claude", "opencode", "codex"),
+    "execute": ("claude", "grok", "opencode", "codex"),
+    "verify": ("codex", "grok", "claude", "opencode"),
+    "commit": ("grok", "claude", "opencode", "codex"),
 }
 
 

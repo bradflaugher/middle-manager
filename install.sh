@@ -25,6 +25,12 @@ else
   git clone --depth 1 --branch "${BRANCH}" "${REPO_URL}" "${INSTALL_DIR}"
 fi
 
+# Install Python dependencies
+echo "Installing python dependencies (agent-client-protocol, rich)..."
+python3 -m pip install --quiet agent-client-protocol rich --break-system-packages 2>/dev/null || \
+  python3 -m pip install --quiet agent-client-protocol rich || \
+  echo "Warning: could not install dependencies automatically. Please make sure agent-client-protocol and rich are installed."
+
 # Wrapper script — avoids PYTHONPATH hacks
 cat > "${BIN_DIR}/mm" <<EOF
 #!/usr/bin/env bash

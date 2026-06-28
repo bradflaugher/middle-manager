@@ -1,46 +1,26 @@
 import unittest
 from unittest.mock import patch
-from middle_manager.agents import autodetect_step_agents
+from middle_manager.agents import autodetect_step_agents, get_acp_command
 
 class TestAgents(unittest.TestCase):
 
     @patch('middle_manager.agents.agent_available')
     def test_autodetect_step_agents_diverse(self, mock_available):
-        # Mock only 'grok', 'crush', 'agy' as installed
-        mock_available.side_effect = lambda name, override=None: name in ('grok', 'crush', 'agy')
+        # Mock only 'grok', 'opencode', 'agy' as installed
+        mock_available.side_effect = lambda name, override=None: name in ('grok', 'opencode', 'agy')
 
         detected = autodetect_step_agents()
         self.assertEqual(detected['discover'], 'grok')
-        self.assertEqual(detected['execute'], 'crush')
-        self.assertEqual(detected['verify'], 'agy')
-        self.assertEqual(detected['commit'], 'agy')
+        self.assertEqual(detected['execute'], 'opencode')
+        self.assertEqual(detected['verify'], 'grok')
+        self.assertEqual(detected['commit'], 'grok')
 
-    def test_get_process_tree_cpu_ticks(self):
-        import os
-        from middle_manager.agents import get_process_tree_cpu_ticks
-        ticks = get_process_tree_cpu_ticks(os.getpid())
-        self.assertIsNotNone(ticks)
-        self.assertGreaterEqual(ticks, 0)
+    def test_get_acp_command(self):
+        cmd = get_acp_command("grok")
+        self.assertEqual(cmd[1:], ["agent", "stdio"])
 
-    def test_calculate_cpu_percent(self):
-        import os
-        import time
-        from middle_manager.agents import calculate_cpu_percent
-        pid = os.getpid()
-        # initial sample
-        cpu, last_ticks, last_time = calculate_cpu_percent(pid, None, time.time() - 1.0)
-        self.assertEqual(cpu, 0.0)
-        self.assertIsNotNone(last_ticks)
-        
-        # secondary sample
-        cpu2, last_ticks2, last_time2 = calculate_cpu_percent(pid, last_ticks, last_time)
-        self.assertIsNotNone(cpu2)
-
-    def test_read_available(self):
-        import io
-        from middle_manager.agents import read_available
-        stream = io.StringIO("hello world")
-        self.assertEqual(read_available(stream), "hello world")
+        cmd_op = get_acp_command("opencode")
+        self.assertEqual(cmd_op[1:], ["acp"])
 
     def test_run_agent_monitored_dry(self):
         from pathlib import Path
@@ -53,37 +33,6 @@ class TestAgents(unittest.TestCase):
         )
         res = run_agent(run, dry_run=True, stream=False)
         self.assertEqual(res.returncode, 0)
-
-    def test_run_agent_monitored_real(self):
-        from pathlib import Path
-        from middle_manager.agents import run_agent, AgentRun
-        import shutil
-        echo_bin = shutil.which("echo")
-        if echo_bin:
-            run = AgentRun(
-                agent="grok",
-                command=[echo_bin, "hello"],
-                prompt="hello",
-                cwd=Path("/tmp")
-            )
-            res = run_agent(run, dry_run=False, stream=False)
-            self.assertEqual(res.returncode, 0)
-            self.assertEqual(res.stdout.strip(), "hello")
-
-    def test_run_command_monitored_string(self):
-        from pathlib import Path
-        from middle_manager.agents import run_command_monitored
-        import shutil
-        echo_bin = shutil.which("echo")
-        if echo_bin:
-            res = run_command_monitored(
-                command=f"{echo_bin} hello_from_shell",
-                cwd=Path("/tmp"),
-                stream=False,
-                label="TEST SHELL",
-            )
-            self.assertEqual(res.returncode, 0)
-            self.assertEqual(res.stdout.strip(), "hello_from_shell")
 
     def test_ensure_gitignore(self):
         import tempfile
@@ -184,26 +133,6 @@ class TestAgents(unittest.TestCase):
             self.assertIn("- [x] Task 2", updated_text)
             self.assertIn("- [ ] Task 3", updated_text)
 
-
-    def test_run_command_monitored_tmux(self):
-        import shutil
-        from pathlib import Path
-        from middle_manager.agents import run_command_monitored
-        
-        if shutil.which("tmux"):
-            res = run_command_monitored(
-                command="echo hello_from_tmux",
-                cwd=Path("/tmp"),
-                stream=False,
-                label="TEST TMUX",
-                tmux=True,
-                tmux_session="mm-test-session"
-            )
-            self.assertEqual(res.returncode, 0)
-            self.assertIn("hello_from_tmux", res.stdout)
-            import subprocess
-            subprocess.run(["tmux", "kill-session", "-t", "mm-test-session"], capture_output=True)
-
     def test_loop_task_auto_checkoff_logic(self):
         from middle_manager.config import LoopConfig
         from middle_manager.loop import MiddleManagerLoop
@@ -279,7 +208,6 @@ class TestAgents(unittest.TestCase):
             interactive=True,
             prompt_file=Path("/tmp/prompt.md")
         )
-        # Should not use --prompt-file, should append prompt directly as argument
         self.assertNotIn("--prompt-file", run_grok.command)
         self.assertIn("test prompt", run_grok.command)
         self.assertNotIn("-p", run_grok.command)
@@ -314,47 +242,3 @@ class TestAgents(unittest.TestCase):
         agy_cmd = loop._build_interactive_command("agy", "test prompt")
         self.assertNotIn("--print", agy_cmd)
         self.assertIn("--prompt-interactive", agy_cmd)
-
-    def test_draw_status_block_tmux_labels(self):
-        import io
-        from unittest.mock import patch
-        from middle_manager.agents import draw_status_block
-        
-        with patch('sys.stdout', new=io.StringIO()) as mock_stdout:
-            draw_status_block(
-                agent_name="EXECUTE STEP (GROK)",
-                status_str="running",
-                elapsed_str="00:01",
-                cpu_str="0.0%",
-                active_procs=1,
-                active_sockets=0,
-                changed_files=[],
-                last_printed_lines_cnt=0,
-                last_line="",
-                tmux_session="mm-execute",
-                interactive=True
-            )
-            output = mock_stdout.getvalue()
-            self.assertIn("Waiting for interaction: tmux attach-session -t mm-execute (Interactive TUI)", output)
-            
-        with patch('sys.stdout', new=io.StringIO()) as mock_stdout:
-            draw_status_block(
-                agent_name="EXECUTE STEP (GROK)",
-                status_str="running",
-                elapsed_str="00:01",
-                cpu_str="0.0%",
-                active_procs=1,
-                active_sockets=0,
-                changed_files=[],
-                last_printed_lines_cnt=0,
-                last_line="",
-                tmux_session="mm-execute",
-                interactive=False
-            )
-            output = mock_stdout.getvalue()
-            self.assertIn("Headless logs: tmux attach-session -t mm-execute", output)
-
-
-
-
-

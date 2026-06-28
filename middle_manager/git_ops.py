@@ -68,7 +68,17 @@ def push_branch(repo: Path, branch: str, *, dry_run: bool = False) -> None:
     if dry_run:
         print(f"[dry-run] git push -u origin {branch}")
         return
-    run_git(repo, "push", "-u", "origin", branch)
+    try:
+        res = subprocess.run(
+            ["git", "remote"], cwd=str(repo), capture_output=True, text=True, check=True
+        )
+        remotes = res.stdout.splitlines()
+        if "origin" not in remotes:
+            print(f"[git] No 'origin' remote found, skipping push of branch '{branch}'.")
+            return
+        run_git(repo, "push", "-u", "origin", branch)
+    except Exception as e:
+        print(f"[git] Warning: Failed to push branch '{branch}' to origin: {e}")
 
 
 def gh_available() -> bool:

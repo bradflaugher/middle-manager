@@ -516,8 +516,6 @@ class MiddleManagerLoop:
             return f"grok --cwd {self.cfg.repo} \"{prompt}\""
         elif agent == "claude":
             return f"claude \"{prompt}\""
-        elif agent == "crush":
-            return f"crush run \"{prompt}\" -c {self.cfg.repo}"
         elif agent == "opencode":
             return f"opencode run \"{prompt}\" --dir {self.cfg.repo}"
         elif agent == "codex":

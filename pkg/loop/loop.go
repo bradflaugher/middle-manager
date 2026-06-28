@@ -27,7 +27,7 @@ type LoopResult struct {
 type MiddleManagerLoop struct {
 	cfg           *config.LoopConfig
 	state         string
-	fixPlanPath   string
+	success       bool
 	errorLogPath  string
 	verifyLogPath string
 	iterationPath string
@@ -45,7 +45,6 @@ func NewMiddleManagerLoop(cfg *config.LoopConfig) *MiddleManagerLoop {
 	return &MiddleManagerLoop{
 		cfg:           cfg,
 		state:         state,
-		fixPlanPath:   filepath.Join(state, "fix_plan.md"),
 		errorLogPath:  filepath.Join(state, "error_log.txt"),
 		verifyLogPath: filepath.Join(state, "verify_log.txt"),
 		iterationPath: filepath.Join(state, "iteration.txt"),
@@ -113,30 +112,11 @@ func (l *MiddleManagerLoop) WriteText(path, content string) {
 }
 
 func (l *MiddleManagerLoop) TopPlanItem() string {
-	items := l.TopPlanItems(1)
-	if len(items) > 0 {
-		return items[0]
-	}
-	return ""
+	return l.cfg.Mission
 }
 
 func (l *MiddleManagerLoop) TopPlanItems(count int) []string {
-	text := l.ReadText(l.fixPlanPath, "")
-	var items []string
-	lines := strings.Split(text, "\n")
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "- [ ]") {
-			task := strings.TrimSpace(strings.TrimPrefix(trimmed, "- [ ]"))
-			if task != "" {
-				items = append(items, task)
-				if len(items) >= count {
-					break
-				}
-			}
-		}
-	}
-	return items
+	return []string{l.cfg.Mission}
 }
 
 func (l *MiddleManagerLoop) AgentMemory() string {
@@ -153,41 +133,9 @@ func (l *MiddleManagerLoop) AgentMemory() string {
 	return fmt.Sprintf("(no %s or CLAUDE.md found — create one with repo rules)", l.cfg.AgentMemoryFile)
 }
 
-func (l *MiddleManagerLoop) EnsureFixPlanSeed(issueData map[string]string) {
-	if l.cfg.Mode == "feature" && l.cfg.Mission != "" {
-		if l.cfg.Fresh || !fileExists(l.fixPlanPath) {
-			l.SeedFeaturePlan()
-		}
-		return
-	}
-	if fileExists(l.fixPlanPath) {
-		return
-	}
+func (l *MiddleManagerLoop) EnsureFixPlanSeed(issueData map[string]string) {}
 
-	seed := "# fix_plan.md\n\n"
-	if l.cfg.Mission != "" {
-		seed += fmt.Sprintf("## Mission\n\n%s\n\n", l.cfg.Mission)
-	}
-	if title, ok := issueData["title"]; ok && title != "" {
-		seed += fmt.Sprintf("## Issue #%s: %s\n\n", issueData["number"], title)
-		if body, ok := issueData["body"]; ok && body != "" {
-			seed += body + "\n\n"
-		}
-	}
-	task := l.cfg.Mission
-	if task == "" {
-		task = "Investigate and scope the top priority item"
-	}
-	seed += fmt.Sprintf("## Tasks\n\n- [ ] %s\n", task)
-	l.WriteText(l.fixPlanPath, seed)
-}
-
-func (l *MiddleManagerLoop) SeedFeaturePlan() {
-	mission := strings.TrimSpace(l.cfg.Mission)
-	body := fmt.Sprintf("# fix_plan.md\n\n## Feature\n\n%s\n\n## Tasks\n\n- [ ] %s\n", mission, mission)
-	_ = os.MkdirAll(filepath.Dir(l.fixPlanPath), 0755)
-	l.WriteText(l.fixPlanPath, body)
-}
+func (l *MiddleManagerLoop) SeedFeaturePlan() {}
 
 func (l *MiddleManagerLoop) PromptForStep(step string, iteration int, issueData map[string]string) string {
 	sc := l.cfg.StepFor(step)
@@ -204,25 +152,16 @@ func (l *MiddleManagerLoop) PromptForStep(step string, iteration int, issueData 
 		template += ruleAddition
 	}
 
-	topItems := l.TopPlanItems(l.cfg.BatchSize)
-	topItemStr := ""
-	if len(topItems) == 1 {
-		topItemStr = topItems[0]
-	} else if len(topItems) > 1 {
-		var list []string
-		for _, item := range topItems {
-			list = append(list, fmt.Sprintf("- [ ] %s", item))
-		}
-		topItemStr = strings.Join(list, "\n")
-	} else {
-		topItemStr = "No actionable item in fix_plan.md — add `- [ ] task` lines."
+	discoverOutput := ""
+	discoverOutputFile := filepath.Join(l.state, "discover_output.txt")
+	if fileExists(discoverOutputFile) {
+		discoverOutput = l.ReadText(discoverOutputFile, "")
 	}
 
 	ctx := prompts.BuildContext(
 		l.cfg.Repo,
 		l.cfg.Issue,
-		l.ReadText(l.fixPlanPath, ""),
-		topItemStr,
+		discoverOutput,
 		l.AgentMemory(),
 		l.ReadText(l.verifyLogPath, ""),
 		l.ReadText(l.errorLogPath, ""),
@@ -341,18 +280,17 @@ func (l *MiddleManagerLoop) MaybeCommitAndPR(iteration int, issueData map[string
 		return
 	}
 
-	branch, _ := gitops.CurrentBranch(l.cfg.Repo)
+		branch, _ := gitops.CurrentBranch(l.cfg.Repo)
 	if !l.cfg.NoPR {
 		gitops.PushBranch(l.cfg.Repo, branch, l.cfg.DryRun)
 
-		title := fmt.Sprintf("middle-manager: %s", l.TopPlanItem())
+		title := fmt.Sprintf("middle-manager: %s", l.cfg.Mission)
 		if len(title) > 60 {
 			title = title[:60]
 		}
 		body := fmt.Sprintf(
-			"Automated PR from middle-manager loop iteration %d.\n\n**Do not merge without human review.**\n\nPlan: `%s`",
+			"Automated PR from middle-manager loop iteration %d.\n\n**Do not merge without human review.**",
 			iteration,
-			l.fixPlanPath,
 		)
 		prURL, err := gitops.CreatePR(
 			l.cfg.Repo,
@@ -369,106 +307,29 @@ func (l *MiddleManagerLoop) MaybeCommitAndPR(iteration int, issueData map[string
 	}
 }
 
-func (l *MiddleManagerLoop) ParseVerifierUpdates(stdout string) (string, []string) {
+func (l *MiddleManagerLoop) ParseVerifierUpdates(stdout string) string {
 	verdict := "UNKNOWN"
 	reVerdict := regexp.MustCompile(`(?i)VERDICT:\s*(PASS|FAIL)`)
 	m := reVerdict.FindStringSubmatch(stdout)
 	if len(m) > 1 {
 		verdict = strings.ToUpper(m[1])
 	}
-
-	var updates []string
-	lines := strings.Split(stdout, "\n")
-	inUpdates := false
-	reHeader := regexp.MustCompile(`(?i)^(FIX[-_]PLAN[-_]UPDATES|PLAN[-_]UPDATES):`)
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		if reHeader.MatchString(trimmed) {
-			inUpdates = true
-			continue
-		}
-		if inUpdates {
-			if strings.HasPrefix(trimmed, "-") {
-				task := trimmed
-				if !strings.HasPrefix(task, "- [ ]") && !strings.HasPrefix(task, "- [x]") {
-					task = "- [ ] " + strings.TrimSpace(strings.TrimPrefix(task, "-"))
-				}
-				updates = append(updates, task)
-			} else if strings.HasPrefix(trimmed, "VERDICT:") || strings.HasPrefix(trimmed, "SUMMARY:") || strings.HasPrefix(trimmed, "ISSUES:") || strings.HasPrefix(trimmed, "```") {
-				inUpdates = false
-			} else {
-				if len(updates) > 0 {
-					inUpdates = false
-				}
-			}
-		}
-	}
-	return verdict, updates
-}
-
-func (l *MiddleManagerLoop) AddTasksToPlan(newTasks []string) {
-	if len(newTasks) == 0 {
-		return
-	}
-	text := l.ReadText(l.fixPlanPath, "")
-	lines := strings.Split(text, "\n")
-
-	tasksIndex := -1
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "## Tasks") || strings.HasPrefix(trimmed, "## Task") {
-			tasksIndex = i
-			break
-		}
-	}
-
-	if tasksIndex != -1 {
-		insertIndex := tasksIndex + 1
-		for insertIndex < len(lines) {
-			trimmed := strings.TrimSpace(lines[insertIndex])
-			if trimmed != "" && !strings.HasPrefix(trimmed, "-") && !strings.HasPrefix(trimmed, "*") && !strings.HasPrefix(trimmed, "#") {
-				break
-			}
-			insertIndex++
-		}
-
-		// Insert in reverse order to maintain order
-		for i := len(newTasks) - 1; i >= 0; i-- {
-			lines = append(lines[:insertIndex], append([]string{newTasks[i]}, lines[insertIndex:]...)...)
-		}
-		l.Log(fmt.Sprintf("Added %d task(s) suggested by verifier to fix_plan.md", len(newTasks)), colors.Green)
-	} else {
-		lines = append(lines, "\n## Tasks")
-		lines = append(lines, newTasks...)
-		l.Log(fmt.Sprintf("Appended %d task(s) suggested by verifier to end of fix_plan.md", len(newTasks)), colors.Green)
-	}
-
-	l.WriteText(l.fixPlanPath, strings.Join(lines, "\n")+"\n")
+	return verdict
 }
 
 func (l *MiddleManagerLoop) RunOnce(iteration int, issueData map[string]string) bool {
 	l.Log(fmt.Sprintf("\n🔄 ITERATION %d branch: %s", iteration, l.branchName()), colors.Cyan+colors.Bold)
 
 	if !l.cfg.StreamOutput {
-		tui.NotifyTUIPlan(l.ReadText(l.fixPlanPath, ""))
 		tui.NotifyTUIStatus(iteration, "discover", "", "running", l.branchName(), time.Since(l.startTime))
 	}
 
 	verifierPassed := true
 	verifierStdout := ""
-	tasksBefore := -1
 
 	activeSteps := l.cfg.ActiveSteps()
 
 	for _, step := range activeSteps {
-		if step == "execute" {
-			tasksBefore = l.countPendingTasks()
-		}
-
 		if step == "commit" {
 			continue // Handled separately
 		}
@@ -505,7 +366,7 @@ func (l *MiddleManagerLoop) RunOnce(iteration int, issueData map[string]string) 
 	}
 
 	if contains(activeSteps, "verify") && verifierPassed {
-		verdict, planUpdates := l.ParseVerifierUpdates(verifierStdout)
+		verdict := l.ParseVerifierUpdates(verifierStdout)
 		l.Log(fmt.Sprintf("🔍 Verifier Verdict: %s", verdict), colors.Green)
 		if verdict == "FAIL" {
 			verifierPassed = false
@@ -513,9 +374,6 @@ func (l *MiddleManagerLoop) RunOnce(iteration int, issueData map[string]string) 
 			existingErr := l.ReadText(l.errorLogPath, "")
 			header := fmt.Sprintf("\n=== VERIFIER FEEDBACK (Iteration %d) ===\n", iteration)
 			l.WriteText(l.errorLogPath, header+verifierStdout+"\n"+existingErr)
-		}
-		if len(planUpdates) > 0 {
-			l.AddTasksToPlan(planUpdates)
 		}
 	}
 
@@ -536,40 +394,8 @@ func (l *MiddleManagerLoop) RunOnce(iteration int, issueData map[string]string) 
 		l.MaybeCommitAndPR(iteration, issueData)
 	}
 
-	// Mark top tasks done if passed
-	if tasksBefore != -1 {
-		tasksAfter := l.countPendingTasks()
-		if tasksAfter >= tasksBefore {
-			l.CheckOffTopItems(l.cfg.BatchSize)
-		}
-	} else {
-		l.CheckOffTopItems(l.cfg.BatchSize)
-	}
-
-	return true
-}
-
-func (l *MiddleManagerLoop) IsComplete() bool {
-	return gitops.PlanIsComplete(l.ReadText(l.fixPlanPath, ""))
-}
-
-func (l *MiddleManagerLoop) CheckOffTopItems(count int) {
-	text := l.ReadText(l.fixPlanPath, "")
-	lines := strings.Split(text, "\n")
-	checked := 0
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "- [ ]") {
-			lines[i] = strings.Replace(line, "- [ ]", "- [x]", 1)
-			checked++
-			if checked >= count {
-				break
-			}
-		}
-	}
-	if checked > 0 {
-		l.WriteText(l.fixPlanPath, strings.Join(lines, "\n")+"\n")
-	}
+	l.success = true
+	return false // We succeeded, exit the loop!
 }
 
 func (l *MiddleManagerLoop) ResolveStepAgents() {
@@ -683,7 +509,6 @@ func (l *MiddleManagerLoop) RunUntilComplete() (*LoopResult, error) {
 	}
 
 	issueData := gitops.FetchIssue(l.cfg.Repo, l.cfg.Issue)
-	l.EnsureFixPlanSeed(issueData)
 
 	// Start resources tracking goroutine
 	if !l.cfg.StreamOutput {
@@ -694,24 +519,17 @@ func (l *MiddleManagerLoop) RunUntilComplete() (*LoopResult, error) {
 	ran := 0
 
 	for i := 0; i < l.cfg.MaxIterations; i++ {
-		// Verify complete check first
-		if l.IsComplete() {
-			l.Log("Plan complete — all tasks checked off.", colors.Green)
-			return &LoopResult{Success: true, Reason: "plan complete", PRURL: l.lastPRURL, Iterations: ran}, nil
-		}
-
 		if !l.RunOnce(iteration, issueData) {
+			if l.success {
+				l.Log("Loop finished successfully.", colors.Green)
+				return &LoopResult{Success: true, Reason: "completed successfully", PRURL: l.lastPRURL, Iterations: ran}, nil
+			}
 			return &LoopResult{Success: false, Reason: "Stopped by user", PRURL: l.lastPRURL, Iterations: ran}, nil
 		}
 
 		ran++
 		iteration++
 		l.WriteIteration(iteration)
-	}
-
-	if l.IsComplete() {
-		l.Log("Plan complete — all tasks checked off.", colors.Green)
-		return &LoopResult{Success: true, Reason: "plan complete", PRURL: l.lastPRURL, Iterations: ran}, nil
 	}
 
 	return &LoopResult{Success: false, Reason: fmt.Sprintf("Max iterations (%d) reached", l.cfg.MaxIterations), PRURL: l.lastPRURL, Iterations: ran}, nil
@@ -746,17 +564,6 @@ func (l *MiddleManagerLoop) branchName() string {
 		return b
 	}
 	return "non-git"
-}
-
-func (l *MiddleManagerLoop) countPendingTasks() int {
-	text := l.ReadText(l.fixPlanPath, "")
-	count := 0
-	for _, line := range strings.Split(text, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "- [ ]") {
-			count++
-		}
-	}
-	return count
 }
 
 func (l *MiddleManagerLoop) checkTUIPause() {

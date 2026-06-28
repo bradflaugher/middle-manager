@@ -57,17 +57,6 @@ func (r *IssueQueueRunner) ResetIssueState(issue map[string]string) {
 	issueDir := filepath.Join(state, "issues", number)
 	_ = os.MkdirAll(issueDir, 0755)
 
-	// Per-issue plan seed
-	planPath := filepath.Join(issueDir, "fix_plan.md")
-	seed := fmt.Sprintf("# fix_plan.md — Issue #%s\n\n## %s\n\n", number, issue["title"])
-	if body, ok := issue["body"]; ok && body != "" {
-		seed += body + "\n\n"
-	}
-	seed += "## Tasks\n\n"
-	seed += fmt.Sprintf("- [ ] Resolve issue #%s: %s\n", number, issue["title"])
-
-	_ = os.WriteFile(planPath, []byte(seed), 0644)
-
 	// Override config state
 	r.cfg.StateDir = issueDir
 	r.cfg.Issue = number

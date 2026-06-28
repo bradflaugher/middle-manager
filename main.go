@@ -70,29 +70,16 @@ func cmdAgents(cfg *config.LoopConfig) {
 }
 
 func cmdInit(cfg *config.LoopConfig) {
-	state := cfg.StatePath()
-	templates := []string{"fix_plan.md", "AGENTS.md"}
-	for _, name := range templates {
-		var dest string
-		if name == "fix_plan.md" {
-			dest = filepath.Join(state, name)
-		} else {
-			dest = filepath.Join(cfg.Repo, name)
-		}
+	dest := filepath.Join(cfg.Repo, "AGENTS.md")
 
-		if _, err := os.Stat(dest); err == nil {
-			fmt.Printf("exists: %s\n", dest)
-			continue
-		}
-
-		if name == "fix_plan.md" {
-			_ = os.WriteFile(dest, []byte("# fix_plan.md\n\n- [ ] Add your first task here\n"), 0644)
-		} else {
-			_ = os.WriteFile(dest, []byte("# AGENTS.md\n\nRepository memory for middle-manager loops.\nAdd build commands, conventions, and things agents keep forgetting.\n"), 0644)
-		}
-		fmt.Println(colors.Colored(fmt.Sprintf("created: %s", dest), colors.Green))
+	if _, err := os.Stat(dest); err == nil {
+		fmt.Printf("exists: %s\n", dest)
+		return
 	}
-	fmt.Printf("State dir: %s\n", state)
+
+	_ = os.WriteFile(dest, []byte("# AGENTS.md\n\nRepository memory for middle-manager loops.\nAdd build commands, conventions, and things agents keep forgetting.\n"), 0644)
+	fmt.Println(colors.Colored(fmt.Sprintf("created: %s", dest), colors.Green))
+	fmt.Printf("State dir: %s\n", cfg.StatePath())
 }
 
 func cmdStatus(cfg *config.LoopConfig) {
@@ -105,36 +92,6 @@ func cmdStatus(cfg *config.LoopConfig) {
 	fmt.Printf("Git:   %s\n", gitStatus)
 	fmt.Printf("Mode:  %s\n", cfg.Mode)
 	fmt.Printf("State: %s\n\n", state)
-
-	planPath := filepath.Join(state, "fix_plan.md")
-	if _, err := os.Stat(planPath); err == nil {
-		fmt.Println(colors.Colored("Current Plan:", colors.Bold+colors.Cyan))
-		b, _ := os.ReadFile(planPath)
-		planText := string(b)
-		hasTasks := false
-		for _, line := range strings.Split(planText, "\n") {
-			stripped := strings.TrimSpace(line)
-			if strings.HasPrefix(stripped, "- [ ]") {
-				task := strings.TrimSpace(strings.TrimPrefix(stripped, "- [ ]"))
-				fmt.Printf("  [ ] %s\n", colors.Colored(task, colors.Yellow))
-				hasTasks = true
-			} else if strings.HasPrefix(stripped, "- [x]") {
-				task := strings.TrimSpace(strings.TrimPrefix(stripped, "- [x]"))
-				fmt.Printf("  [x] %s\n", colors.Colored(task, colors.Green))
-				hasTasks = true
-			} else if strings.HasPrefix(stripped, "- ") && !strings.HasPrefix(stripped, "- [") {
-				task := strings.TrimSpace(strings.TrimPrefix(stripped, "- "))
-				fmt.Printf("  [ ] %s\n", colors.Colored(task, colors.Yellow))
-				hasTasks = true
-			}
-		}
-		if !hasTasks {
-			fmt.Println("  (no active tasks in fix_plan.md)")
-		}
-		fmt.Println()
-	} else {
-		fmt.Println("Plan:  No fix_plan.md found (run 'mm init' or start a loop)")
-	}
 
 	fmt.Println(colors.Colored("Logs & State Files:", colors.Bold+colors.Cyan))
 	for _, name := range []string{"error_log.txt", "verify_log.txt", "iteration.txt", "queue.log"} {

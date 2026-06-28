@@ -47,6 +47,49 @@ class MiddleManagerLoop:
         self.iteration_path = self.state / "iteration.txt"
         self.session_log = self.state / "session.log"
         self.last_pr_url: str | None = None
+        self.live_interjections: list[str] = []
+        self.stop_stdin_thread = None
+        self.stdin_thread = None
+
+    def start_stdin_thread(self) -> None:
+        import threading
+        if self.stdin_thread and self.stdin_thread.is_alive():
+            return
+            
+        self.stop_stdin_thread = threading.Event()
+        
+        def read_stdin():
+            import select
+            import sys
+            from rich.console import Console
+            from rich.text import Text
+            console = Console()
+            
+            while not self.stop_stdin_thread.is_set():
+                try:
+                    ready, _, _ = select.select([sys.stdin], [], [], 0.5)
+                    if ready:
+                        line = sys.stdin.readline()
+                        if not line:
+                            break
+                        message = line.strip()
+                        if message:
+                            captured_text = Text()
+                            captured_text.append("\n💬 Captured live interjection: ", style="bold magenta")
+                            captured_text.append(f"\"{message}\"", style="magenta italic")
+                            captured_text.append("\n(will be fed to the next step)", style="dim")
+                            console.print(captured_text)
+                            self.live_interjections.append(message)
+                except Exception:
+                    break
+                    
+        self.stdin_thread = threading.Thread(target=read_stdin, daemon=True)
+        self.stdin_thread.start()
+
+    def stop_stdin_thread_func(self) -> None:
+        if self.stdin_thread and self.stdin_thread.is_alive():
+            self.stop_stdin_thread.set()
+            self.stdin_thread.join(timeout=1.0)
 
     def log(self, msg: str, color: str | None = None) -> None:
         from .colors import Colors
@@ -419,7 +462,9 @@ class MiddleManagerLoop:
             console.print(step_text)
 
             if self.cfg.interactive:
+                self.stop_stdin_thread_func()
                 action = pause(self.cfg, step)
+                self.start_stdin_thread()
                 if action == "quit":
                     return False
                 if action == "skip":
@@ -543,19 +588,23 @@ class MiddleManagerLoop:
         )
         console.print(startup_panel)
 
-        iteration = self.read_iteration()
-        ran = 0
-        for _ in range(self.cfg.max_iterations):
-            if not self.run_once(iteration):
-                return LoopResult(False, "Stopped by user", self.last_pr_url, ran)
-            ran += 1
-            iteration += 1
-            self.write_iteration(iteration)
-            if self.is_complete():
-                self.log("Plan complete — all tasks checked off.")
-                return LoopResult(True, "plan complete", self.last_pr_url, ran)
+        self.start_stdin_thread()
+        try:
+            iteration = self.read_iteration()
+            ran = 0
+            for _ in range(self.cfg.max_iterations):
+                if not self.run_once(iteration):
+                    return LoopResult(False, "Stopped by user", self.last_pr_url, ran)
+                ran += 1
+                iteration += 1
+                self.write_iteration(iteration)
+                if self.is_complete():
+                    self.log("Plan complete — all tasks checked off.")
+                    return LoopResult(True, "plan complete", self.last_pr_url, ran)
 
-        return LoopResult(False, f"Max iterations ({self.cfg.max_iterations}) reached", self.last_pr_url, ran)
+            return LoopResult(False, f"Max iterations ({self.cfg.max_iterations}) reached", self.last_pr_url, ran)
+        finally:
+            self.stop_stdin_thread_func()
 
     def _build_interactive_command(self, agent: str, prompt: str) -> str:
         if agent == "grok":

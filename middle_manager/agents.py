@@ -421,7 +421,8 @@ def draw_status_block(
     last_printed_lines_cnt: int = 0,
     last_line: str = "",
     tmux_session: str | None = None,
-    interactive: bool = False
+    interactive: bool = False,
+    is_final: bool = False
 ) -> int:
     import sys
     import os
@@ -473,14 +474,24 @@ def draw_status_block(
     for text, color in raw_lines:
         lines.append(Colors.colored(text, color))
         
-    if is_tty and last_printed_lines_cnt > 0:
-        sys.stdout.write(f"\033[{last_printed_lines_cnt}A")
+    if is_tty and last_printed_lines_cnt > 1:
+        sys.stdout.write(f"\r\033[{last_printed_lines_cnt - 1}A")
+    elif is_tty and last_printed_lines_cnt == 1:
+        sys.stdout.write("\r")
         
-    for line in lines:
+    for i in range(max(len(lines), last_printed_lines_cnt)):
         if is_tty:
-            sys.stdout.write("\033[K" + line + "\n")
+            line = lines[i] if i < len(lines) else ""
+            if i < max(len(lines), last_printed_lines_cnt) - 1:
+                sys.stdout.write("\033[K" + line + "\n")
+            else:
+                if is_final:
+                    sys.stdout.write("\033[K" + line + "\n")
+                else:
+                    sys.stdout.write("\033[K" + line)
         else:
-            sys.stdout.write(line + "\n")
+            if i < len(lines):
+                sys.stdout.write(lines[i] + "\n")
             
     sys.stdout.flush()
     return len(lines)
@@ -745,7 +756,8 @@ def run_command_monitored(
                 last_printed_lines_cnt=last_printed_lines,
                 last_line=last_line,
                 tmux_session=None,
-                interactive=interactive
+                interactive=interactive,
+                is_final=True
             )
         else:
             print(Colors.colored(f"  │ [{elapsed_str}] Final status: {status_str}", Colors.CYAN))
@@ -990,7 +1002,8 @@ def run_command_monitored(
                 changed_files=changed_files,
                 last_printed_lines_cnt=last_printed_lines,
                 last_line=last_line,
-                tmux_session=None
+                tmux_session=None,
+                is_final=True
             )
         else:
             print(Colors.colored(f"   Finished: {status_str} (Time: {elapsed_str})", Colors.CYAN + Colors.BOLD))

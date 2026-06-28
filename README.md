@@ -59,6 +59,7 @@ source ~/.bashrc  # or ~/.zshrc
 
 | I want to… | Command |
 |------------|---------|
+| Run the interactive wizard | `mm` |
 | Add a feature | `mm quick "add feature XYZ"` |
 | Shorthand feature | `mm "add feature XYZ"` |
 | One GitHub issue | `mm --issue 42` |

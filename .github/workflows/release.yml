@@ -1,21 +1,27 @@
 name: Release
 
-# Cut a release by pushing a version tag:  git tag v0.2.0 && git push origin v0.2.0
-# (or run this workflow manually and pass the tag). It cross-compiles `mm` for
-# the common platforms and attaches the binaries to a GitHub Release, so users
-# can install without a Go toolchain.
+# Releases are automatic: every push to main builds cross-platform `mm`
+# binaries and publishes a GitHub Release whose tag/version is a datestring
+# (e.g. v2026.06.28-190843-abc1234), so there's nothing to bump by hand.
+# Pushing an explicit v* tag, or running this workflow manually, still works.
 
 on:
   push:
+    branches: [ main ]
     tags: [ 'v*' ]
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to release (e.g. v0.2.0)'
-        required: true
+        description: 'Tag to release (blank = auto datestring)'
+        required: false
 
 permissions:
   contents: write
+
+# Don't pile up overlapping releases if several pushes land quickly.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -28,6 +34,26 @@ jobs:
         with:
           go-version: '1.25.x'
 
+      # Gate the release on a green build + tests so a broken push to main
+      # never ships an auto-release.
+      - name: Vet and test
+        run: |
+          go vet ./...
+          go test ./...
+
+      - name: Compute version
+        run: |
+          set -euo pipefail
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            V="${{ github.event.inputs.tag }}"
+          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            V="${GITHUB_REF_NAME}"
+          else
+            V="v$(date -u +'%Y.%m.%d-%H%M%S')-$(git rev-parse --short HEAD)"
+          fi
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+          echo "Releasing $V"
+
       - name: Build cross-platform binaries
         run: |
           set -euo pipefail
@@ -38,7 +64,7 @@ jobs:
             [ "$os" = "windows" ] && out="${out}.exe"
             echo "building $out"
             CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
-              go build -trimpath -ldflags "-s -w" -o "$out" .
+              go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o "$out" .
           done
           cp config.default.json dist/
           ls -la dist
@@ -48,11 +74,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          VERSION="${{ github.event.inputs.tag }}"
-          [ -z "$VERSION" ] && VERSION="${GITHUB_REF_NAME}"
           echo "Releasing $VERSION"
           if gh release view "$VERSION" >/dev/null 2>&1; then
             gh release upload "$VERSION" dist/* --clobber
           else
-            gh release create "$VERSION" dist/* --title "$VERSION" --generate-notes
+            gh release create "$VERSION" dist/* \
+              --title "$VERSION" --generate-notes --target "$GITHUB_SHA"
           fi

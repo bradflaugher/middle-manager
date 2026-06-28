@@ -17,7 +17,10 @@ import (
 	"github.com/bradflaugher/middle-manager/pkg/tui"
 )
 
-const version = "v0.2.2"
+// version is the build version. It defaults to "dev" for local `go build` and
+// is overridden at release time via -ldflags "-X main.version=<datestring>"
+// (see .github/workflows/release.yml), so there is no version to bump by hand.
+var version = "dev"
 
 func main() {
 	if len(os.Args) > 1 {

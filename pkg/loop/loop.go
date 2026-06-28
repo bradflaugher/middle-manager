@@ -766,3 +766,7 @@ func strconvAtoi(s string) (int, error) {
 	}
 	return res, nil
 }
+
+func (l *MiddleManagerLoop) NotifyStatus(state string) {
+	tui.NotifyTUIStatus(l.ReadIteration(), "", "", state, l.branchName(), time.Since(l.startTime))
+}

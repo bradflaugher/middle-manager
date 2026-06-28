@@ -218,9 +218,12 @@ func cmdRun(cfg *config.LoopConfig) {
 		go func() {
 			defer wg.Done()
 			result, loopErr = l.RunUntilComplete()
-			// Shuts down bubbletea TUI view once background loop completes
 			if tui.GlobalProgram != nil {
-				tui.GlobalProgram.Quit()
+				state := "completed"
+				if loopErr != nil || (result != nil && !result.Success) {
+					state = "failed"
+				}
+				l.NotifyStatus(state)
 			}
 		}()
 

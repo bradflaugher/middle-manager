@@ -724,6 +724,11 @@ func (m *MonitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state = msg.State
 		m.branch = msg.Branch
 		m.duration = msg.Duration
+		if m.state == "completed" || m.state == "failed" {
+			m.textInput.Placeholder = "Loop finished. Press Enter to exit."
+			m.textInput.Reset()
+			m.textInput.Blur()
+		}
 
 	case TUIStatsMsg:
 		m.descendants = msg.Descendants
@@ -746,6 +751,10 @@ func (m *MonitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.logViewport.HalfPageDown()
 			return m, nil
 		case "enter":
+			if m.state == "completed" || m.state == "failed" {
+				m.quitting = true
+				return m, tea.Quit
+			}
 			m.handleInput()
 			return m, nil
 		}

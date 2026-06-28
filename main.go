@@ -57,8 +57,10 @@ func cmdInstallPath() {
 }
 
 func cmdAgents(cfg *config.LoopConfig) {
+	fmt.Println(tui.RenderBanner(version))
+	fmt.Println()
 	rows := agents.ListAgentsStatus(cfg.BinaryOverrides)
-	fmt.Println(colors.Colored(fmt.Sprintf("%-10s %-10s %-24s %s", "AGENT", "AVAILABLE", "BINARY", "YOLO FLAG"), colors.Cyan+colors.Bold))
+	fmt.Println(colors.Colored(fmt.Sprintf("%-10s %-10s %s", "AGENT", "AVAILABLE", "BINARY"), colors.Cyan+colors.Bold))
 	fmt.Println(colors.Colored(strings.Repeat("-", 72), colors.Cyan))
 	for _, row := range rows {
 		agentPad := colors.Colored(fmt.Sprintf("%-10s", row["agent"]), colors.Bold)
@@ -67,7 +69,7 @@ func cmdAgents(cfg *config.LoopConfig) {
 			availColor = colors.Green
 		}
 		availPad := colors.Colored(fmt.Sprintf("%-10s", row["available"]), availColor)
-		fmt.Printf("%s %s %-24s %s\n", agentPad, availPad, row["binary"], row["yolo"])
+		fmt.Printf("%s %s %s\n", agentPad, availPad, row["binary"])
 		if row["notes"] != "" {
 			fmt.Println(colors.Colored("           "+row["notes"], colors.Yellow))
 		}

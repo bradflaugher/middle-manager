@@ -893,9 +893,9 @@ func AvailableAgents(binaryOverrides map[string]string) []string {
 
 var StepAgentPriority = map[string][]string{
 	"discover": {"grok", "claude", "opencode"},
-	"execute":  {"claude", "grok", "opencode"},
-	"verify":   {"grok", "claude", "opencode"},
-	"commit":   {"grok", "claude", "opencode"},
+	"execute":  {"opencode", "claude", "grok"},
+	"verify":   {"claude", "grok", "opencode"},
+	"commit":   {"grok", "opencode", "claude"},
 }
 
 func AutodetectAgent(step string, binaryOverrides map[string]string, fallback string) string {

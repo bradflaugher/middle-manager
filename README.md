@@ -4,7 +4,7 @@
 
 Micromanaged multi-agent coding loop that orchestrates your favorite coding CLIs.
 
-**Bring your own agents.** middle-manager dynamically chains **Grok**, **Claude Code**, **Crush**, **Codex**, and **OpenCode** into a tight 4-step software factory. It reads your codebase, maps out a task list, executes fixes, critiques its own work, runs tests, commits, and opens PRs—completely on autopilot. *(Agents are auto-detected and configured automatically).*
+**Bring your own agents.** middle-manager dynamically chains **Grok**, **Claude Code**, **Crush**, and **OpenCode** into a tight 4-step software factory. It reads your codebase, maps out a task list, executes fixes, critiques its own work, runs tests, commits, and opens PRs—completely on autopilot. *(Agents are auto-detected and configured automatically).*
 
 ---
 

@@ -5,5 +5,5 @@
   "mission": "add feature XYZ",
   "discover": { "agent": "grok", "extra_args": ["--check"] },
   "execute": { "agent": "claude" },
-  "verify": { "agent": "codex", "extra_args": [] }
+  "verify": { "agent": "grok", "extra_args": [] }
 }

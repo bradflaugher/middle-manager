@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""middle-manager — unsupervised multi-agent loop. Not for you."""
+"""middle-manager — micromanaged multi-agent loop."""
 
 from middle_manager.cli import main
 

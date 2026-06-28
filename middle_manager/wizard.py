@@ -159,7 +159,7 @@ def run_wizard(argv_repo: Path | None = None, mission: str | None = None) -> Loo
 
     from .colors import Colors
     print()
-    print(Colors.colored("middle-manager — unsupervised multi-agent loop", Colors.CYAN + Colors.BOLD))
+    print(Colors.colored("middle-manager — micromanaged multi-agent loop", Colors.CYAN + Colors.BOLD))
     print(Colors.colored("   Ctrl+C to quit at any time if you started by accident.", Colors.YELLOW))
     print()
 

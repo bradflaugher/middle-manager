@@ -2,7 +2,7 @@
 
 # middle-manager
 
-Unsupervised multi-agent coding loop that orchestrates your favorite coding CLIs. **Pure Python 3.10+ — no external requirements or pip dependencies.**
+Micromanaged multi-agent coding loop that orchestrates your favorite coding CLIs.
 
 **Bring your own agents.** middle-manager dynamically chains **Grok**, **Claude Code**, **Crush**, **Agy**, **Codex**, and **OpenCode** into a tight 4-step software factory. It reads your codebase, maps out a task list, executes fixes, critiques its own work, runs tests, commits, and opens PRs—completely on autopilot.
 

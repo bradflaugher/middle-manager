@@ -527,12 +527,9 @@ class MiddleManagerLoop:
                         pass
                 
                 print()
-                print(Colors.colored("┌────────────────────────────────────────────────────────┐", Colors.YELLOW + Colors.BOLD))
-                print(Colors.colored("│                ⚠️  LOOP ABANDONED / FAILED             │", Colors.YELLOW + Colors.BOLD))
-                print(Colors.colored("├────────────────────────────────────────────────────────┤", Colors.YELLOW + Colors.BOLD))
-                print(Colors.colored(f"│  Reason: {result.reason:<46}│", Colors.YELLOW))
-                print(Colors.colored(f"│  Branch: {branch_name:<46}│", Colors.YELLOW))
-                print(Colors.colored("└────────────────────────────────────────────────────────┘", Colors.YELLOW + Colors.BOLD))
+                print(Colors.colored("⚠️  LOOP ABANDONED / FAILED", Colors.YELLOW + Colors.BOLD))
+                print(Colors.colored(f"   Reason: {result.reason}", Colors.YELLOW))
+                print(Colors.colored(f"   Branch: {branch_name}", Colors.YELLOW))
                 print()
                 
                 sc = self.cfg.step_for("execute")
@@ -571,11 +568,8 @@ class MiddleManagerLoop:
                     pass
             
             print()
-            print(Colors.colored("┌────────────────────────────────────────────────────────┐", Colors.YELLOW + Colors.BOLD))
-            print(Colors.colored("│                ⚠️  LOOP INTERRUPTED (Ctrl+C)            │", Colors.YELLOW + Colors.BOLD))
-            print(Colors.colored("├────────────────────────────────────────────────────────┤", Colors.YELLOW + Colors.BOLD))
-            print(Colors.colored(f"│  Branch: {branch_name:<46}│", Colors.YELLOW))
-            print(Colors.colored("└────────────────────────────────────────────────────────┘", Colors.YELLOW + Colors.BOLD))
+            print(Colors.colored("⚠️  LOOP INTERRUPTED (Ctrl+C)", Colors.YELLOW + Colors.BOLD))
+            print(Colors.colored(f"   Branch: {branch_name}", Colors.YELLOW))
             print()
             
             sc = self.cfg.step_for("execute")

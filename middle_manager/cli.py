@@ -210,10 +210,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         from .colors import Colors
         print()
-        print(Colors.colored("┌────────────────────────────────────────────────────────┐", Colors.YELLOW + Colors.BOLD))
-        print(Colors.colored("│               👋  MIDDLE MANAGER GOODBYE                │", Colors.YELLOW + Colors.BOLD))
-        print(Colors.colored("├────────────────────────────────────────────────────────┤", Colors.YELLOW + Colors.BOLD))
-        print(Colors.colored("│  Wizard/Loop exited by user. No changes were forced.   │", Colors.YELLOW))
-        print(Colors.colored("└────────────────────────────────────────────────────────┘", Colors.YELLOW + Colors.BOLD))
+        print(Colors.colored("👋 MIDDLE MANAGER GOODBYE", Colors.YELLOW + Colors.BOLD))
+        print(Colors.colored("   Wizard/Loop exited by user. No changes were forced.", Colors.YELLOW))
         print()
         return 130

@@ -335,8 +335,7 @@ class TestAgents(unittest.TestCase):
                 interactive=True
             )
             output = mock_stdout.getvalue()
-            self.assertIn("Attach Session:  tmux attach-session -t mm-execute (Interactive TUI)", output)
-            self.assertIn("Loop is waiting for you to attach and interact", output)
+            self.assertIn("Waiting for interaction: tmux attach-session -t mm-execute (Interactive TUI)", output)
             
         with patch('sys.stdout', new=io.StringIO()) as mock_stdout:
             draw_status_block(
@@ -353,7 +352,7 @@ class TestAgents(unittest.TestCase):
                 interactive=False
             )
             output = mock_stdout.getvalue()
-            self.assertIn("Attach Session:  tmux attach-session -t mm-execute (Headless logs; will exit)", output)
+            self.assertIn("Headless logs: tmux attach-session -t mm-execute", output)
 
 
 

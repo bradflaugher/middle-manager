@@ -386,6 +386,30 @@ def strip_ansi(text: str) -> str:
     return ansi_escape.sub('', text)
 
 
+def format_cmd_for_display(command: list[str] | str) -> str:
+    import shlex
+    if isinstance(command, str):
+        if "\n" in command or len(command) > 150:
+            lines = command.splitlines()
+            first_line = lines[0] if lines else ""
+            if len(first_line) > 120:
+                first_line = first_line[:120] + "..."
+            return f"{first_line} ... [truncated prompt]"
+        return command
+
+    formatted_args = []
+    for arg in command:
+        if "\n" in arg or len(arg) > 150:
+            lines = arg.splitlines()
+            first_line = lines[0] if lines else ""
+            if len(first_line) > 120:
+                first_line = first_line[:120] + "..."
+            formatted_args.append(f"\"{first_line}... [truncated prompt]\"")
+        else:
+            formatted_args.append(shlex.quote(arg))
+    return " ".join(formatted_args)
+
+
 def draw_status_block(
     agent_name: str,
     status_str: str,
@@ -400,83 +424,53 @@ def draw_status_block(
     interactive: bool = False
 ) -> int:
     import sys
-    import shutil
     import os
     from .colors import Colors
     
     is_tty = sys.stdout.isatty() and os.environ.get("TERM") != "dumb"
     
-    if is_tty:
-        cols, _ = shutil.get_terminal_size(fallback=(80, 24))
-        max_line_len = max(cols - 2, 40)
-    else:
-        max_line_len = None
-    
     raw_lines = []
     
-    header_prefix = f"  ┌── MONITORING {agent_name.upper()} "
-    if max_line_len is not None:
-        dash_count = max_line_len - len(header_prefix)
-        if dash_count > 0:
-            header_text = header_prefix + "─" * dash_count
-        else:
-            header_text = header_prefix[:max_line_len]
-    else:
-        header_text = header_prefix + "──────────────────────────────────────────────"
-    raw_lines.append((header_text, Colors.MAGENTA))
+    # Line 1: Status & Stats
+    status_part = f"   {status_str} | Time: {elapsed_str} | CPU: {cpu_str} | Procs: {active_procs}"
+    if active_sockets > 0:
+        status_part += f" | Sockets: {active_sockets}"
+    raw_lines.append((status_part, Colors.CYAN))
     
-    raw_lines.append((f"  │  Status:         {status_str}", Colors.CYAN))
-    raw_lines.append((f"  │  Elapsed Time:  {elapsed_str}", Colors.CYAN))
-    raw_lines.append((f"  │  CPU Usage:     {cpu_str}", Colors.CYAN))
-    raw_lines.append((f"  │  Active Processes: {active_procs}", Colors.CYAN))
-    raw_lines.append((f"  │  Active Sockets:   {active_sockets}", Colors.CYAN))
+    # Line 2: Output & Changes
+    out_part = ""
+    if last_line:
+        cleaned_last_line = strip_ansi(last_line).strip()
+        limit = 60
+        if len(cleaned_last_line) > limit:
+            cleaned_last_line = cleaned_last_line[:limit - 3] + "..."
+        if cleaned_last_line:
+            out_part = f"Output: \"{cleaned_last_line}\""
+            
+    changes_part = ""
+    if changed_files:
+        changes_part = f"Changed: {', '.join(changed_files[:3])}"
+        if len(changed_files) > 3:
+            changes_part += f" (+{len(changed_files) - 3} more)"
+    else:
+        changes_part = "Changed: None"
+        
+    if out_part:
+        line2 = f"   {changes_part} | {out_part}"
+    else:
+        line2 = f"   {changes_part}"
+    raw_lines.append((line2, Colors.CYAN))
 
+    # Line 3: Tmux info (only if needed)
     if tmux_session:
         is_agent_tui = interactive and any(name in agent_name.lower() for name in ("grok", "claude", "agy"))
         if is_agent_tui:
-            raw_lines.append((f"  │  Attach Session:  tmux attach-session -t {tmux_session} (Interactive TUI)", Colors.GREEN + Colors.BOLD))
-            raw_lines.append(("  │  ⚠️  Loop is waiting for you to attach and interact in tmux!", Colors.YELLOW + Colors.BOLD))
+            raw_lines.append((f"   ⚠️  Waiting for interaction: tmux attach-session -t {tmux_session} (Interactive TUI)", Colors.GREEN + Colors.BOLD))
         else:
-            raw_lines.append((f"  │  Attach Session:  tmux attach-session -t {tmux_session} (Headless logs; will exit)", Colors.GREEN + Colors.BOLD))
-
-    if last_line:
-        cleaned_last_line = strip_ansi(last_line)
-        if max_line_len is not None:
-            prefix_len = 22
-            avail_len = max_line_len - prefix_len
-            if avail_len > 10:
-                if len(cleaned_last_line) > avail_len:
-                    truncated = cleaned_last_line[:avail_len - 3] + "..."
-                else:
-                    truncated = cleaned_last_line
-                raw_lines.append((f"  │  Last Output:   \"{truncated}\"", Colors.YELLOW))
-        else:
-            max_len = 62
-            if len(cleaned_last_line) > max_len:
-                truncated = cleaned_last_line[:max_len-3] + "..."
-            else:
-                truncated = cleaned_last_line
-            raw_lines.append((f"  │  Last Output:   \"{truncated}\"", Colors.YELLOW))
-
-    if changed_files:
-        raw_lines.append(("  │  Files Changed:", Colors.CYAN))
-        for f in changed_files[:5]:
-            raw_lines.append((f"  │    - {f}", Colors.GREEN))
-        if len(changed_files) > 5:
-            raw_lines.append((f"  │    - ... and {len(changed_files) - 5} more", Colors.GREEN))
-    else:
-        raw_lines.append(("  │  Files Changed: None yet", Colors.CYAN))
-        
-    if max_line_len is not None:
-        footer_text = "  └" + "─" * (max_line_len - 3)
-    else:
-        footer_text = "  └──────────────────────────────────────────────────────────────────────────"
-    raw_lines.append((footer_text, Colors.MAGENTA))
-    
+            raw_lines.append((f"   💡 Headless logs: tmux attach-session -t {tmux_session}", Colors.GREEN + Colors.BOLD))
+            
     lines = []
     for text, color in raw_lines:
-        if max_line_len is not None and len(text) > max_line_len:
-            text = text[:max_line_len - 3] + "..."
         lines.append(Colors.colored(text, color))
         
     if is_tty and last_printed_lines_cnt > 0:
@@ -525,12 +519,11 @@ def run_command_monitored(
     cmd_str = " ".join(_quote(a) for a in cmd_list) if isinstance(command, list) else command
     
     dry_prefix = Colors.colored("[DRY RUN] ", Colors.YELLOW) if dry_run else ""
+    printed_cmd = format_cmd_for_display(command)
     
-    header = f"┌── {dry_prefix}RUNNING {label} ──────────────────────────────────────────────────"
-    print(Colors.colored(header, Colors.MAGENTA + Colors.BOLD))
-    print(Colors.colored(f"│ Cwd:     {cwd}", Colors.CYAN))
-    print(Colors.colored(f"│ Command: {cmd_str}", Colors.CYAN))
-    print(Colors.colored("└" + "─" * 78, Colors.MAGENTA + Colors.BOLD))
+    print(Colors.colored(f"⚡ {dry_prefix}Running {label}", Colors.CYAN + Colors.BOLD))
+    print(Colors.colored(f"   Cwd:     {cwd}", Colors.CYAN))
+    print(Colors.colored(f"   Command: {printed_cmd}", Colors.CYAN))
 
     if dry_run:
         return subprocess.CompletedProcess(cmd_list, 0, stdout="", stderr="")
@@ -767,7 +760,7 @@ def run_command_monitored(
         )
 
     if stream:
-        print(Colors.colored(f"  ┌── {label} Output ──────────────────────────────────────────────────────────", Colors.MAGENTA))
+        print(Colors.colored(f"--- {label} Output ---", Colors.MAGENTA + Colors.BOLD))
 
         proc = subprocess.Popen(
             command,
@@ -812,7 +805,7 @@ def run_command_monitored(
             pass
         if not start_of_line:
             print()
-        print(Colors.colored(f"  └── End of {label} Output ────────────────────────────────────────────────────", Colors.MAGENTA))
+        print(Colors.colored(f"--- End of {label} Output ---", Colors.MAGENTA + Colors.BOLD))
         return subprocess.CompletedProcess(
             cmd_list,
             proc.returncode or 0,
@@ -856,7 +849,7 @@ def run_command_monitored(
         known_changed_files = set()
         
         if not sys.stdout.isatty():
-            print(Colors.colored(f"  ┌── MONITORING {label} ──────────────────────────────────────────────", Colors.MAGENTA))
+            print(Colors.colored(f"   Monitoring {label}...", Colors.MAGENTA))
         
         try:
             while True:
@@ -999,12 +992,9 @@ def run_command_monitored(
                 tmux_session=None
             )
         else:
-            print(Colors.colored(f"  │ [{elapsed_str}] Final status: {status_str}", Colors.CYAN))
+            print(Colors.colored(f"   Finished: {status_str} (Time: {elapsed_str})", Colors.CYAN + Colors.BOLD))
             if changed_files:
-                print(Colors.colored("  │ Final changed files:", Colors.CYAN))
-                for f in changed_files:
-                    print(Colors.colored(f"  │   - {f}", Colors.GREEN))
-            print(Colors.colored(f"  └── End of {label} Run ──────────────────────────────────────────────────────", Colors.MAGENTA))
+                print(Colors.colored(f"   Final changed files: {', '.join(changed_files)}", Colors.GREEN))
             
         return subprocess.CompletedProcess(
             cmd_list,

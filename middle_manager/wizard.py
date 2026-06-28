@@ -131,11 +131,9 @@ def run_wizard(argv_repo: Path | None = None, mission: str | None = None) -> Loo
 
     from .colors import Colors
     print()
-    print(Colors.colored("  ╔══════════════════════════════════════════════════════════╗", Colors.CYAN))
-    print(Colors.colored("  ║  middle-manager — unsupervised multi-agent loop          ║", Colors.CYAN + Colors.BOLD))
-    print(Colors.colored("  ║  not for you. YOLO on. use claude if this feels wrong.   ║", Colors.CYAN))
-    print(Colors.colored("  ║", Colors.CYAN) + Colors.colored("  Ctrl+C to quit at any time if you started by accident.  ", Colors.YELLOW) + Colors.colored("║", Colors.CYAN))
-    print(Colors.colored("  ╚══════════════════════════════════════════════════════════╝", Colors.CYAN))
+    print(Colors.colored("⚡ middle-manager — unsupervised multi-agent loop", Colors.CYAN + Colors.BOLD))
+    print(Colors.colored("   not for you. YOLO on. use claude if this feels wrong.", Colors.CYAN))
+    print(Colors.colored("   Ctrl+C to quit at any time if you started by accident.", Colors.YELLOW))
     print()
 
     last = load_last_config()

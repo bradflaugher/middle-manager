@@ -1,4 +1,4 @@
-![middle-manager logo](Logo.jpg)
+![middle-manager logo](Logo.png)
 
 # middle-manager
 

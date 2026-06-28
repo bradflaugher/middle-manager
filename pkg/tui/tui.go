@@ -741,13 +741,16 @@ func (m *MonitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Agent != "" {
 			m.currentAgent = msg.Agent
 		}
+		prevState := m.state
 		m.state = msg.State
 		m.branch = msg.Branch
 		m.duration = msg.Duration
-		if m.state == "completed" || m.state == "failed" {
-			m.textInput.Placeholder = "Loop finished. Press Enter to exit."
-			m.textInput.Reset()
-			m.textInput.Blur()
+		if (m.state == "completed" || m.state == "failed") && prevState != m.state {
+			msgText := "Loop completed successfully. Press Enter to exit."
+			if m.state == "failed" {
+				msgText = "Loop failed. Press Enter to exit."
+			}
+			m.pushLog("\n" + stBold.Foreground(cCyan).Render(msgText))
 		}
 
 	case TUIStatsMsg:
@@ -901,8 +904,13 @@ func (m *MonitorModel) View() tea.View {
 		m.pipelineRow() + "\n\n" +
 		m.panelsRow() + "\n" +
 		panelLabel.Render(" live agent output")
-	footer := inputBar.Render(m.textInput.View()) + "\n" +
-		stDim.Render(" pgup/pgdn scroll · enter: queue note for next step · /pause /resume /skip · /quit aborts now · ^c quit")
+	var footer string
+	if m.state == "completed" || m.state == "failed" {
+		footer = stDim.Render(" pgup/pgdn scroll · enter: exit")
+	} else {
+		footer = inputBar.Render(m.textInput.View()) + "\n" +
+			stDim.Render(" pgup/pgdn scroll · enter: queue note for next step · /pause /resume /skip · /quit aborts now · ^c quit")
+	}
 
 	// logPanel adds a top and bottom border row around the viewport (2 rows).
 	avail := m.height - lipgloss.Height(header) - lipgloss.Height(footer) - 2

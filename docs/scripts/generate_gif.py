@@ -207,7 +207,7 @@ def main():
                 pass
         
         current_text = "\n".join(screen.display)
-        if "Loop finished. Press Enter to exit." in current_text:
+        if "Press Enter to exit." in current_text:
             os.write(master_fd, b"\r")
             time.sleep(0.5)
         

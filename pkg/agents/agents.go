@@ -57,7 +57,7 @@ var AgentSpecs = map[string]AgentSpec{
 		PrintFlag:    "-p",
 		ModelFlag:    "--model",
 		CwdFlag:      "",
-		Notes:        "Run from target repo cwd. Also: --permission-mode bypassPermissions",
+		Notes:        "Claude Code via @agentclientprotocol/claude-agent-acp (https://github.com/agentclientprotocol/agent-client-protocol)",
 	},
 	"codex": {
 		Name:         "codex",
@@ -68,7 +68,7 @@ var AgentSpecs = map[string]AgentSpec{
 		PromptMode:   "arg",
 		ModelFlag:    "-m",
 		CwdFlag:      "",
-		Notes:        "OpenAI Codex CLI: codex exec PROMPT --yolo. Also: --full-auto",
+		Notes:        "OpenAI Codex CLI via acp-adapter (https://github.com/beyond5959/acp-adapter)",
 	},
 	"opencode": {
 		Name:         "opencode",
@@ -90,7 +90,7 @@ var AgentSpecs = map[string]AgentSpec{
 		PrintFlag:    "-p",
 		ModelFlag:    "-m",
 		CwdFlag:      "--cwd",
-		Notes:        "Google Antigravity CLI: agy -p PROMPT --always-approve --cwd DIR",
+		Notes:        "Google Antigravity CLI via agy-acp (https://github.com/hicder/agy-acp)",
 	},
 }
 

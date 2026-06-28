@@ -62,10 +62,10 @@ mm
 The loop dynamically resolves, configures, and orchestrates any installed coding agents on your `PATH`. The following agents are supported out of the box:
 
 * **Grok**: Connected natively via stdio.
-* **Claude Code**: Connected via the official `@agentclientprotocol/claude-agent-acp` adapter.
+* **Claude Code**: Connected via the official [`@agentclientprotocol/claude-agent-acp`](https://github.com/agentclientprotocol/agent-client-protocol) adapter.
 * **OpenCode**: Connected natively via stdio.
-* **OpenAI Codex**: Connected via the community **`acp-adapter`** gateway (`acp-adapter --adapter codex`).
-* **Google Antigravity (agy)**: Connected via the community Rust-based **`agy-acp`** adapter.
+* **OpenAI Codex**: Connected via the community [`acp-adapter`](https://github.com/beyond5959/acp-adapter) gateway (`acp-adapter --adapter codex`).
+* **Google Antigravity (agy)**: Connected via the community Rust-based [`agy-acp`](https://github.com/hicder/agy-acp) adapter.
 
 You can inspect the availability of your installed agents at any time by running:
 ```bash

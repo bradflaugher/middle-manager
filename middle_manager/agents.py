@@ -421,7 +421,10 @@ def get_acp_command(agent: str, binary_override: str | None = None) -> list[str]
     elif agent == "agy":
         if binary and binary != "agy" and shutil.which(binary):
             return [binary, "--acp"]
-        return ["npx", "-y", "@google/gemini-cli@0.49.0", "--acp"]
+        import sys
+        from pathlib import Path
+        adapter_path = str(Path(__file__).parent / "agy_acp.py")
+        return [sys.executable, adapter_path]
     return [binary or agent]
 
 
@@ -757,10 +760,10 @@ def list_agents_status(binary_overrides: dict[str, str] | None = None) -> list[d
 
 
 STEP_AGENT_PRIORITY: dict[str, tuple[str, ...]] = {
-    "discover": ("grok", "claude", "opencode", "codex"),
-    "execute": ("claude", "grok", "opencode", "codex"),
-    "verify": ("codex", "grok", "claude", "opencode"),
-    "commit": ("grok", "claude", "opencode", "codex"),
+    "discover": ("grok", "claude", "opencode", "agy", "codex"),
+    "execute": ("claude", "grok", "opencode", "agy", "codex"),
+    "verify": ("codex", "grok", "claude", "opencode", "agy"),
+    "commit": ("agy", "grok", "claude", "opencode", "codex"),
 }
 
 

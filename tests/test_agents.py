@@ -12,8 +12,8 @@ class TestAgents(unittest.TestCase):
         detected = autodetect_step_agents()
         self.assertEqual(detected['discover'], 'grok')
         self.assertEqual(detected['execute'], 'opencode')
-        self.assertEqual(detected['verify'], 'grok')
-        self.assertEqual(detected['commit'], 'grok')
+        self.assertEqual(detected['verify'], 'agy')
+        self.assertEqual(detected['commit'], 'agy')
 
     def test_get_acp_command(self):
         cmd = get_acp_command("grok")

@@ -382,9 +382,16 @@ class MiddleManagerLoop:
     def run_once(self, iteration: int) -> bool:
         """Run one full loop iteration. Returns False to stop the outer loop."""
         from .colors import Colors
-        self.log(f"🔄 ==================== ITERATION {iteration} ====================", Colors.CYAN + Colors.BOLD)
+        from rich.console import Console
+        from rich.text import Text
+        console = Console()
+
+        iter_text = Text()
+        iter_text.append("\n🔄 ", style="cyan bold")
+        iter_text.append(f"ITERATION {iteration} ", style="bold white reverse")
         if repo_is_git(self.cfg.repo):
-            self.log(f"Active Branch: {current_branch(self.cfg.repo)}", Colors.CYAN)
+            iter_text.append(f" branch: {current_branch(self.cfg.repo)}", style="dim cyan")
+        console.print(iter_text)
 
         issue_data = fetch_issue(self.cfg.repo, self.cfg.issue or "0")
         self.ensure_fix_plan_seed(issue_data)
@@ -399,7 +406,13 @@ class MiddleManagerLoop:
             if step == "execute":
                 tasks_before = len([line for line in self.read_text(self.fix_plan_path).splitlines() if line.strip().startswith("- [ ]")])
             sc = self.cfg.step_for(step)
-            self.log(f"[Step: {step.upper()}] Starting step with agent '{sc.agent.upper()}'...", Colors.CYAN + Colors.BOLD)
+            
+            step_text = Text()
+            step_text.append(f"\n[Step: {step.upper()}] Starting step with agent '", style="bold cyan")
+            step_text.append(sc.agent.upper(), style="bold green")
+            step_text.append("'...", style="bold cyan")
+            console.print(step_text)
+
             if self.cfg.interactive:
                 action = pause(self.cfg, step)
                 if action == "quit":
@@ -479,7 +492,10 @@ class MiddleManagerLoop:
             reset_loop_state(self.cfg)
 
         self.ensure_gitignore()
-        self.log(f"Target repo: {self.cfg.repo}")
+        
+        # Build git branch metadata
+        branch = "non-git"
+        base_branch = "n/a"
         if repo_is_git(self.cfg.repo):
             base_branch = self.cfg.base_branch or detect_base_branch(self.cfg.repo)
             iteration = self.read_iteration()
@@ -487,15 +503,40 @@ class MiddleManagerLoop:
                 branch = ensure_issue_branch(self.cfg.repo, self.cfg.branch_prefix, self.cfg.issue, base_branch)
             else:
                 branch = ensure_branch(self.cfg.repo, self.cfg.branch_prefix, iteration, base_branch)
-            self.log(f"Git branch:  {branch} (branched off {base_branch})")
+
+        # Print startup panel
+        from rich.console import Console
+        from rich.panel import Panel
+        from rich.table import Table
+        from rich.text import Text
+        from rich.box import ROUNDED
+        
+        console = Console()
+        title_text = Text("MIDDLE-MANAGER: Autonomous Multi-Agent Loop", style="bold cyan")
+        
+        info_table = Table.grid(padding=(0, 2))
+        info_table.add_column(style="bold green")
+        info_table.add_column()
+        
+        info_table.add_row("Repository:", str(self.cfg.repo))
+        if repo_is_git(self.cfg.repo):
+            info_table.add_row("Git Branch:", f"{branch} (branched off {base_branch})")
         if self.cfg.mission:
-            self.log(f"Mission: {self.cfg.mission[:80]}")
-        self.log(f"Steps: {self.cfg.steps} ({', '.join(self.cfg.active_steps())})")
-        self.log(f"YOLO: {self.cfg.yolo} | dry-run: {self.cfg.dry_run}")
-        from .colors import Colors
-        self.log("Press Ctrl+C to quit/exit the loop at any time.", Colors.YELLOW)
+            info_table.add_row("Mission:", self.cfg.mission[:100])
+        info_table.add_row("Steps:", f"{self.cfg.steps} ({', '.join(self.cfg.active_steps())})")
+        info_table.add_row("YOLO Mode:", "ENABLED" if self.cfg.yolo else "DISABLED")
+        info_table.add_row("Dry Run:", "YES" if self.cfg.dry_run else "NO")
         if self.cfg.issue:
-            self.log(f"Issue: {self.cfg.issue}")
+            info_table.add_row("Issue ID:", self.cfg.issue)
+            
+        startup_panel = Panel(
+            info_table,
+            title=title_text,
+            box=ROUNDED,
+            border_style="cyan",
+            subtitle=Text("Press Ctrl+C to interrupt at any time", style="dim yellow")
+        )
+        console.print(startup_panel)
 
         iteration = self.read_iteration()
         ran = 0
@@ -526,6 +567,12 @@ class MiddleManagerLoop:
 
     def run(self) -> int:
         from .colors import Colors
+        from rich.console import Console
+        from rich.panel import Panel
+        from rich.text import Text
+        from rich.box import DOUBLE
+        console = Console()
+        
         try:
             result = self.run_until_complete()
             self.log("Loop finished.")
@@ -537,12 +584,7 @@ class MiddleManagerLoop:
                     except Exception:
                         pass
                 
-                print()
-                print(Colors.colored("⚠️  LOOP ABANDONED / FAILED", Colors.YELLOW + Colors.BOLD))
-                print(Colors.colored(f"   Reason: {result.reason}", Colors.YELLOW))
-                print(Colors.colored(f"   Branch: {branch_name}", Colors.YELLOW))
-                print()
-                
+                # Build error summary
                 sc = self.cfg.step_for("execute")
                 err_log = self.read_text(self.error_log_path)
                 err_summary = "See error_log.txt for details."
@@ -556,21 +598,45 @@ class MiddleManagerLoop:
                         if lines:
                             err_summary = lines[0][:60]
                 
+                # Print failure panel
+                fail_content = Text()
+                fail_content.append(f"Reason: {result.reason}\n", style="bold yellow")
+                fail_content.append(f"Branch: {branch_name}\n\n", style="yellow")
+                
                 prompt_msg = (
                     f"The last task '{self.top_plan_item()[:50]}' failed verification. "
                     f"Error: {err_summary}. Please debug and fix this issue."
                 )
-                
                 agent_cmd = self._build_interactive_command(sc.agent, prompt_msg)
                 
-                print(Colors.colored("💻 To launch an interactive session with your programmer agent, run:", Colors.CYAN))
-                print(Colors.colored(f"   {agent_cmd}", Colors.GREEN + Colors.BOLD))
-                print()
+                fail_content.append("💻 To launch an interactive session with your programmer agent, run:\n", style="cyan")
+                fail_content.append(f"   {agent_cmd}", style="bold green")
+                
+                fail_panel = Panel(
+                    fail_content,
+                    title=Text("⚠️ LOOP ABANDONED / FAILED", style="bold yellow"),
+                    border_style="yellow",
+                    box=DOUBLE
+                )
+                console.print(fail_panel)
+            else:
+                # Print success panel
+                success_content = Text()
+                success_content.append(f"All tasks in plan checked off successfully.\n", style="green")
+                success_content.append(f"Total loop iterations: {result.iterations}\n", style="dim green")
+                if result.pr_url:
+                    success_content.append(f"Pull Request: {result.pr_url}\n", style="bold green")
+                
+                success_panel = Panel(
+                    success_content,
+                    title=Text("🎉 SUCCESS", style="bold green"),
+                    border_style="green",
+                    box=DOUBLE
+                )
+                console.print(success_panel)
                 
             return 0 if result.success else 1
         except KeyboardInterrupt:
-            self.log("⚠️  Loop interrupted by user (Ctrl+C).", Colors.YELLOW + Colors.BOLD)
-            
             branch_name = "unknown"
             if repo_is_git(self.cfg.repo):
                 try:
@@ -578,20 +644,23 @@ class MiddleManagerLoop:
                 except Exception:
                     pass
             
-            print()
-            print(Colors.colored("⚠️  LOOP INTERRUPTED (Ctrl+C)", Colors.YELLOW + Colors.BOLD))
-            print(Colors.colored(f"   Branch: {branch_name}", Colors.YELLOW))
-            print()
-            
             sc = self.cfg.step_for("execute")
             prompt_msg = (
                 f"The task '{self.top_plan_item()[:50]}' was interrupted. "
                 "Please resume working on it."
             )
-            
             agent_cmd = self._build_interactive_command(sc.agent, prompt_msg)
-                
-            print(Colors.colored("💻 To launch an interactive session on this branch, run:", Colors.CYAN))
-            print(Colors.colored(f"   {agent_cmd}", Colors.GREEN + Colors.BOLD))
-            print()
+            
+            interrupt_content = Text()
+            interrupt_content.append(f"Branch: {branch_name}\n\n", style="yellow")
+            interrupt_content.append("💻 To launch an interactive session on this branch, run:\n", style="cyan")
+            interrupt_content.append(f"   {agent_cmd}", style="bold green")
+            
+            interrupt_panel = Panel(
+                interrupt_content,
+                title=Text("⚠️ LOOP INTERRUPTED (Ctrl+C)", style="bold yellow"),
+                border_style="yellow",
+                box=DOUBLE
+            )
+            console.print(interrupt_panel)
             return 130

@@ -76,13 +76,24 @@ State lives in `<repo>/.middle-manager/`. Issue queue state is per-issue under `
 
 ## The Loop
 
-```
-┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│  DISCOVER   │───▶│   EXECUTE   │───▶│   VERIFY    │───▶│   COMMIT    │
-│  plan/spec  │    │  one item   │    │   critic    │    │ PR + memory │
-└─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘
-       ▲                                      │
-       └──────── tests fail / verifier fail ──┘
+```text
+  ┌──────────────┐
+  │   DISCOVER   │  Compile plan/spec
+  └──────────────┘
+         │
+         ▼
+  ┌──────────────┐
+  │   EXECUTE    │  Implement one task
+  └──────────────┘
+         │
+         ▼
+  ┌──────────────┐
+  │    VERIFY    │  Test & critique
+  └──────────────┘
+         │
+         ├─ (Pass) ─► [ COMMIT ] (PR + Memory)
+         │
+         └─ (Fail) ─► Loop back & retry
 ```
 
 middle-manager executes steps in the following order:

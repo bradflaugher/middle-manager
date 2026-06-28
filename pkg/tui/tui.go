@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -712,11 +713,15 @@ func (m *MonitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resize()
 
 	case TUIUpdateMsg:
-		styled := msg.Text
+		trimmed := trimAndLeftAlign(msg.Text)
+		if trimmed == "" {
+			break
+		}
+		var styled string
 		if msg.IsThought {
-			styled = stDim.Render(msg.Text)
+			styled = stDim.Render(trimmed)
 		} else {
-			styled = stFg.Render(msg.Text)
+			styled = stFg.Render(trimmed)
 		}
 		m.logs = append(m.logs, styled)
 		if len(m.logs) > 2000 {
@@ -1073,4 +1078,40 @@ func PendingInterjection() string {
 	GlobalModel.mu.Lock()
 	defer GlobalModel.mu.Unlock()
 	return GlobalModel.interject
+}
+
+var (
+	ansiPrefixRe = regexp.MustCompile(`^(?:\x1B(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-Z\\-_]))+`)
+	ansiSuffixRe = regexp.MustCompile(`(?:\x1B(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-Z\\-_]))+$`)
+)
+
+func trimAndLeftAlignLine(line string) string {
+	// Find leading ANSI sequences
+	leadPrefix := ansiPrefixRe.FindString(line)
+	line = line[len(leadPrefix):]
+
+	// Find trailing ANSI sequences
+	trailSuffix := ansiSuffixRe.FindString(line)
+	line = line[:len(line)-len(trailSuffix)]
+
+	// Now line is completely stripped of leading/trailing ANSI codes. Trim it!
+	line = strings.TrimSpace(line)
+
+	// Put it back together
+	return leadPrefix + line + trailSuffix
+}
+
+func trimAndLeftAlign(text string) string {
+	lines := strings.Split(text, "\n")
+	var processed []string
+	for _, line := range lines {
+		trimmed := trimAndLeftAlignLine(line)
+		if trimmed != "" {
+			processed = append(processed, trimmed)
+		}
+	}
+	if len(processed) == 0 {
+		return ""
+	}
+	return strings.Join(processed, "\n") + "\n"
 }

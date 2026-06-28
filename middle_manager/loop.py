@@ -66,25 +66,45 @@ class MiddleManagerLoop:
         if not repo_is_git(self.cfg.repo):
             return
         gitignore = self.cfg.repo / ".gitignore"
-        rule = ".middle-manager/"
+        rules = [".middle-manager/", "fix_plan.md"]
+        
+        # Read existing rules if file exists
+        lines = []
+        content = ""
         if gitignore.exists():
             try:
                 content = gitignore.read_text(encoding="utf-8")
                 lines = [line.strip() for line in content.splitlines()]
-                if rule not in lines and rule[:-1] not in lines:
-                    with gitignore.open("a", encoding="utf-8") as f:
-                        if content and not content.endswith("\n"):
-                            f.write("\n")
-                        f.write(f"\n# middle-manager state directory\n{rule}\n")
-                    self.log(f"Added {rule} to .gitignore")
             except Exception as e:
-                self.log(f"Warning: Could not update .gitignore: {e}")
-        else:
-            try:
-                gitignore.write_text(f"# middle-manager state directory\n{rule}\n", encoding="utf-8")
-                self.log(f"Created .gitignore and added {rule}")
-            except Exception as e:
-                self.log(f"Warning: Could not create .gitignore: {e}")
+                self.log(f"Warning: Could not read .gitignore: {e}")
+                return
+
+        # Filter out rules that are already present
+        new_rules = []
+        for r in rules:
+            r_check = r[:-1] if r.endswith("/") else r
+            if r not in lines and r_check not in lines:
+                new_rules.append(r)
+
+        if not new_rules:
+            return
+
+        try:
+            with gitignore.open("a", encoding="utf-8") as f:
+                if content and not content.endswith("\n"):
+                    f.write("\n")
+                for r in new_rules:
+                    if r == ".middle-manager/":
+                        f.write(f"\n# middle-manager state directory\n{r}\n")
+                    elif r == "fix_plan.md":
+                        f.write(f"\n# middle-manager plan\n{r}\n")
+                    else:
+                        f.write(f"\n{r}\n")
+            
+            rules_str = " and ".join(new_rules)
+            self.log(f"Added {rules_str} to .gitignore")
+        except Exception as e:
+            self.log(f"Warning: Could not update .gitignore: {e}")
 
     def read_iteration(self) -> int:
         if self.iteration_path.exists():

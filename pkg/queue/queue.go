@@ -71,7 +71,19 @@ func (r *IssueQueueRunner) ResetIssueState(issue map[string]string) {
 }
 
 func (r *IssueQueueRunner) Run() int {
-	issues := gitops.ListIssues(r.cfg.Repo, r.cfg.IssueQueue.Label, r.cfg.IssueQueue.Author, r.cfg.IssueQueue.Limit, r.cfg.IssueQueue.State)
+	// Refuse to start on a dirty tree — the per-issue base checkout/reset would
+	// otherwise clobber the operator's uncommitted work. (Once draining, a dirty
+	// tree can only be mm's own leftovers from a failed issue, which we discard.)
+	if gitops.RepoIsGit(r.cfg.Repo) && !r.cfg.DryRun && gitops.HasChanges(r.cfg.Repo) {
+		r.Log(fmt.Sprintf("Working tree at %s has uncommitted changes — commit or stash them before draining a queue.", r.cfg.Repo), colors.Red)
+		return 1
+	}
+
+	issues, err := gitops.ListIssues(r.cfg.Repo, r.cfg.IssueQueue.Label, r.cfg.IssueQueue.Author, r.cfg.IssueQueue.Limit, r.cfg.IssueQueue.State)
+	if err != nil {
+		r.Log(fmt.Sprintf("Could not list issues: %v", err), colors.Red)
+		return 1
+	}
 	if len(issues) == 0 {
 		r.Log("No matching issues in queue.", colors.Yellow)
 		return 0
@@ -113,6 +125,7 @@ func (r *IssueQueueRunner) Run() int {
 
 		r.ResetIssueState(issue)
 		l := loop.NewMiddleManagerLoop(r.cfg)
+		l.SetPrefetchedIssue(issue) // title/body already fetched; avoids a re-fetch failure window
 		result, err := l.RunUntilComplete()
 
 		if err == nil && result.Success {

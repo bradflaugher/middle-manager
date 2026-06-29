@@ -45,6 +45,21 @@ type MiddleManagerLoop struct {
 	stallCount    int
 	stalled       bool
 	stallReason   string
+
+	// failReason records why the loop stopped without success (e.g. commit/PR
+	// failure) so RunUntilComplete reports it instead of a generic message.
+	failReason string
+
+	// prefetchedIssue, when set by the queue runner, carries the issue's
+	// title/body already fetched by ListIssues so the loop need not re-fetch it
+	// (avoiding a per-issue gh failure window mid-drain).
+	prefetchedIssue map[string]string
+}
+
+// SetPrefetchedIssue lets the queue runner hand the loop the issue metadata it
+// already fetched, so RunUntilComplete skips the redundant per-issue FetchIssue.
+func (l *MiddleManagerLoop) SetPrefetchedIssue(data map[string]string) {
+	l.prefetchedIssue = data
 }
 
 func NewMiddleManagerLoop(cfg *config.LoopConfig) *MiddleManagerLoop {
@@ -267,103 +282,114 @@ func (l *MiddleManagerLoop) RunStep(step string, iteration int, issueData map[st
 	return stdout, exitCode, err
 }
 
-func (l *MiddleManagerLoop) MaybeCommitAndPR(iteration int, issueData map[string]string) {
+// MaybeCommitAndPR commits the verified work, pushes the branch, and opens the
+// PR. It returns a non-nil error when an expected step actually fails (commit,
+// push, or PR creation) so the caller does NOT report success — critical for the
+// autonomous queue, which must not close an issue when no PR was opened.
+func (l *MiddleManagerLoop) MaybeCommitAndPR(iteration int, issueData map[string]string) error {
+	commitMsg := func() string {
+		subject := l.TopPlanItem()
+		if subject == "" && issueData["number"] != "" {
+			subject = "issue #" + issueData["number"]
+		}
+		msg := fmt.Sprintf("middle-manager: iteration %d — %s", iteration, subject)
+		if len(msg) > 72 {
+			msg = msg[:72]
+		}
+		return msg
+	}
+
 	if l.cfg.Steps < 4 || !l.cfg.Commit.Enabled {
 		if gitops.HasChanges(l.cfg.Repo) && !l.cfg.DryRun {
-			subject := l.TopPlanItem()
-			if subject == "" && issueData["number"] != "" {
-				subject = "issue #" + issueData["number"]
-			}
-			msg := fmt.Sprintf("middle-manager: iteration %d — %s", iteration, subject)
-			if len(msg) > 72 {
-				msg = msg[:72]
-			}
-			committed, err := gitops.CommitAllWithError(l.cfg.Repo, msg)
+			committed, err := gitops.CommitAllWithError(l.cfg.Repo, commitMsg())
 			if err != nil {
-				l.Log(fmt.Sprintf("Commit failed: %v", err), colors.Yellow)
-				return
+				return fmt.Errorf("commit failed: %w", err)
 			}
 			if committed {
 				l.Log("Committed changes (3-step mode, no PR agent)", colors.Green)
 				if gitops.RepoIsGit(l.cfg.Repo) {
 					branch, _ := gitops.CurrentBranch(l.cfg.Repo)
 					if err := gitops.PushBranch(l.cfg.Repo, branch, l.cfg.DryRun); err != nil {
-						l.Log(fmt.Sprintf("Could not push branch %q: %v", branch, err), colors.Yellow)
-					} else {
-						l.Log(fmt.Sprintf("Pushed branch %q to origin", branch), colors.Green)
+						return fmt.Errorf("push of branch %q failed: %w", branch, err)
 					}
+					l.Log(fmt.Sprintf("Pushed branch %q to origin", branch), colors.Green)
 				}
 			}
 		}
-		return
+		return nil
 	}
 
+	// 4-step: the commit agent updates repo memory and commits. It is explicitly
+	// told NOT to push or open a PR — the orchestrator does that deterministically
+	// below so there's exactly one PR creator (no agent/orchestrator collision).
 	_, exitCode, err := l.RunStep("commit", iteration, issueData)
 	if err != nil || exitCode != 0 {
-		l.Log("Commit step failed; leaving working tree as-is", colors.Yellow)
-		return
+		return fmt.Errorf("commit step failed (exit %d): %v", exitCode, err)
 	}
 
 	if !gitops.RepoIsGit(l.cfg.Repo) {
-		return
+		return nil
+	}
+
+	// Safety net: if the commit agent left the verified work uncommitted, commit
+	// it ourselves so a flaky agent can't silently drop a green change.
+	if gitops.HasChanges(l.cfg.Repo) && !l.cfg.DryRun {
+		l.Log("Commit agent left changes uncommitted — committing them to preserve verified work", colors.Yellow)
+		if _, err := gitops.CommitAllWithError(l.cfg.Repo, commitMsg()); err != nil {
+			return fmt.Errorf("fallback commit failed: %w", err)
+		}
+	}
+
+	if l.cfg.NoPR {
+		return nil
 	}
 
 	branch, _ := gitops.CurrentBranch(l.cfg.Repo)
-	if !l.cfg.NoPR {
-		if err := gitops.PushBranch(l.cfg.Repo, branch, l.cfg.DryRun); err != nil {
-			l.Log(fmt.Sprintf("Could not push branch %q; skipping PR creation: %v", branch, err), colors.Yellow)
-			return
-		}
+	if err := gitops.PushBranch(l.cfg.Repo, branch, l.cfg.DryRun); err != nil {
+		return fmt.Errorf("push of branch %q failed: %w", branch, err)
+	}
 
-		title := fmt.Sprintf("middle-manager: %s", l.cfg.Mission)
-		if len(title) > 60 {
-			title = title[:60]
-		}
-		body := fmt.Sprintf(
-			"Automated PR from middle-manager loop iteration %d.\n\n**Do not merge without human review.**",
-			iteration,
-		)
-		baseBranch := l.cfg.BaseBranch
-		if baseBranch == "" {
-			baseBranch = gitops.DetectBaseBranch(l.cfg.Repo)
-		}
-		prURL, err := gitops.CreatePR(
-			l.cfg.Repo,
-			title,
-			body,
-			branch,
-			baseBranch,
-			issueData["number"],
-			l.cfg.DryRun,
-		)
-		if err != nil {
-			l.Log(fmt.Sprintf("⚠️ PR creation failed (branch %q is pushed; open the PR manually): %v", branch, err), colors.Yellow)
-		} else if prURL != "" {
-			l.lastPRURL = prURL
-			l.Log(fmt.Sprintf("PR created: %s", prURL), colors.Green)
+	title := fmt.Sprintf("middle-manager: %s", l.cfg.Mission)
+	if len(title) > 60 {
+		title = title[:60]
+	}
+	body := fmt.Sprintf(
+		"Automated PR from middle-manager loop iteration %d.\n\n**Do not merge without human review.**",
+		iteration,
+	)
+	baseBranch := l.cfg.BaseBranch
+	if baseBranch == "" {
+		baseBranch = gitops.DetectBaseBranch(l.cfg.Repo)
+	}
+	prURL, err := gitops.CreatePR(l.cfg.Repo, title, body, branch, baseBranch, issueData["number"], l.cfg.DryRun)
+	if err != nil {
+		return fmt.Errorf("PR creation failed (branch %q is pushed; open the PR manually): %w", branch, err)
+	}
+	if prURL == "" {
+		return nil // dry-run
+	}
+	l.lastPRURL = prURL
+	l.Log(fmt.Sprintf("PR created: %s", prURL), colors.Green)
 
-			if !l.cfg.NoMerge {
-				parts := strings.Split(strings.TrimSpace(prURL), "/")
-				if len(parts) > 0 {
-					prNumStr := parts[len(parts)-1]
-					prNum, err := strconv.Atoi(prNumStr)
-					if err == nil {
-						l.Log(fmt.Sprintf("Enabling GitHub auto-merge on PR #%d...", prNum), colors.Cyan)
-						out, err := gitops.EnableAutoMerge(l.cfg.Repo, prNum, "squash", true, l.cfg.DryRun)
-						if err != nil {
-							l.Log(fmt.Sprintf("⚠️ Could not enable auto-merge: %v", err), colors.Yellow)
-						} else {
-							if out != "" {
-								l.Log(fmt.Sprintf("Auto-merge enabled: %s", out), colors.Green)
-							} else {
-								l.Log("Auto-merge enabled.", colors.Green)
-							}
-						}
-					}
+	if !l.cfg.NoMerge {
+		parts := strings.Split(strings.TrimSpace(prURL), "/")
+		if len(parts) > 0 {
+			prNumStr := parts[len(parts)-1]
+			prNum, err := strconv.Atoi(prNumStr)
+			if err == nil {
+				l.Log(fmt.Sprintf("Enabling GitHub auto-merge on PR #%d...", prNum), colors.Cyan)
+				out, err := gitops.EnableAutoMerge(l.cfg.Repo, prNum, "squash", true, l.cfg.DryRun)
+				if err != nil {
+					l.Log(fmt.Sprintf("⚠️ Could not enable auto-merge: %v", err), colors.Yellow)
+				} else if out != "" {
+					l.Log(fmt.Sprintf("Auto-merge enabled: %s", out), colors.Green)
+				} else {
+					l.Log("Auto-merge enabled.", colors.Green)
 				}
 			}
 		}
 	}
+	return nil
 }
 
 // ParseVerifierUpdates extracts the verifier's verdict from its output. If both
@@ -518,9 +544,16 @@ func (l *MiddleManagerLoop) RunOnce(iteration int, issueData map[string]string) 
 				_, _ = gitops.EnsureBranch(l.cfg.Repo, l.cfg.BranchPrefix, iteration, l.cfg.BaseBranch)
 			}
 		}
-		l.MaybeCommitAndPR(iteration, issueData)
-	} else {
-		l.MaybeCommitAndPR(iteration, issueData)
+	}
+
+	// Only report success if the work was actually committed/pushed/PR'd. Without
+	// this gate a failed PR (branch protection, no commits, gh error) would still
+	// mark the loop successful — and the queue would then close the issue with no
+	// PR opened.
+	if err := l.MaybeCommitAndPR(iteration, issueData); err != nil {
+		l.Log(fmt.Sprintf("❌ %v", err), colors.Red)
+		l.failReason = err.Error()
+		return false
 	}
 
 	l.success = true
@@ -637,9 +670,17 @@ func (l *MiddleManagerLoop) RunUntilComplete() (*LoopResult, error) {
 		l.Log(fmt.Sprintf("Started loop on branch %q off base %q", branch, baseBranch), "")
 	}
 
-	issueData, issueErr := gitops.FetchIssue(l.cfg.Repo, l.cfg.Issue)
-	if issueErr != nil && l.cfg.Issue != "" {
-		l.Log(fmt.Sprintf("⚠️ Could not fetch issue %q: %v — proceeding with the issue number only", l.cfg.Issue, issueErr), colors.Yellow)
+	var issueData map[string]string
+	if l.prefetchedIssue != nil {
+		issueData = l.prefetchedIssue // queue already fetched title/body via ListIssues
+	} else {
+		var issueErr error
+		issueData, issueErr = gitops.FetchIssue(l.cfg.Repo, l.cfg.Issue)
+		// In issue mode we cannot work an issue we couldn't load — failing closed
+		// beats handing the agent an empty task and then closing the issue.
+		if issueErr != nil && isDigit(l.cfg.Issue) {
+			return &LoopResult{Success: false, Reason: fmt.Sprintf("could not load issue %s: %v", l.cfg.Issue, issueErr)}, nil
+		}
 	}
 	// In issue/queue mode the operator gives no --mission; derive an effective one
 	// from the issue so the PR title, commit message, summary, and the {mission}
@@ -668,6 +709,9 @@ func (l *MiddleManagerLoop) RunUntilComplete() (*LoopResult, error) {
 			}
 			if l.stalled {
 				return &LoopResult{Success: false, Reason: l.stallReason, PRURL: l.lastPRURL, Iterations: ran}, nil
+			}
+			if l.failReason != "" {
+				return &LoopResult{Success: false, Reason: l.failReason, PRURL: l.lastPRURL, Iterations: ran}, nil
 			}
 			return &LoopResult{Success: false, Reason: "Stopped by user", PRURL: l.lastPRURL, Iterations: ran}, nil
 		}
@@ -700,7 +744,10 @@ func (l *MiddleManagerLoop) ResetLoopState() {
 				b = strings.TrimSpace(b)
 				b = strings.TrimPrefix(b, "*")
 				b = strings.TrimSpace(b)
-				if strings.HasPrefix(b, l.cfg.BranchPrefix+"/loop-") || strings.HasPrefix(b, l.cfg.BranchPrefix+"/issue-") {
+				// Only sweep this flow's own loop branches. Never delete mm/issue-*
+				// here — those belong to issue/queue runs and a feature/repair run
+				// must not nuke in-flight issue work.
+				if strings.HasPrefix(b, l.cfg.BranchPrefix+"/loop-") {
 					_, _, _, _ = gitops.RunGit(l.cfg.Repo, "branch", "-D", b)
 				}
 			}

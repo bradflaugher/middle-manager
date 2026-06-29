@@ -269,9 +269,13 @@ func FetchIssue(repo string, issueRef string) (map[string]string, error) {
 	}, nil
 }
 
-func ListIssues(repo string, label, author string, limit int, state string) []map[string]string {
+// ListIssues returns the matching issues, or a non-nil error if the gh query
+// itself failed. The error lets the queue distinguish "no matching issues" from
+// "gh broke" (auth/network/rate-limit) instead of silently treating a failure as
+// an empty queue.
+func ListIssues(repo string, label, author string, limit int, state string) ([]map[string]string, error) {
 	if !GHAvailable() {
-		return nil
+		return nil, fmt.Errorf("gh CLI not available")
 	}
 
 	if limit <= 0 {
@@ -292,10 +296,11 @@ func ListIssues(repo string, label, author string, limit int, state string) []ma
 
 	cmd := exec.Command("gh", args...)
 	cmd.Dir = repo
-	var stdout bytes.Buffer
+	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return nil
+		return nil, fmt.Errorf("gh issue list: %s", strings.TrimSpace(stderr.String()))
 	}
 
 	type ghAuthor struct {
@@ -311,7 +316,7 @@ func ListIssues(repo string, label, author string, limit int, state string) []ma
 
 	var items []ghIssue
 	if err := json.Unmarshal(stdout.Bytes(), &items); err != nil {
-		return nil
+		return nil, fmt.Errorf("parse gh issue list: %w", err)
 	}
 
 	res := make([]map[string]string, 0, len(items))
@@ -324,7 +329,7 @@ func ListIssues(repo string, label, author string, limit int, state string) []ma
 			"author": item.Author.Login,
 		})
 	}
-	return res
+	return res, nil
 }
 
 func CloseIssue(repo string, number string, comment string, dryRun bool) bool {

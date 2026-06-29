@@ -144,10 +144,14 @@ func RenderSummaryPanel(success bool, reason, prURL string, iterations int, miss
 }
 
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	r := []rune(s)
+	if len(r) <= n {
 		return s
 	}
-	return s[:n-1] + "…"
+	if n <= 0 {
+		return "…"
+	}
+	return string(r[:n-1]) + "…"
 }
 
 func statDir(path string) (os.FileInfo, error) { return os.Stat(path) }
@@ -194,6 +198,9 @@ type WizardModel struct {
 	queueLabel    string
 	queueAuthor   string
 	queueLimit    string
+	queueSub      int // 0=label, 1=author, 2=max-issues
+	width         int
+	height        int
 	confirmed     bool
 }
 
@@ -211,8 +218,19 @@ func NewWizardModel(initialCfg *config.LoopConfig) *WizardModel {
 		"verify":   initialCfg.Verify.Agent,
 		"commit":   initialCfg.Commit.Agent,
 	}
-	if detected := agents.AutodetectStepAgents(initialCfg.BinaryOverrides); len(agents.AvailableAgents(initialCfg.BinaryOverrides)) > 0 {
-		stepToAgent = detected
+	// Only autodetect when the incoming per-step agents are still the untouched
+	// defaults; if the user configured them explicitly (via --config or per-step
+	// flags) we must respect that rather than silently overriding with whatever
+	// happens to be installed.
+	def := config.NewDefaultConfig()
+	isDefaultAgents := initialCfg.Discover.Agent == def.Discover.Agent &&
+		initialCfg.Execute.Agent == def.Execute.Agent &&
+		initialCfg.Verify.Agent == def.Verify.Agent &&
+		initialCfg.Commit.Agent == def.Commit.Agent
+	if isDefaultAgents {
+		if detected := agents.AutodetectStepAgents(initialCfg.BinaryOverrides); len(agents.AvailableAgents(initialCfg.BinaryOverrides)) > 0 {
+			stepToAgent = detected
+		}
 	}
 
 	return &WizardModel{
@@ -239,7 +257,21 @@ func (m *WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		tiw := m.width - 6
+		if tiw < 8 {
+			tiw = 8
+		}
+		if tiw > 400 { // textInput.CharLimit; avoid a runaway width
+			tiw = 400
+		}
+		m.textInput.SetWidth(tiw)
+	// Match KeyPressMsg, not the tea.KeyMsg interface: the latter is also
+	// satisfied by KeyReleaseMsg, so if release reporting is ever negotiated
+	// (Kitty protocol) every binding would fire twice. Presses only.
+	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "ctrl+c":
 			m.quitting = true
@@ -265,7 +297,7 @@ func (m *WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.state == stateAgents && m.customAgents {
 				m.cycleAgent(m.agentIndex, 1)
 			}
-		case " ":
+		case " ", "space":
 			if m.state == stateOptions {
 				m.optionsValues[m.optionsIndex] = !m.optionsValues[m.optionsIndex]
 			}
@@ -296,7 +328,7 @@ func (m *WizardModel) moveCursor(dir int) {
 		m.optionsIndex = wrap(m.optionsIndex+dir, len(m.optionsList))
 	case stateAgents:
 		if m.customAgents {
-			m.agentIndex = wrap(m.agentIndex+dir, 4)
+			m.agentIndex = wrap(m.agentIndex+dir, len(stepLabels))
 		}
 	}
 }
@@ -310,6 +342,7 @@ func wrap(i, n int) int {
 
 func (m *WizardModel) nextStep() (tea.Model, tea.Cmd) {
 	m.err = nil
+	var cmd tea.Cmd
 	switch m.state {
 	case stateRepo:
 		repoPath := strings.TrimSpace(m.textInput.Value())
@@ -324,7 +357,7 @@ func (m *WizardModel) nextStep() (tea.Model, tea.Cmd) {
 		}
 		m.cfg.Repo = abs
 		m.state = stateBaseBranch
-		m.resetInput("Base branch (e.g. main, dev, master)")
+		cmd = m.resetInput("Base branch (e.g. main, dev, master)")
 		detected := gitops.DetectBaseBranch(m.cfg.Repo)
 		m.textInput.SetValue(detected)
 
@@ -340,17 +373,23 @@ func (m *WizardModel) nextStep() (tea.Model, tea.Cmd) {
 		switch m.cfg.Mode {
 		case "feature", "repair":
 			m.state = stateMission
-			m.resetInput("Mission (e.g. add dark-mode toggle)")
+			cmd = m.resetInput("Mission (e.g. add dark-mode toggle)")
 		case "issue":
 			m.state = stateIssueDetails
-			m.resetInput("Issue number or URL")
+			cmd = m.resetInput("Issue number or URL")
 		case "queue":
 			m.state = stateQueueFilters
-			m.resetInput("Label filter (blank for none)")
+			m.queueSub = 0
+			cmd = m.resetInput("Label filter (blank for none)")
+			m.textInput.SetValue(m.queueLabel)
 		}
 
 	case stateMission:
 		m.cfg.Mission = strings.TrimSpace(m.textInput.Value())
+		if m.cfg.Mission == "" {
+			m.err = fmt.Errorf("a mission is required — describe what to build or fix")
+			return m, nil
+		}
 		m.state = stateAgents
 
 	case stateIssueDetails:
@@ -366,13 +405,22 @@ func (m *WizardModel) nextStep() (tea.Model, tea.Cmd) {
 		if m.cfg.IssueQueue == nil {
 			m.cfg.IssueQueue = &config.IssueQueueConfig{State: "open", Limit: 20, CloseOnSuccess: true}
 		}
-		if m.queueLabel == "" && m.queueAuthor == "" && m.queueLimit == "" {
+		// Track progress with an explicit sub-step counter, not field
+		// emptiness: blank is a LEGAL answer for label and author, so an
+		// emptiness check would never advance past a skipped field and would
+		// store the next answer into the wrong field.
+		switch m.queueSub {
+		case 0: // label
 			m.queueLabel = val
-			m.resetInput("Author filter (blank for none)")
-		} else if m.queueAuthor == "" && m.queueLimit == "" {
+			m.queueSub = 1
+			cmd = m.resetInput("Author filter (blank for none)")
+			m.textInput.SetValue(m.queueAuthor)
+		case 1: // author
 			m.queueAuthor = val
-			m.resetInput("Max issues (default 20)")
-		} else {
+			m.queueSub = 2
+			cmd = m.resetInput("Max issues (default 20)")
+			m.textInput.SetValue(m.queueLimit)
+		default: // max-issues
 			m.queueLimit = val
 			limit, err := strconv.Atoi(m.queueLimit)
 			if err != nil || limit <= 0 {
@@ -403,7 +451,7 @@ func (m *WizardModel) nextStep() (tea.Model, tea.Cmd) {
 		m.cfg.Fresh = m.optionsValues[3]
 		m.cfg.NoMerge = !m.optionsValues[4]
 		m.state = stateMaxIters
-		m.resetInput("Max iterations per task (default 10)")
+		cmd = m.resetInput("Max iterations per task (default 10)")
 		m.textInput.SetValue("10")
 
 	case stateMaxIters:
@@ -420,28 +468,46 @@ func (m *WizardModel) nextStep() (tea.Model, tea.Cmd) {
 		m.done = true
 		return m, tea.Quit
 	}
-	return m, nil
+	return m, cmd
 }
 
-func (m *WizardModel) resetInput(placeholder string) {
+// resetInput clears the text box and re-focuses it, returning the blink Cmd
+// from Focus(). Callers MUST propagate that Cmd to the tea runtime, otherwise
+// the cursor stops blinking after the first non-text step swallows the
+// self-perpetuating blink loop.
+func (m *WizardModel) resetInput(placeholder string) tea.Cmd {
 	m.textInput.Reset()
 	m.textInput.Placeholder = placeholder
-	m.textInput.Focus()
+	return m.textInput.Focus()
 }
 
 func (m *WizardModel) prevStep() (tea.Model, tea.Cmd) {
 	m.err = nil
+	var cmd tea.Cmd
 	switch m.state {
 	case stateMode:
 		m.state = stateBaseBranch
-		m.resetInput("Base branch (e.g. main, dev, master)")
+		cmd = m.resetInput("Base branch (e.g. main, dev, master)")
 		m.textInput.SetValue(m.cfg.BaseBranch)
 	case stateBaseBranch:
 		m.state = stateRepo
-		m.resetInput("Repository path")
+		cmd = m.resetInput("Repository path")
 		m.textInput.SetValue(m.cfg.Repo)
-	case stateMission, stateIssueDetails, stateQueueFilters:
+	case stateMission, stateIssueDetails:
 		m.state = stateMode
+	case stateQueueFilters:
+		switch m.queueSub {
+		case 2: // max-issues -> author
+			m.queueSub = 1
+			cmd = m.resetInput("Author filter (blank for none)")
+			m.textInput.SetValue(m.queueAuthor)
+		case 1: // author -> label
+			m.queueSub = 0
+			cmd = m.resetInput("Label filter (blank for none)")
+			m.textInput.SetValue(m.queueLabel)
+		default: // label -> mode
+			m.state = stateMode
+		}
 	case stateAgents:
 		switch m.cfg.Mode {
 		case "issue":
@@ -449,13 +515,14 @@ func (m *WizardModel) prevStep() (tea.Model, tea.Cmd) {
 			m.textInput.SetValue(m.cfg.Issue)
 		case "queue":
 			m.state = stateQueueFilters
-			m.textInput.SetValue(m.queueLabel)
-			m.queueLabel, m.queueAuthor, m.queueLimit = "", "", ""
+			m.queueSub = 2
+			m.resetInput("Max issues (default 20)")
+			m.textInput.SetValue(m.queueLimit)
 		default:
 			m.state = stateMission
 			m.textInput.SetValue(m.cfg.Mission)
 		}
-		m.textInput.Focus()
+		cmd = m.textInput.Focus()
 	case stateSteps:
 		m.state = stateAgents
 	case stateOptions:
@@ -464,21 +531,29 @@ func (m *WizardModel) prevStep() (tea.Model, tea.Cmd) {
 		m.state = stateOptions
 	case stateConfirm:
 		m.state = stateMaxIters
+		cmd = m.textInput.Focus()
 	}
-	return m, nil
+	return m, cmd
 }
 
 func (m *WizardModel) cycleAgent(stepIdx, dir int) {
+	if len(agents.AgentNames) == 0 {
+		return
+	}
 	step := stepLabels[stepIdx]
 	current := m.stepToAgent[step]
-	idx := 0
+	idx, found := 0, false
 	for i, name := range agents.AgentNames {
 		if name == current {
-			idx = i
+			idx, found = i, true
 			break
 		}
 	}
-	idx = wrap(idx+dir, len(agents.AgentNames))
+	// If the current agent isn't in the roster (e.g. a custom binary from
+	// config), snap to the first roster entry instead of jumping past it.
+	if found {
+		idx = wrap(idx+dir, len(agents.AgentNames))
+	}
 	m.stepToAgent[step] = agents.AgentNames[idx]
 }
 
@@ -514,13 +589,12 @@ func (m *WizardModel) View() tea.View {
 		s.WriteString("  Issue number (e.g. 42) or URL:\n\n  " + m.textInput.View() + "\n")
 	case stateQueueFilters:
 		s.WriteString(stepHeader(4, "Queue filters"))
-		hint := "Filter by label (optional):"
-		if m.queueLabel != "" && m.queueAuthor == "" {
-			hint = "Filter by author login (optional):"
-		} else if m.queueAuthor != "" {
-			hint = "Max issues (default 20):"
+		hints := []string{
+			"Filter by label (optional):",
+			"Filter by author login (optional):",
+			"Max issues (default 20):",
 		}
-		s.WriteString("  " + hint + "\n\n  " + m.textInput.View() + "\n")
+		s.WriteString("  " + hints[m.queueSub] + "\n\n  " + m.textInput.View() + "\n")
 
 	case stateAgents:
 		s.WriteString(stepHeader(5, "Agents per step"))
@@ -537,7 +611,7 @@ func (m *WizardModel) View() tea.View {
 			}
 			s.WriteString("\n" + stDim.Render("  c: done customizing"))
 		} else {
-			s.WriteString("  Autodetested agents:\n\n")
+			s.WriteString("  Autodetected agents:\n\n")
 			for _, step := range stepLabels {
 				s.WriteString(fmt.Sprintf("  %-12s %s\n", step+":", stGreen.Render(m.stepToAgent[step])))
 			}
@@ -564,7 +638,21 @@ func (m *WizardModel) View() tea.View {
 	}
 
 	s.WriteString("\n" + stDim.Render("  enter: continue   esc: back   ^c: quit") + "\n")
-	return altView(s.String())
+
+	// Fit the fixed layout to the terminal. The alt-screen renderer clips
+	// excess from the TOP (dropping the banner/header) and the RIGHT (cutting
+	// long rows). Clamp width, and if still too tall keep the BOTTOM rows so the
+	// load-bearing action prompt + key hints stay visible on a tiny screen.
+	out := s.String()
+	if m.width > 0 {
+		out = lipgloss.NewStyle().MaxWidth(m.width).Render(out)
+	}
+	if m.height > 0 {
+		if lines := strings.Split(out, "\n"); len(lines) > m.height {
+			out = strings.Join(lines[len(lines)-m.height:], "\n")
+		}
+	}
+	return altView(out)
 }
 
 func (m *WizardModel) confirmView() string {
@@ -595,6 +683,9 @@ func (m *WizardModel) confirmView() string {
 	b.WriteString(row("agents", fmt.Sprintf("%s / %s / %s / %s", m.cfg.Discover.Agent, m.cfg.Execute.Agent, m.cfg.Verify.Agent, m.cfg.Commit.Agent)))
 	b.WriteString(row("yolo", boolStr(m.cfg.Yolo)))
 	b.WriteString(row("interactive", boolStr(m.cfg.Interactive)))
+	b.WriteString(row("fix tests", boolStr(m.cfg.FixUnrelatedTests)))
+	b.WriteString(row("fresh", boolStr(m.cfg.Fresh)))
+	b.WriteString(row("auto-merge", boolStr(!m.cfg.NoMerge)))
 	b.WriteString(row("max iters", strconv.Itoa(m.cfg.MaxIterations)))
 	b.WriteString("\n  " + stGreen.Render("Press enter to launch the loop."))
 	return b.String()
@@ -771,7 +862,7 @@ func (m *MonitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cpuHist = m.cpuHist[len(m.cpuHist)-24:]
 		}
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "ctrl+c":
 			m.quitting = true
@@ -787,8 +878,7 @@ func (m *MonitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.quitting = true
 				return m, tea.Quit
 			}
-			m.handleInput()
-			return m, nil
+			return m, m.handleInput()
 		}
 	}
 
@@ -798,10 +888,14 @@ func (m *MonitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-func (m *MonitorModel) handleInput() {
+// handleInput processes a submitted line and returns a Cmd for the runtime.
+// /quit returns tea.Quit so the TUI tears down immediately (mirroring Ctrl+C),
+// which lets main.go cancel the loop context and abort the in-flight step —
+// making the "/quit aborts now" footer accurate.
+func (m *MonitorModel) handleInput() tea.Cmd {
 	val := strings.TrimSpace(m.textInput.Value())
 	if val == "" {
-		return
+		return nil
 	}
 	m.textInput.Reset()
 	if strings.HasPrefix(val, "/") {
@@ -817,13 +911,15 @@ func (m *MonitorModel) handleInput() {
 			m.pushLog(stAmber.Render("⏭ skipping current step"))
 		case "/quit", "/abort":
 			m.quitting = true
+			return tea.Quit
 		default:
 			m.pushLog(stRed.Render("unknown command: " + val))
 		}
-		return
+		return nil
 	}
 	m.interject = val
 	m.pushLog(stMag.Render("✎ note queued — added to the NEXT step's prompt (it can't change the step running now): ") + stFg.Render(val))
+	return nil
 }
 
 func (m *MonitorModel) pushLog(s string) {
@@ -904,15 +1000,6 @@ func (m *MonitorModel) View() tea.View {
 		inner = 20
 	}
 
-	// Build the fixed chrome above and below the scrolling log first, measure
-	// how many rows it occupies, then size the log viewport to whatever is
-	// left so the whole frame fits the terminal exactly. In the alt screen any
-	// content taller than the screen would be clipped, so we fit rather than
-	// overflow — this is what keeps a small phone screen usable.
-	header := m.titleRow(inner) + "\n\n" +
-		m.pipelineRow() + "\n\n" +
-		m.panelsRow() + "\n" +
-		panelLabel.Render(" live agent output")
 	var footer string
 	if m.state == "completed" || m.state == "failed" {
 		footer = stDim.Render(" pgup/pgdn scroll · enter: exit")
@@ -921,8 +1008,36 @@ func (m *MonitorModel) View() tea.View {
 			stDim.Render(" pgup/pgdn scroll · enter: queue note for next step · /pause /resume /skip · /quit aborts now · ^c quit")
 	}
 
-	// logPanel adds a top and bottom border row around the viewport (2 rows).
-	avail := m.height - lipgloss.Height(header) - lipgloss.Height(footer) - 2
+	// Build the fixed chrome in priority order (title > pipeline > panels) and
+	// shed the lower-priority rows when the terminal is too short, so the log
+	// viewport and the load-bearing footer/input box always survive. The alt
+	// screen clips excess from the TOP, so an un-shrunk header would otherwise
+	// push the input box off-screen on a tiny phone screen.
+	const logBorders = 2 // logPanel top+bottom border rows
+	const minLog = 1     // never let the log fully vanish
+	label := panelLabel.Render(" live agent output")
+	build := func(withPanels, withPipeline bool) string {
+		h := m.titleRow(inner)
+		if withPipeline {
+			h += "\n\n" + m.pipelineRow()
+		}
+		if withPanels {
+			h += "\n\n" + m.panelsRow()
+		}
+		return h + "\n" + label
+	}
+	fits := func(h string) bool {
+		return lipgloss.Height(h)+logBorders+minLog+lipgloss.Height(footer) <= m.height
+	}
+	header := build(true, true)
+	if !fits(header) {
+		header = build(false, true) // drop the resource panels first
+	}
+	if !fits(header) {
+		header = build(false, false) // then the pipeline row
+	}
+
+	avail := m.height - lipgloss.Height(header) - lipgloss.Height(footer) - logBorders
 	if avail < 1 {
 		avail = 1
 	}
@@ -939,9 +1054,17 @@ func (m *MonitorModel) View() tea.View {
 
 func (m *MonitorModel) titleRow(width int) string {
 	left := titleBar.Render("middle-manager") + " " + stDim.Render(filepath.Base(m.cfg.Repo))
-	state := strings.ToUpper(m.state)
+	// m.state is driven by the loop and only ever reports running/completed/
+	// failed; pause lives in the separate m.paused flag (set by /pause and by
+	// interactive RequestPause), so fold it into an effective state here. Read
+	// race-free: View()/titleRow() already hold m.mu.
+	effState := m.state
+	if m.paused && m.state != "completed" && m.state != "failed" {
+		effState = "paused"
+	}
+	state := strings.ToUpper(effState)
 	var stState lipgloss.Style
-	switch m.state {
+	switch effState {
 	case "paused":
 		stState = stAmber
 	case "completed":
@@ -974,6 +1097,14 @@ func (m *MonitorModel) pipelineRow() string {
 		case i < active || m.state == "completed":
 			pills = append(pills, lipgloss.NewStyle().Foreground(cGreen).Render("✓ "+label))
 		case i == active:
+			if m.state == "failed" {
+				// The tick stops re-arming on failure, so the spinner glyph would
+				// freeze mid-frame and look like it's still working. Show a static
+				// red ✗ pill on the step that failed instead.
+				pills = append(pills, lipgloss.NewStyle().Bold(true).Foreground(cInk).Background(cRed).Padding(0, 1).
+					Render("✗ "+label))
+				break
+			}
 			pill := lipgloss.NewStyle().Bold(true).Foreground(cInk).Background(cMagenta).Padding(0, 1).
 				Render(spinFrame(m.frame) + " " + label)
 			pills = append(pills, pill)

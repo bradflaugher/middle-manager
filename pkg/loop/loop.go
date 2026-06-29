@@ -491,7 +491,7 @@ func (l *MiddleManagerLoop) RunOnce(iteration int, issueData map[string]string) 
 		// Interactive mode: pause after each step so the operator can inspect /
 		// interject before the next one runs.
 		if l.cfg.Interactive && !l.cfg.StreamOutput {
-			l.Log("⏸️  Interactive pause — type /resume (or press p) in the input box to continue.", colors.Yellow)
+			l.Log("⏸️  Interactive pause — type /resume in the input box (then Enter) to continue.", colors.Yellow)
 			tui.RequestPause()
 			l.checkTUIPause()
 		}
@@ -781,6 +781,17 @@ func (l *MiddleManagerLoop) branchName() string {
 
 func (l *MiddleManagerLoop) checkTUIPause() {
 	for tui.IsTUIPaused() {
+		// A paused loop must stay abortable: bail out if the operator quit
+		// (/quit or Ctrl+C, which cancels l.ctx), otherwise the TUI exits while
+		// this goroutine spins forever and wg.Wait() hangs the whole process.
+		select {
+		case <-l.ctx.Done():
+			return
+		default:
+		}
+		if tui.IsTUIQuitting() {
+			return
+		}
 		time.Sleep(500 * time.Millisecond)
 	}
 }

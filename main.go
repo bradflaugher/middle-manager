@@ -128,12 +128,52 @@ func cmdIssues(cfg *config.LoopConfig) {
 		os.Exit(1)
 	}
 	cfg.Mode = "queue"
+	runQueue(cfg)
+}
+
+// runQueue drains a filtered issue queue. Streaming/dry-run drains print plain
+// log lines on stdout; otherwise the whole drain runs behind one persistent
+// Bubble Tea monitor dashboard — the same one a single loop uses — with a
+// queue-position indicator spanning every issue. Mirrors cmdRun's monitor path:
+// the work runs in a goroutine while GlobalProgram.Run() owns the main thread,
+// and operator quit cancels the in-flight issue and stops the drain.
+func runQueue(cfg *config.LoopConfig) {
 	runner, err := queue.NewIssueQueueRunner(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating issue queue runner: %v\n", err)
 		os.Exit(1)
 	}
-	os.Exit(runner.Run())
+
+	if cfg.StreamOutput || cfg.DryRun {
+		os.Exit(runner.Run())
+	}
+
+	tui.StartMonitorTUI(cfg)
+
+	var code int
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		code = runner.Run()
+		state := "completed"
+		if code != 0 {
+			state = "failed"
+		}
+		tui.NotifyTUIDone(state)
+	}()
+
+	if _, err := tui.GlobalProgram.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error running monitor TUI: %v\n", err)
+		os.Exit(1)
+	}
+
+	// TUI exited (drain finished, or operator hit /quit). Cancel any in-flight
+	// issue so a long agent step is torn down and the drain stops advancing.
+	runner.Cancel()
+	wg.Wait()
+
+	os.Exit(code)
 }
 
 func shouldWizard(cfg *config.LoopConfig) bool {
@@ -175,12 +215,7 @@ func cmdRun(cfg *config.LoopConfig) {
 	}
 
 	if cfg.Mode == "queue" && cfg.IssueQueue != nil {
-		runner, err := queue.NewIssueQueueRunner(cfg)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-		os.Exit(runner.Run())
+		runQueue(cfg)
 	}
 
 	if cfg.Mode == "feature" && cfg.Mission == "" {

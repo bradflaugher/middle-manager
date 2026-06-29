@@ -756,6 +756,22 @@ type TUIStatsMsg struct {
 	CPUPercent  float64
 }
 type TUIPlanMsg struct{ PlanText string }
+
+// TUIQueueMsg advances the queue-progress indicator when one monitor dashboard
+// is shared across a multi-issue batch drain. Issue is a pre-formatted label
+// like "#123 Fix the thing".
+type TUIQueueMsg struct {
+	Position int
+	Total    int
+	Issue    string
+}
+
+// TUIDoneMsg flips the dashboard to its terminal state at the END of a whole
+// drain. Unlike TUIStatusMsg it carries no iteration/branch, so it won't clobber
+// the last issue's values when the queue finishes — it only sets completed/failed
+// and posts the "press Enter to exit" notice.
+type TUIDoneMsg struct{ State string }
+
 type monitorTickMsg struct{}
 
 func monitorTick() tea.Cmd {
@@ -785,6 +801,13 @@ type MonitorModel struct {
 	skipStep     bool
 	interject    string
 	textInput    textinput.Model
+
+	// queue progress — only populated when the monitor is shared across a
+	// batch drain of multiple issues. queueTotal == 0 means "single run", and
+	// the queue chrome is hidden entirely.
+	queuePos   int
+	queueTotal int
+	queueIssue string
 }
 
 func NewMonitorModel(cfg *config.LoopConfig) *MonitorModel {
@@ -846,11 +869,19 @@ func (m *MonitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.branch = msg.Branch
 		m.duration = msg.Duration
 		if (m.state == "completed" || m.state == "failed") && prevState != m.state {
-			msgText := "Loop completed successfully. Press Enter to exit."
-			if m.state == "failed" {
-				msgText = "Loop failed. Press Enter to exit."
-			}
-			m.pushLog("\n" + stBold.Foreground(cCyan).Render(msgText))
+			m.pushTerminalNotice()
+		}
+
+	case TUIQueueMsg:
+		m.queuePos = msg.Position
+		m.queueTotal = msg.Total
+		m.queueIssue = msg.Issue
+
+	case TUIDoneMsg:
+		prevState := m.state
+		m.state = msg.State
+		if (m.state == "completed" || m.state == "failed") && prevState != m.state {
+			m.pushTerminalNotice()
 		}
 
 	case TUIStatsMsg:
@@ -920,6 +951,24 @@ func (m *MonitorModel) handleInput() tea.Cmd {
 	m.interject = val
 	m.pushLog(stMag.Render("✎ note queued — added to the NEXT step's prompt (it can't change the step running now): ") + stFg.Render(val))
 	return nil
+}
+
+// pushTerminalNotice posts the end-of-run banner. Wording adapts to whether one
+// dashboard spanned a batch drain (queueTotal > 0) or a single loop. Callers
+// hold m.mu (it appends to the log).
+func (m *MonitorModel) pushTerminalNotice() {
+	var msgText string
+	switch {
+	case m.queueTotal > 0 && m.state == "failed":
+		msgText = "Queue finished with failures. Press Enter to exit."
+	case m.queueTotal > 0:
+		msgText = "Queue finished. Press Enter to exit."
+	case m.state == "failed":
+		msgText = "Loop failed. Press Enter to exit."
+	default:
+		msgText = "Loop completed successfully. Press Enter to exit."
+	}
+	m.pushLog("\n" + stBold.Foreground(cCyan).Render(msgText))
 }
 
 func (m *MonitorModel) pushLog(s string) {
@@ -1076,6 +1125,11 @@ func (m *MonitorModel) titleRow(width int) string {
 		state = spinFrame(m.frame) + " " + state
 	}
 	right := stState.Render(state)
+	// In a batch drain, surface queue position on the title bar so progress is
+	// visible even on a screen too short for the dashboard panel below.
+	if m.queueTotal > 0 {
+		right = stViol.Render(fmt.Sprintf("queue %d/%d", m.queuePos, m.queueTotal)) + "  " + right
+	}
 	gap := width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {
 		gap = 1
@@ -1117,6 +1171,22 @@ func (m *MonitorModel) pipelineRow() string {
 }
 
 func (m *MonitorModel) panelsRow() string {
+	// Pin the panel width up front so the issue title can be truncated to fit
+	// (an over-long value would wrap and throw off the side-by-side alignment).
+	stacked := m.panelsStacked()
+	var pw int
+	if stacked {
+		pw = m.width - 4
+		if pw < 16 {
+			pw = 16
+		}
+	} else {
+		pw = (m.width - 6) / 2
+		if pw < 22 {
+			pw = 22
+		}
+	}
+
 	repo := filepath.Base(m.cfg.Repo)
 	dash := panelLabel.Render("dashboard") + "\n" +
 		kv("repo", stFg.Render(repo)) +
@@ -1125,6 +1195,16 @@ func (m *MonitorModel) panelsRow() string {
 		kv("step", stCyan.Render(strings.ToUpper(orDash(m.currentStep)))) +
 		kv("agent", stGreen.Render(orDash(m.currentAgent))) +
 		kv("elapsed", stFg.Render(m.duration.Round(time.Second).String()))
+	if m.queueTotal > 0 {
+		dash += kv("queue", stViol.Render(fmt.Sprintf("%d/%d", m.queuePos, m.queueTotal)))
+		if m.queueIssue != "" {
+			valW := pw - 14 // key column (8) + border/padding headroom
+			if valW < 6 {
+				valW = 6
+			}
+			dash += kv("issue", stFg.Render(truncate(m.queueIssue, valW)))
+		}
+	}
 
 	res := panelLabel.Render("resources") + "\n" +
 		kv("cpu", m.cpuBar()) +
@@ -1132,19 +1212,11 @@ func (m *MonitorModel) panelsRow() string {
 		kv("sockets", stFg.Render(strconv.Itoa(m.sockets))) +
 		kv("mode", stFg.Render(m.cfg.Mode))
 
-	if m.panelsStacked() {
-		pw := m.width - 4
-		if pw < 16 {
-			pw = 16
-		}
+	if stacked {
 		return panel.Width(pw).Render(dash) + "\n" + panel.Width(pw).Render(res)
 	}
-	half := (m.width - 6) / 2
-	if half < 22 {
-		half = 22
-	}
-	left := panel.Width(half).Render(dash)
-	right := panel.Width(half).Render(res)
+	left := panel.Width(pw).Render(dash)
+	right := panel.Width(pw).Render(res)
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, " ", right)
 }
 
@@ -1216,6 +1288,22 @@ func NotifyTUIStats(descendants, sockets int, cpu float64) {
 func NotifyTUIPlan(planText string) {
 	if GlobalProgram != nil {
 		GlobalProgram.Send(TUIPlanMsg{PlanText: planText})
+	}
+}
+
+// NotifyTUIQueue updates the shared dashboard's queue-progress indicator as a
+// batch drain advances from one issue to the next. No-op without a live monitor.
+func NotifyTUIQueue(position, total int, issue string) {
+	if GlobalProgram != nil {
+		GlobalProgram.Send(TUIQueueMsg{Position: position, Total: total, Issue: issue})
+	}
+}
+
+// NotifyTUIDone flips the dashboard to its terminal state when a whole drain
+// finishes (state is "completed" or "failed"). No-op without a live monitor.
+func NotifyTUIDone(state string) {
+	if GlobalProgram != nil {
+		GlobalProgram.Send(TUIDoneMsg{State: state})
 	}
 }
 

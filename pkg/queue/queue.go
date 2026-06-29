@@ -5,12 +5,14 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sync"
 	"time"
 
 	"github.com/bradflaugher/middle-manager/pkg/colors"
 	"github.com/bradflaugher/middle-manager/pkg/config"
 	"github.com/bradflaugher/middle-manager/pkg/gitops"
 	"github.com/bradflaugher/middle-manager/pkg/loop"
+	"github.com/bradflaugher/middle-manager/pkg/tui"
 )
 
 type IssueQueueRunner struct {
@@ -20,6 +22,12 @@ type IssueQueueRunner struct {
 	// override. ResetIssueState derives each issue dir from this so they sit side
 	// by side (issues/1, issues/2, …) instead of nesting under one another.
 	baseStateDir string
+
+	// mu guards current/canceled, which the monitor goroutine touches via Cancel
+	// while Run() is mid-drain.
+	mu       sync.Mutex
+	current  *loop.MiddleManagerLoop // the in-flight issue's loop, for cancellation
+	canceled bool                    // set by Cancel(); stops the drain advancing
 }
 
 func NewIssueQueueRunner(cfg *config.LoopConfig) (*IssueQueueRunner, error) {
@@ -35,14 +43,34 @@ func NewIssueQueueRunner(cfg *config.LoopConfig) (*IssueQueueRunner, error) {
 	}, nil
 }
 
+// Cancel stops the drain: it aborts the in-flight issue's loop (terminating any
+// running agent) and flags the runner so it won't advance to the next issue.
+// Called from the monitor goroutine when the operator hits /quit or Ctrl+C.
+func (r *IssueQueueRunner) Cancel() {
+	r.mu.Lock()
+	r.canceled = true
+	cur := r.current
+	r.mu.Unlock()
+	if cur != nil {
+		cur.Cancel()
+	}
+}
+
 func (r *IssueQueueRunner) Log(msg string, colorCode string) {
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
 	rawLine := fmt.Sprintf("[%s] %s", timestamp, msg)
 
+	display := rawLine
 	if colorCode != "" {
-		fmt.Println(colors.Colored(rawLine, colorCode))
+		display = colors.Colored(rawLine, colorCode)
+	}
+	// When the monitor TUI owns the terminal, route through it — a raw
+	// fmt.Println would punch through and corrupt the alt-screen. Without a
+	// live monitor (stream/dry-run, or no TUI), print to stdout as before.
+	if tui.GlobalProgram != nil {
+		tui.NotifyTUIUpdate(display+"\n", false)
 	} else {
-		fmt.Println(rawLine)
+		fmt.Println(display)
 	}
 
 	// Strip ANSI escape codes
@@ -95,8 +123,18 @@ func (r *IssueQueueRunner) Run() int {
 	failed := 0
 
 	for idx, issue := range issues {
+		// Bail before starting another issue if the operator quit the monitor
+		// between issues (an in-flight quit is caught by the loop's own ctx).
+		r.mu.Lock()
+		canceled := r.canceled
+		r.mu.Unlock()
+		if canceled {
+			break
+		}
+
 		number := issue["number"]
 		r.Log(fmt.Sprintf("=== Queue %d/%d: Issue #%s — %s ===", idx+1, len(issues), number, issue["title"]), colors.Cyan+colors.Bold)
+		tui.NotifyTUIQueue(idx+1, len(issues), fmt.Sprintf("#%s %s", number, issue["title"]))
 
 		if gitops.RepoIsGit(r.cfg.Repo) && !r.cfg.DryRun {
 			baseBranch := r.cfg.BaseBranch
@@ -126,7 +164,20 @@ func (r *IssueQueueRunner) Run() int {
 		r.ResetIssueState(issue)
 		l := loop.NewMiddleManagerLoop(r.cfg)
 		l.SetPrefetchedIssue(issue) // title/body already fetched; avoids a re-fetch failure window
+
+		r.mu.Lock()
+		r.current = l
+		r.mu.Unlock()
+
 		result, err := l.RunUntilComplete()
+
+		// Cancel this issue's context so its background resource-tracking
+		// goroutine stops; otherwise every finished issue keeps pushing stale
+		// "running" status into the shared dashboard, fighting the live one.
+		l.Cancel()
+		r.mu.Lock()
+		r.current = nil
+		r.mu.Unlock()
 
 		if err == nil && result.Success {
 			succeeded++

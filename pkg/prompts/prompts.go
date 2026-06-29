@@ -158,7 +158,7 @@ You are the **Ship** agent. Persist learnings and commit verified work.
 2. ` + "`" + `git add` + "`" + ` only relevant files. **Do not** ` + "`" + `git push --force` + "`" + `.
 3. Commit with message: ` + "`" + `middle-manager: {mission}` + "`" + ` (truncate to 72 chars).
 
-**Do not push and do not open a pull request.** middle-manager pushes the branch, opens the PR, links the issue (` + "`" + `Closes #{issue_number}` + "`" + `), and never auto-merges without review — all deterministically, right after this step. Your only job is to land one clean commit (plus the memory update).
+**Do not push and do not open a pull request.** middle-manager pushes the branch, opens the PR, and links the issue (` + "`" + `Closes #{issue_number}` + "`" + `) — all deterministically, right after this step, then merges according to the configured merge policy. Your only job is to land one clean commit (plus the memory update).
 
 If there is nothing to commit, say so and exit cleanly.`
 

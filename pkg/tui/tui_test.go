@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
@@ -270,6 +271,109 @@ func TestTruncateRuneSafe(t *testing.T) {
 	}
 	if truncate("hi", 5) != "hi" {
 		t.Fatal("short string should be returned unchanged")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Monitor: batch-queue dashboard
+// ---------------------------------------------------------------------------
+
+// sendM drives one message through the monitor's Update and returns the model.
+func sendM(m *MonitorModel, msg tea.Msg) *MonitorModel {
+	model, _ := m.Update(msg)
+	return model.(*MonitorModel)
+}
+
+// A queue update must surface position both on the title bar (survives panel
+// shedding on short screens) and in the dashboard panel with the issue label.
+func TestQueueProgressRenders(t *testing.T) {
+	m := NewMonitorModel(&config.LoopConfig{Repo: "/tmp/artwork", Mode: "queue"})
+	m.width, m.height = 100, 32
+	m = sendM(m, TUIQueueMsg{Position: 2, Total: 7, Issue: "#123 Fix the thing"})
+
+	if m.queuePos != 2 || m.queueTotal != 7 {
+		t.Fatalf("queue fields not set: pos=%d total=%d", m.queuePos, m.queueTotal)
+	}
+	if title := stripANSITest(m.titleRow(100)); !strings.Contains(title, "queue 2/7") {
+		t.Fatalf("title row missing queue progress: %q", title)
+	}
+	panels := stripANSITest(m.panelsRow())
+	if !strings.Contains(panels, "2/7") {
+		t.Fatalf("dashboard missing queue count: %q", panels)
+	}
+	if !strings.Contains(panels, "#123") {
+		t.Fatalf("dashboard missing issue label: %q", panels)
+	}
+}
+
+// A single run (no queue) must show none of the queue chrome.
+func TestNoQueueChromeForSingleRun(t *testing.T) {
+	m := NewMonitorModel(&config.LoopConfig{Repo: "/tmp/x", Mode: "feature"})
+	m.width, m.height = 100, 32
+	if title := stripANSITest(m.titleRow(100)); strings.Contains(title, "queue") {
+		t.Fatalf("single-run title should not show queue chrome: %q", title)
+	}
+	if panels := stripANSITest(m.panelsRow()); strings.Contains(panels, "queue") {
+		t.Fatalf("single-run dashboard should not show queue row: %q", panels)
+	}
+}
+
+// TUIDoneMsg is the whole reason the queue terminal state is a separate message:
+// it must NOT clobber the last issue's iteration/branch the way a status update
+// would, yet must still flip state and post the exit notice.
+func TestDoneMsgPreservesLastIssueContext(t *testing.T) {
+	m := NewMonitorModel(&config.LoopConfig{Repo: "/tmp/x", Mode: "queue"})
+	m = sendM(m, TUIStatusMsg{Iteration: 4, Step: "verify", Agent: "claude", State: "running", Branch: "mm/issue-9", Duration: time.Second})
+	m = sendM(m, TUIDoneMsg{State: "completed"})
+
+	if m.state != "completed" {
+		t.Fatalf("state = %q, want completed", m.state)
+	}
+	if m.iteration != 4 {
+		t.Fatalf("iteration clobbered by done msg: %d, want 4", m.iteration)
+	}
+	if m.branch != "mm/issue-9" {
+		t.Fatalf("branch clobbered by done msg: %q, want mm/issue-9", m.branch)
+	}
+}
+
+// Terminal-notice wording adapts to queue vs single run, success vs failure.
+func TestTerminalNoticeWording(t *testing.T) {
+	cases := []struct {
+		name       string
+		queue      bool
+		state      string
+		wantPhrase string
+	}{
+		{"queue success", true, "completed", "Queue finished. Press Enter to exit."},
+		{"queue failure", true, "failed", "Queue finished with failures. Press Enter to exit."},
+		{"single success", false, "completed", "Loop completed successfully. Press Enter to exit."},
+		{"single failure", false, "failed", "Loop failed. Press Enter to exit."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewMonitorModel(&config.LoopConfig{Repo: "/tmp/x"})
+			if tc.queue {
+				m = sendM(m, TUIQueueMsg{Position: 1, Total: 3, Issue: "#1 x"})
+			}
+			m = sendM(m, TUIDoneMsg{State: tc.state})
+			content := stripANSITest(m.logViewport.GetContent())
+			if !strings.Contains(content, tc.wantPhrase) {
+				t.Fatalf("notice = %q, want it to contain %q", content, tc.wantPhrase)
+			}
+		})
+	}
+}
+
+// The terminal notice must fire exactly once per terminal transition, not on
+// every repeated done/status message (guards the prevState != state check).
+func TestTerminalNoticeFiresOnce(t *testing.T) {
+	m := NewMonitorModel(&config.LoopConfig{Repo: "/tmp/x", Mode: "queue"})
+	m = sendM(m, TUIDoneMsg{State: "completed"})
+	m = sendM(m, TUIDoneMsg{State: "completed"})
+	content := stripANSITest(m.logViewport.GetContent())
+	if n := strings.Count(content, "Press Enter to exit."); n != 1 {
+		t.Fatalf("terminal notice rendered %d times, want exactly 1", n)
 	}
 }
 

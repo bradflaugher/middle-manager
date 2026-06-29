@@ -1,6 +1,30 @@
 package loop
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+// The PR body's merge guidance must match the loop's actual merge behavior:
+// auto-merge mode must NOT print the human-review warning (the contradiction we
+// hit in production), and non-auto-merge mode must keep it.
+func TestPRBodyMatchesMergeMode(t *testing.T) {
+	autoMerge := prBody(3, true)
+	if strings.Contains(autoMerge, "Do not merge without human review") {
+		t.Errorf("auto-merge PR body must not warn against merging: %q", autoMerge)
+	}
+	if !strings.Contains(strings.ToLower(autoMerge), "auto-merge is enabled") {
+		t.Errorf("auto-merge PR body should explain auto-merge: %q", autoMerge)
+	}
+
+	manual := prBody(3, false)
+	if !strings.Contains(manual, "**Do not merge without human review.**") {
+		t.Errorf("non-auto-merge PR body must keep the human-review note: %q", manual)
+	}
+	if strings.Contains(strings.ToLower(manual), "auto-merge is enabled") {
+		t.Errorf("non-auto-merge PR body must not claim auto-merge: %q", manual)
+	}
+}
 
 func TestParseVerifierUpdates(t *testing.T) {
 	l := &MiddleManagerLoop{}

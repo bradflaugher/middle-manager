@@ -353,10 +353,7 @@ func (l *MiddleManagerLoop) MaybeCommitAndPR(iteration int, issueData map[string
 	if len(title) > 60 {
 		title = title[:60]
 	}
-	body := fmt.Sprintf(
-		"Automated PR from middle-manager loop iteration %d.\n\n**Do not merge without human review.**",
-		iteration,
-	)
+	body := prBody(iteration, !l.cfg.NoMerge)
 	baseBranch := l.cfg.BaseBranch
 	if baseBranch == "" {
 		baseBranch = gitops.DetectBaseBranch(l.cfg.Repo)
@@ -390,6 +387,24 @@ func (l *MiddleManagerLoop) MaybeCommitAndPR(iteration int, issueData map[string
 		}
 	}
 	return nil
+}
+
+// prBody builds the PR description. The merge guidance must match what the loop
+// actually does next: when auto-merge is enabled, telling humans "do not merge
+// without review" is contradictory — the orchestrator turns on GitHub auto-merge
+// moments later. So the note is conditional on the effective merge mode.
+func prBody(iteration int, autoMerge bool) string {
+	const intro = "Automated PR from middle-manager loop iteration %d, opened after the verifier step passed."
+	if autoMerge {
+		return fmt.Sprintf(
+			intro+"\n\n_Auto-merge is enabled — GitHub will merge this automatically once required status checks pass._",
+			iteration,
+		)
+	}
+	return fmt.Sprintf(
+		intro+"\n\n**Do not merge without human review.**",
+		iteration,
+	)
 }
 
 // ParseVerifierUpdates extracts the verifier's verdict from its output. If both

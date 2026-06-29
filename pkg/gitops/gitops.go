@@ -89,12 +89,16 @@ func DetectBaseBranch(repo string) string {
 			return candidate
 		}
 	}
+	// Fall back to the remote's default branch, but return the SHORT name (never
+	// "origin/main"): callers check it out and pull it, and `git checkout
+	// origin/main` would detach HEAD. ensureBranch handles the case where only
+	// the remote-tracking ref exists locally.
 	if originHead, _, code, err := RunGit(repo, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"); err == nil && code == 0 && originHead != "" {
-		return originHead
+		return strings.TrimPrefix(originHead, "origin/")
 	}
 	for _, candidate := range []string{"origin/dev", "origin/main", "origin/master"} {
 		if RefExists(repo, candidate) {
-			return candidate
+			return strings.TrimPrefix(candidate, "origin/")
 		}
 	}
 	if cb, err := CurrentBranch(repo); err == nil && cb != "" {
@@ -141,7 +145,13 @@ func ensureBranch(repo string, branch string, baseBranch string) (string, error)
 	}
 
 	if baseBranch != "" && !RefExists(repo, baseBranch) {
-		return branch, fmt.Errorf("base branch %q was not found in %s; pass --base-branch or check out the intended base branch before running mm", baseBranch, repo)
+		// The base may exist only as a remote-tracking ref (fresh fetch, no local
+		// branch yet) — branch off that rather than failing.
+		if RefExists(repo, "origin/"+baseBranch) {
+			baseBranch = "origin/" + baseBranch
+		} else {
+			return branch, fmt.Errorf("base branch %q was not found in %s; pass --base-branch or check out the intended base branch before running mm", baseBranch, repo)
+		}
 	}
 
 	cmdArgs := []string{"checkout", "-b", branch}
@@ -210,9 +220,14 @@ func GHAvailable() bool {
 	return err == nil
 }
 
-func FetchIssue(repo string, issueRef string) map[string]string {
-	if !GHAvailable() {
-		return map[string]string{"number": issueRef, "title": "", "body": "", "url": issueRef}
+// FetchIssue resolves issue metadata for the given ref. On any failure it
+// returns the best-effort number with EMPTY title/body plus a non-nil error —
+// it never launders gh stderr into the body, which would otherwise be fed to the
+// agents as if it were the issue description. Callers should treat a non-nil
+// error as "issue context unavailable".
+func FetchIssue(repo string, issueRef string) (map[string]string, error) {
+	if strings.TrimSpace(issueRef) == "" {
+		return map[string]string{"number": "", "title": "", "body": "", "url": ""}, nil
 	}
 	re := regexp.MustCompile(`(\d+)$`)
 	m := re.FindStringSubmatch(issueRef)
@@ -221,13 +236,18 @@ func FetchIssue(repo string, issueRef string) map[string]string {
 		number = m[1]
 	}
 
+	if !GHAvailable() {
+		return map[string]string{"number": number, "title": "", "body": "", "url": issueRef}, fmt.Errorf("gh CLI not available")
+	}
+
 	cmd := exec.Command("gh", "issue", "view", number, "--json", "number,title,body,url")
 	cmd.Dir = repo
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return map[string]string{"number": number, "title": "", "body": stderr.String(), "url": issueRef}
+		return map[string]string{"number": number, "title": "", "body": "", "url": issueRef},
+			fmt.Errorf("gh issue view %s: %s", number, strings.TrimSpace(stderr.String()))
 	}
 
 	var data struct {
@@ -237,7 +257,8 @@ func FetchIssue(repo string, issueRef string) map[string]string {
 		URL    string `json:"url"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &data); err != nil {
-		return map[string]string{"number": number, "title": "", "body": stdout.String(), "url": issueRef}
+		return map[string]string{"number": number, "title": "", "body": "", "url": issueRef},
+			fmt.Errorf("parse gh issue view %s: %w", number, err)
 	}
 
 	return map[string]string{
@@ -245,7 +266,7 @@ func FetchIssue(repo string, issueRef string) map[string]string {
 		"title":  data.Title,
 		"body":   data.Body,
 		"url":    data.URL,
-	}
+	}, nil
 }
 
 func ListIssues(repo string, label, author string, limit int, state string) []map[string]string {
@@ -331,8 +352,16 @@ func CloseIssue(repo string, number string, comment string, dryRun bool) bool {
 	return true
 }
 
-func CheckoutDefaultBranch(repo string) {
-	for _, candidate := range []string{"main", "master"} {
+// CheckoutDefaultBranch checks out the configured base branch when given one,
+// falling back to the usual dev/main/master candidates. Without this it would
+// blindly land on main/master even when the repo's base is e.g. "dev".
+func CheckoutDefaultBranch(repo string, baseBranch string) {
+	candidates := []string{}
+	if b := strings.TrimPrefix(strings.TrimSpace(baseBranch), "origin/"); b != "" {
+		candidates = append(candidates, b)
+	}
+	candidates = append(candidates, "dev", "main", "master")
+	for _, candidate := range candidates {
 		_, _, code, _ := RunGit(repo, "rev-parse", "--verify", candidate)
 		if code == 0 {
 			_, _, _, _ = RunGit(repo, "checkout", candidate)
@@ -341,27 +370,23 @@ func CheckoutDefaultBranch(repo string) {
 	}
 }
 
-func CreatePR(repo string, title, body, branch, issueNumber string, dryRun bool) (string, error) {
+// CreatePR opens a PR for branch via gh. When issueNumber is a positive integer
+// a "Closes #N" line is appended to the body so GitHub links and auto-closes the
+// issue once the PR merges — `gh pr create` has NO --issue flag, so this is the
+// only supported linking mechanism. When baseBranch is set the PR targets it
+// explicitly instead of relying on the repository's default branch.
+func CreatePR(repo string, title, body, branch, baseBranch, issueNumber string, dryRun bool) (string, error) {
+	body = AppendCloses(body, issueNumber)
+	args := []string{"pr", "create", "--head", branch, "--title", title, "--body", body}
+	if base := strings.TrimPrefix(strings.TrimSpace(baseBranch), "origin/"); base != "" {
+		args = append(args, "--base", base)
+	}
 	if dryRun {
-		fmt.Printf("[dry-run] gh pr create --head %s --title %q\n", branch, title)
+		fmt.Printf("[dry-run] gh %s\n", strings.Join(args, " "))
 		return "", nil
 	}
 	if !GHAvailable() {
 		return "", fmt.Errorf("gh CLI not available; skipping PR creation")
-	}
-	args := []string{"pr", "create", "--head", branch, "--title", title, "--body", body}
-	if issueNumber != "" {
-		// Verify if issue number is numeric
-		isNumeric := true
-		for _, r := range issueNumber {
-			if r < '0' || r > '9' {
-				isNumeric = false
-				break
-			}
-		}
-		if isNumeric {
-			args = append(args, "--issue", issueNumber)
-		}
 	}
 	cmd := exec.Command("gh", args...)
 	cmd.Dir = repo
@@ -369,9 +394,39 @@ func CreatePR(repo string, title, body, branch, issueNumber string, dryRun bool)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("%s", strings.TrimSpace(stderr.String()))
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = strings.TrimSpace(stdout.String())
+		}
+		return "", fmt.Errorf("%s", detail)
 	}
 	return strings.TrimSpace(stdout.String()), nil
+}
+
+// AppendCloses appends a GitHub "Closes #N" auto-link line to a PR body when
+// issueNumber is a positive integer, so merging the PR closes the issue. It is a
+// no-op for empty/non-numeric refs.
+func AppendCloses(body, issueNumber string) string {
+	if !isNumeric(issueNumber) {
+		return body
+	}
+	body = strings.TrimRight(body, "\n")
+	if body != "" {
+		body += "\n\n"
+	}
+	return body + fmt.Sprintf("Closes #%s", issueNumber)
+}
+
+func isNumeric(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // PullRequest is a normalized view of an open PR for the merge feature.
@@ -526,6 +581,62 @@ func rollupChecksState(checks []prCheck) string {
 		default:
 			return "failing" // FAILURE, ERROR, CANCELLED, TIMED_OUT, ACTION_REQUIRED, STARTUP_FAILURE
 		}
+	}
+	if pending {
+		return "pending"
+	}
+	return "passing"
+}
+
+// RequiredChecksState reports the combined state of ONLY the branch-protection
+// required status checks for a PR: "passing", "pending", "failing", or "none"
+// (the repo defines no required checks / none are reported yet). It lets
+// `mm merge` ignore non-blocking checks and merge as soon as the required ones
+// are green — GitHub itself then reports such a PR as UNSTABLE (still mergeable).
+func RequiredChecksState(repo string, prNumber int) string {
+	if !GHAvailable() {
+		return "none"
+	}
+	cmd := exec.Command("gh", "pr", "checks", fmt.Sprintf("%d", prNumber), "--required", "--json", "bucket")
+	cmd.Dir = repo
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	// gh exits non-zero when checks are pending/failing (and when there are no
+	// required checks), so the exit code is not a reliable signal — parse the
+	// JSON instead. Empty/unparseable output means "no required checks".
+	_ = cmd.Run()
+	out := strings.TrimSpace(stdout.String())
+	if out == "" {
+		return "none"
+	}
+	var checks []struct {
+		Bucket string `json:"bucket"`
+	}
+	if err := json.Unmarshal([]byte(out), &checks); err != nil {
+		return "none"
+	}
+	buckets := make([]string, 0, len(checks))
+	for _, c := range checks {
+		buckets = append(buckets, c.Bucket)
+	}
+	return requiredBucketState(buckets)
+}
+
+// requiredBucketState reduces gh's per-check `bucket` values to a single state.
+// Buckets are one of pass|fail|pending|skipping|cancel.
+func requiredBucketState(buckets []string) string {
+	if len(buckets) == 0 {
+		return "none"
+	}
+	pending := false
+	for _, b := range buckets {
+		switch strings.ToLower(b) {
+		case "fail", "cancel":
+			return "failing"
+		case "pending":
+			pending = true
+		}
+		// "pass" and "skipping" count as satisfied.
 	}
 	if pending {
 		return "pending"

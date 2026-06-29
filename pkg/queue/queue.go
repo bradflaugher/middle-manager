@@ -16,16 +16,22 @@ import (
 type IssueQueueRunner struct {
 	cfg     *config.LoopConfig
 	logPath string
+	// baseStateDir is the top-level state dir captured once, before any per-issue
+	// override. ResetIssueState derives each issue dir from this so they sit side
+	// by side (issues/1, issues/2, …) instead of nesting under one another.
+	baseStateDir string
 }
 
 func NewIssueQueueRunner(cfg *config.LoopConfig) (*IssueQueueRunner, error) {
 	if cfg.IssueQueue == nil {
 		return nil, fmt.Errorf("issue_queue config required")
 	}
-	logPath := filepath.Join(cfg.StatePath(), "queue.log")
+	baseStateDir := cfg.StatePath()
+	logPath := filepath.Join(baseStateDir, "queue.log")
 	return &IssueQueueRunner{
-		cfg:     cfg,
-		logPath: logPath,
+		cfg:          cfg,
+		logPath:      logPath,
+		baseStateDir: baseStateDir,
 	}, nil
 }
 
@@ -52,14 +58,16 @@ func (r *IssueQueueRunner) Log(msg string, colorCode string) {
 }
 
 func (r *IssueQueueRunner) ResetIssueState(issue map[string]string) {
-	state := r.cfg.StatePath()
 	number := issue["number"]
-	issueDir := filepath.Join(state, "issues", number)
+	issueDir := filepath.Join(r.baseStateDir, "issues", number)
 	_ = os.MkdirAll(issueDir, 0755)
 
-	// Override config state
+	// Per-issue overrides on the shared config. Mission is cleared so the loop
+	// re-derives an effective mission from THIS issue's title — otherwise issue N
+	// would inherit issue N-1's derived mission.
 	r.cfg.StateDir = issueDir
 	r.cfg.Issue = number
+	r.cfg.Mission = ""
 }
 
 func (r *IssueQueueRunner) Run() int {
@@ -83,6 +91,14 @@ func (r *IssueQueueRunner) Run() int {
 			if baseBranch == "" {
 				baseBranch = gitops.DetectBaseBranch(r.cfg.Repo)
 			}
+			// A prior issue that failed mid-loop can leave the tree dirty; those
+			// edits would otherwise ride onto the next issue's branch and PR. This
+			// repo is mm-managed, so discard them before switching base.
+			if gitops.HasChanges(r.cfg.Repo) {
+				r.Log("Discarding uncommitted leftovers from the previous task...", colors.Yellow)
+				_, _, _, _ = gitops.RunGit(r.cfg.Repo, "reset", "--hard")
+				_, _, _, _ = gitops.RunGit(r.cfg.Repo, "clean", "-fd")
+			}
 			r.Log(fmt.Sprintf("Checking out and pulling latest from base branch %q...", baseBranch), colors.Cyan)
 			_, _, codeCheckout, _ := gitops.RunGit(r.cfg.Repo, "checkout", baseBranch)
 			if codeCheckout != 0 {
@@ -105,7 +121,11 @@ func (r *IssueQueueRunner) Run() int {
 			if r.cfg.IssueQueue.CloseOnSuccess {
 				comment := r.cfg.IssueQueue.CloseComment
 				if comment == "" {
-					comment = "Closed by middle-manager — fix verified and PR opened."
+					if result.PRURL != "" {
+						comment = "Closed by middle-manager — fix verified and PR opened."
+					} else {
+						comment = "Closed by middle-manager — fix verified and pushed to a branch (no PR opened)."
+					}
 				}
 				if result.PRURL != "" {
 					comment = fmt.Sprintf("%s\n\nPR: %s", comment, result.PRURL)

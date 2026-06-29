@@ -1,6 +1,7 @@
 package gitops_test
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -77,6 +78,80 @@ func TestIsSafeToMerge(t *testing.T) {
 				t.Errorf("IsSafeToMerge() = %v (%s), want %v", got, reason, tt.wantSafe)
 			}
 		})
+	}
+}
+
+func TestAppendCloses(t *testing.T) {
+	tests := []struct {
+		name        string
+		body        string
+		issueNumber string
+		want        string
+	}{
+		{"numeric appends closes", "PR body.", "42", "PR body.\n\nCloses #42"},
+		{"trims trailing newlines first", "PR body.\n\n", "7", "PR body.\n\nCloses #7"},
+		{"empty body just closes", "", "13", "Closes #13"},
+		{"empty issue is noop", "PR body.", "", "PR body."},
+		{"non-numeric issue is noop", "PR body.", "feature/x", "PR body."},
+		{"url ref is noop (caller passes numbers)", "PR body.", "#42", "PR body."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := gitops.AppendCloses(tt.body, tt.issueNumber); got != tt.want {
+				t.Errorf("AppendCloses(%q, %q) = %q, want %q", tt.body, tt.issueNumber, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRequiredBucketState(t *testing.T) {
+	tests := []struct {
+		name    string
+		buckets []string
+		want    string
+	}{
+		{"no required checks", nil, "none"},
+		{"all pass", []string{"pass", "pass"}, "passing"},
+		{"pass and skip", []string{"pass", "skipping"}, "passing"},
+		{"any pending waits", []string{"pass", "pending"}, "pending"},
+		{"any fail short-circuits", []string{"pass", "pending", "fail"}, "failing"},
+		{"cancel counts as failing", []string{"cancel"}, "failing"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := gitops.RequiredBucketStateForTest(tt.buckets); got != tt.want {
+				t.Errorf("requiredBucketState(%v) = %q, want %q", tt.buckets, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCreatePRDryRunHasBaseAndCloses(t *testing.T) {
+	// Dry-run prints the exact gh command it WOULD run. Capture it and assert the
+	// invalid --issue flag is gone, --base is passed, and the issue is linked via
+	// the body instead.
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stdout
+	os.Stdout = w
+	_, prErr := gitops.CreatePR("/tmp", "title", "body", "mm/issue-42", "dev", "42", true)
+	_ = w.Close()
+	os.Stdout = orig
+	if prErr != nil {
+		t.Fatalf("dry-run CreatePR returned error: %v", prErr)
+	}
+	out, _ := io.ReadAll(r)
+	got := string(out)
+	if strings.Contains(got, "--issue") {
+		t.Errorf("dry-run command still uses the invalid --issue flag: %s", got)
+	}
+	if !strings.Contains(got, "--base dev") {
+		t.Errorf("dry-run command missing --base dev: %s", got)
+	}
+	if !strings.Contains(got, "Closes #42") {
+		t.Errorf("dry-run command missing 'Closes #42' issue link in body: %s", got)
 	}
 }
 

@@ -364,7 +364,7 @@ func (m *WizardModel) nextStep() (tea.Model, tea.Cmd) {
 	case stateQueueFilters:
 		val := strings.TrimSpace(m.textInput.Value())
 		if m.cfg.IssueQueue == nil {
-			m.cfg.IssueQueue = &config.IssueQueueConfig{State: "open", Limit: 20, CloseOnSuccess: true}
+			m.cfg.IssueQueue = &config.IssueQueueConfig{State: "open", Limit: 20, CloseOnSuccess: false}
 		}
 		if m.queueLabel == "" && m.queueAuthor == "" && m.queueLimit == "" {
 			m.queueLabel = val
@@ -581,6 +581,15 @@ func (m *WizardModel) confirmView() string {
 	}
 	if m.cfg.Issue != "" {
 		b.WriteString(row("issue", m.cfg.Issue))
+	}
+	if m.cfg.IssueQueue != nil {
+		if m.cfg.IssueQueue.Label != "" {
+			b.WriteString(row("label", m.cfg.IssueQueue.Label))
+		}
+		if m.cfg.IssueQueue.Author != "" {
+			b.WriteString(row("author", m.cfg.IssueQueue.Author))
+		}
+		b.WriteString(row("max issues", strconv.Itoa(m.cfg.IssueQueue.Limit)))
 	}
 	b.WriteString(row("steps", fmt.Sprintf("%d  (%s)", m.cfg.Steps, strings.Join(m.cfg.ActiveSteps(), " → "))))
 	b.WriteString(row("agents", fmt.Sprintf("%s / %s / %s / %s", m.cfg.Discover.Agent, m.cfg.Execute.Agent, m.cfg.Verify.Agent, m.cfg.Commit.Agent)))

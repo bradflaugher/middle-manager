@@ -64,6 +64,12 @@ You are the **Programmer** agent. Implement the feature or fix described in the 
 ## Repository
 ` + "`" + `{repo}` + "`" + `
 
+## GitHub Issue (if applicable)
+- Number: {issue_number}
+- Title: {issue_title}
+- Body:
+{issue_body}
+
 ## Discovery Scoping Summary (if any)
 {discover_output}
 
@@ -90,6 +96,12 @@ You are the **Critic**. Audit the work from the last execution step.
 
 ## Repository
 ` + "`" + `{repo}` + "`" + `
+
+## GitHub Issue (if applicable)
+- Number: {issue_number}
+- Title: {issue_title}
+- Body:
+{issue_body}
 
 ## Test / build output
 {test_output}
@@ -127,6 +139,12 @@ You are the **Ship** agent. Persist learnings and commit verified work.
 
 ## Completed mission
 {mission}
+
+## GitHub Issue (if applicable)
+- Number: {issue_number}
+- Title: {issue_title}
+- Body:
+{issue_body}
 
 ## Test output
 {test_output}

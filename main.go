@@ -328,6 +328,13 @@ func cmdMerge(cfg *config.LoopConfig) {
 		mergedCount := 0
 
 		for _, pr := range mmPrs {
+			// Wait only on the repo's REQUIRED status checks; ignore non-blocking
+			// ones (a non-required job that is still running or red must not hold up
+			// the merge). If the repo defines no required checks, fall back to the
+			// full check rollup so we don't merge over an unprotected repo's CI.
+			if reqState := gitops.RequiredChecksState(cfg.Repo, pr.Number); reqState != "none" {
+				pr.ChecksState = reqState
+			}
 			safe, reason := pr.IsSafeToMerge(true) // require checks to pass
 			if safe {
 				fmt.Printf("PR #%d (%s) targeting %q is green. Merging...\n", pr.Number, pr.Title, pr.BaseRef)

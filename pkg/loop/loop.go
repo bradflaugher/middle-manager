@@ -270,7 +270,11 @@ func (l *MiddleManagerLoop) RunStep(step string, iteration int, issueData map[st
 func (l *MiddleManagerLoop) MaybeCommitAndPR(iteration int, issueData map[string]string) {
 	if l.cfg.Steps < 4 || !l.cfg.Commit.Enabled {
 		if gitops.HasChanges(l.cfg.Repo) && !l.cfg.DryRun {
-			msg := fmt.Sprintf("middle-manager: iteration %d — %s", iteration, l.TopPlanItem())
+			subject := l.TopPlanItem()
+			if subject == "" && issueData["number"] != "" {
+				subject = "issue #" + issueData["number"]
+			}
+			msg := fmt.Sprintf("middle-manager: iteration %d — %s", iteration, subject)
 			if len(msg) > 72 {
 				msg = msg[:72]
 			}
@@ -319,15 +323,22 @@ func (l *MiddleManagerLoop) MaybeCommitAndPR(iteration int, issueData map[string
 			"Automated PR from middle-manager loop iteration %d.\n\n**Do not merge without human review.**",
 			iteration,
 		)
+		baseBranch := l.cfg.BaseBranch
+		if baseBranch == "" {
+			baseBranch = gitops.DetectBaseBranch(l.cfg.Repo)
+		}
 		prURL, err := gitops.CreatePR(
 			l.cfg.Repo,
 			title,
 			body,
 			branch,
+			baseBranch,
 			issueData["number"],
 			l.cfg.DryRun,
 		)
-		if err == nil && prURL != "" {
+		if err != nil {
+			l.Log(fmt.Sprintf("⚠️ PR creation failed (branch %q is pushed; open the PR manually): %v", branch, err), colors.Yellow)
+		} else if prURL != "" {
 			l.lastPRURL = prURL
 			l.Log(fmt.Sprintf("PR created: %s", prURL), colors.Green)
 
@@ -626,7 +637,20 @@ func (l *MiddleManagerLoop) RunUntilComplete() (*LoopResult, error) {
 		l.Log(fmt.Sprintf("Started loop on branch %q off base %q", branch, baseBranch), "")
 	}
 
-	issueData := gitops.FetchIssue(l.cfg.Repo, l.cfg.Issue)
+	issueData, issueErr := gitops.FetchIssue(l.cfg.Repo, l.cfg.Issue)
+	if issueErr != nil && l.cfg.Issue != "" {
+		l.Log(fmt.Sprintf("⚠️ Could not fetch issue %q: %v — proceeding with the issue number only", l.cfg.Issue, issueErr), colors.Yellow)
+	}
+	// In issue/queue mode the operator gives no --mission; derive an effective one
+	// from the issue so the PR title, commit message, summary, and the {mission}
+	// rendered into every step prompt are meaningful instead of blank.
+	if l.cfg.Mission == "" && issueData["title"] != "" {
+		if issueData["number"] != "" {
+			l.cfg.Mission = fmt.Sprintf("#%s %s", issueData["number"], issueData["title"])
+		} else {
+			l.cfg.Mission = issueData["title"]
+		}
+	}
 
 	// Start resources tracking goroutine
 	if !l.cfg.StreamOutput {
@@ -665,15 +689,20 @@ func (l *MiddleManagerLoop) ResetLoopState() {
 	_ = os.RemoveAll(filepath.Join(state, "issues"))
 
 	if gitops.RepoIsGit(l.cfg.Repo) {
-		gitops.CheckoutDefaultBranch(l.cfg.Repo)
-		// Clean up MM loop branches
-		branches, _, _, _ := gitops.RunGit(l.cfg.Repo, "branch")
-		for _, b := range strings.Split(branches, "\n") {
-			b = strings.TrimSpace(b)
-			b = strings.TrimPrefix(b, "*")
-			b = strings.TrimSpace(b)
-			if strings.HasPrefix(b, l.cfg.BranchPrefix+"/loop-") || strings.HasPrefix(b, l.cfg.BranchPrefix+"/issue-") {
-				_, _, _, _ = gitops.RunGit(l.cfg.Repo, "branch", "-D", b)
+		gitops.CheckoutDefaultBranch(l.cfg.Repo, l.cfg.BaseBranch)
+		// In issue/queue mode every issue gets its own mm/issue-<n> branch and a
+		// queue drains many of them in one run (each with Fresh=true). Deleting by
+		// prefix here would nuke sibling issues' branches mid-drain, so only sweep
+		// stale branches for the single-mission feature/repair flows.
+		if l.cfg.Mode != "issue" && l.cfg.Mode != "queue" {
+			branches, _, _, _ := gitops.RunGit(l.cfg.Repo, "branch")
+			for _, b := range strings.Split(branches, "\n") {
+				b = strings.TrimSpace(b)
+				b = strings.TrimPrefix(b, "*")
+				b = strings.TrimSpace(b)
+				if strings.HasPrefix(b, l.cfg.BranchPrefix+"/loop-") || strings.HasPrefix(b, l.cfg.BranchPrefix+"/issue-") {
+					_, _, _, _ = gitops.RunGit(l.cfg.Repo, "branch", "-D", b)
+				}
 			}
 		}
 	}

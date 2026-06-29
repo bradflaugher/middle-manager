@@ -69,7 +69,7 @@ func NewDefaultConfig() *LoopConfig {
 		StreamOutput:    false,
 		BatchSize:       1,
 		Fresh:           true,
-		BinaryOverrides:    make(map[string]string),
+		BinaryOverrides: make(map[string]string),
 		Discover: StepConfig{
 			Agent:   "claude",
 			Enabled: true,
@@ -340,6 +340,10 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 	for i := 0; i < len(restArgs); i++ {
 		arg := restArgs[i]
 		switch {
+		case (arg == "--repo" || arg == "-C" || arg == "--config") && i+1 < len(restArgs):
+			// Already consumed in the pre-pass above; skip the flag AND its value
+			// here so the path isn't mistaken for a trailing mission prompt.
+			i++
 		case arg == "--steps" && i+1 < len(restArgs):
 			steps, _ := strconv.Atoi(restArgs[i+1])
 			cfg.Steps = steps
@@ -375,33 +379,33 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 			cfg.Fresh = false
 		case arg == "--label" && i+1 < len(restArgs):
 			if cfg.IssueQueue == nil {
-				cfg.IssueQueue = &IssueQueueConfig{State: "open", Limit: 20, CloseOnSuccess: true}
+				cfg.IssueQueue = &IssueQueueConfig{State: "open", Limit: 20, CloseOnSuccess: false}
 			}
 			cfg.IssueQueue.Label = restArgs[i+1]
 			cfg.Mode = "queue"
 			i++
 		case arg == "--author" && i+1 < len(restArgs):
 			if cfg.IssueQueue == nil {
-				cfg.IssueQueue = &IssueQueueConfig{State: "open", Limit: 20, CloseOnSuccess: true}
+				cfg.IssueQueue = &IssueQueueConfig{State: "open", Limit: 20, CloseOnSuccess: false}
 			}
 			cfg.IssueQueue.Author = restArgs[i+1]
 			cfg.Mode = "queue"
 			i++
 		case arg == "--issue-limit" && i+1 < len(restArgs):
 			if cfg.IssueQueue == nil {
-				cfg.IssueQueue = &IssueQueueConfig{State: "open", Limit: 20, CloseOnSuccess: true}
+				cfg.IssueQueue = &IssueQueueConfig{State: "open", Limit: 20, CloseOnSuccess: false}
 			}
 			limit, _ := strconv.Atoi(restArgs[i+1])
 			cfg.IssueQueue.Limit = limit
 			i++
 		case arg == "--close-issues":
 			if cfg.IssueQueue == nil {
-				cfg.IssueQueue = &IssueQueueConfig{State: "open", Limit: 20, CloseOnSuccess: true}
+				cfg.IssueQueue = &IssueQueueConfig{State: "open", Limit: 20, CloseOnSuccess: false}
 			}
 			cfg.IssueQueue.CloseOnSuccess = true
 		case arg == "--no-close-issues":
 			if cfg.IssueQueue == nil {
-				cfg.IssueQueue = &IssueQueueConfig{State: "open", Limit: 20, CloseOnSuccess: true}
+				cfg.IssueQueue = &IssueQueueConfig{State: "open", Limit: 20, CloseOnSuccess: false}
 			}
 			cfg.IssueQueue.CloseOnSuccess = false
 		case arg == "--wizard":
@@ -462,8 +466,6 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 			cfg.Mission = promptText
 		}
 	}
-
-
 
 	if command == "quick" {
 		cfg.Steps = 3

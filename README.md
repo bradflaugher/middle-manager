@@ -10,6 +10,20 @@ Each agent runs as its own CLI in plain headless mode, so it uses whatever login
 
 ---
 
+## But Why?
+
+**Get your money's worth out of the models you already pay for.** Got a subscription you want to burn down? Put it on the grunt work in a loop and have a *better* model check it. middle-manager lets you assign a different model to each step and run them in the order that fits your budget and trust:
+
+- An **open-source or cheap model executes**, and a **Claude model verifies** its work.
+- A **big, expensive model does only the planning and execution**, while cheaper agents handle the rest.
+- Whatever split you want — each step is just a coding CLI pointed at a model, dropped into the **discover → execute → verify → commit** order. The right model in the right seat.
+
+You set it up by configuring each coding agent to use the model you want, then assigning those agents to steps.
+
+**Closing issues is deterministic, not babysat.** Draining a queue, opening PRs, and closing issues runs as fixed, scripted logic — you're not paying an agent to sit and watch a queue. That's faster and cheaper than asking an LLM to mind the lifecycle.
+
+---
+
 ## Install (One-Liner)
 
 ```bash

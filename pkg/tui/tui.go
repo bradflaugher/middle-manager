@@ -364,7 +364,7 @@ func (m *WizardModel) nextStep() (tea.Model, tea.Cmd) {
 	case stateQueueFilters:
 		val := strings.TrimSpace(m.textInput.Value())
 		if m.cfg.IssueQueue == nil {
-			m.cfg.IssueQueue = &config.IssueQueueConfig{State: "open", Limit: 20, CloseOnSuccess: false}
+			m.cfg.IssueQueue = &config.IssueQueueConfig{State: "open", Limit: 20, CloseOnSuccess: true}
 		}
 		if m.queueLabel == "" && m.queueAuthor == "" && m.queueLimit == "" {
 			m.queueLabel = val

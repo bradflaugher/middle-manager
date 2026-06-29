@@ -379,33 +379,33 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 			cfg.Fresh = false
 		case arg == "--label" && i+1 < len(restArgs):
 			if cfg.IssueQueue == nil {
-				cfg.IssueQueue = &IssueQueueConfig{State: "open", Limit: 20, CloseOnSuccess: false}
+				cfg.IssueQueue = &IssueQueueConfig{State: "open", Limit: 20, CloseOnSuccess: true}
 			}
 			cfg.IssueQueue.Label = restArgs[i+1]
 			cfg.Mode = "queue"
 			i++
 		case arg == "--author" && i+1 < len(restArgs):
 			if cfg.IssueQueue == nil {
-				cfg.IssueQueue = &IssueQueueConfig{State: "open", Limit: 20, CloseOnSuccess: false}
+				cfg.IssueQueue = &IssueQueueConfig{State: "open", Limit: 20, CloseOnSuccess: true}
 			}
 			cfg.IssueQueue.Author = restArgs[i+1]
 			cfg.Mode = "queue"
 			i++
 		case arg == "--issue-limit" && i+1 < len(restArgs):
 			if cfg.IssueQueue == nil {
-				cfg.IssueQueue = &IssueQueueConfig{State: "open", Limit: 20, CloseOnSuccess: false}
+				cfg.IssueQueue = &IssueQueueConfig{State: "open", Limit: 20, CloseOnSuccess: true}
 			}
 			limit, _ := strconv.Atoi(restArgs[i+1])
 			cfg.IssueQueue.Limit = limit
 			i++
 		case arg == "--close-issues":
 			if cfg.IssueQueue == nil {
-				cfg.IssueQueue = &IssueQueueConfig{State: "open", Limit: 20, CloseOnSuccess: false}
+				cfg.IssueQueue = &IssueQueueConfig{State: "open", Limit: 20, CloseOnSuccess: true}
 			}
 			cfg.IssueQueue.CloseOnSuccess = true
 		case arg == "--no-close-issues":
 			if cfg.IssueQueue == nil {
-				cfg.IssueQueue = &IssueQueueConfig{State: "open", Limit: 20, CloseOnSuccess: false}
+				cfg.IssueQueue = &IssueQueueConfig{State: "open", Limit: 20, CloseOnSuccess: true}
 			}
 			cfg.IssueQueue.CloseOnSuccess = false
 		case arg == "--wizard":

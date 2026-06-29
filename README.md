@@ -12,9 +12,9 @@ Each agent runs as its own CLI in plain headless mode, so it uses whatever login
 
 ## But Why?
 
-**Get your money's worth out of the models you already pay for.** Got a subscription you want to burn down? Put it on the grunt work in a loop and have a *better* model check it. middle-manager lets you assign a different model to each step and run them in the order that fits your budget and trust:
+**Get the most out of every model — the ones you pay for and the ones you run for free.** Got a subscription you want to burn down, or a local model sitting idle? Put it on the grunt work in a loop and have a *better* model check it. middle-manager lets you assign a different model to each step and run them in the order that fits your budget and trust:
 
-- A **cheap or open-source model executes**, and a **stronger frontier model verifies** its work.
+- A **local or open-source model executes** for free, and a **stronger frontier model verifies** its work.
 - A **big, expensive model does only the planning and execution**, while cheaper agents handle the rest.
 - Whatever split you want — each step is just a coding CLI pointed at a model, dropped into the **discover → execute → verify → commit** order. The right model in the right seat.
 

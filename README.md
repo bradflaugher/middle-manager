@@ -89,10 +89,59 @@ mm
 | All bugs by user | `mm --label bug --author @someuser --close-issues` |
 | Good-first-issues sprint | `mm --label "good first issue" --issue-limit 10 --close-issues` |
 | Fix the codebase generally | `mm --mode repair` |
+| **Solo:** one agent does it all, wait for the PR to merge | `mm --issue 42 --solo` |
+| **Solo queue:** drain issues one merged PR at a time | `mm --label bug --solo --close-issues` |
+| **Worktree:** drain a queue into ONE mega PR | `mm --label bug --worktree --close-issues` |
+| Roll a **random** installed agent each iteration | `mm "…" --execute-agent random` |
 | Point at another repo | `mm quick "…" --repo ~/other-project` |
 | Pause between steps | `mm quick "…" -i` |
 
 State lives in `<repo>/.middle-manager/`. Issue queue state is per-issue under `.middle-manager/issues/<number>/`.
+
+---
+
+## Modes & Queue Strategies
+
+middle-manager has three ways to shape a run. Pick by what you're optimizing for.
+
+### 🎲 Random agent (the new default)
+
+In the wizard the default agent for every step is **`random`** (shown with a
+rainbow shimmer). At the start of **each iteration** it rolls one installed agent
+and uses it for that whole iteration — so the agent varies issue-to-issue and
+retry-to-retry, spreading work across every CLI you have logged in. Set it
+per-step on the CLI too: `--execute-agent random`. With nothing installed it
+fails closed with a clear message instead of guessing.
+
+### Loop shape: 4-step · 3-step · solo
+
+- **4 steps** (default) — `discover → execute → verify → commit`, opens a PR.
+- **3 steps** — `discover → execute → verify`, local commit, no PR agent.
+- **1 step — solo** (`--solo`) — **one agent does everything**: it scopes,
+  implements, runs the tests, self-reviews, and emits the `VERDICT`. mm still
+  owns git deterministically (commit, one PR, `Closes #N`, auto-merge) and then
+  **waits for that PR to actually merge** before returning. On its own it's a
+  hands-off "ship this issue" button; across a queue it **serializes** work so
+  each issue branches off a base that already contains the previous PR — no pile
+  of conflicting PRs.
+
+### Draining a GitHub issue queue
+
+Filter issues with `--label` / `--author` / `--issue-limit`, then choose a strategy:
+
+| Strategy | Flag | What you get |
+|----------|------|--------------|
+| Per-issue PRs (default) | _(none)_ | One PR per issue, opened back-to-back. Fast, but PRs can conflict. |
+| Solo serialized | `--solo` | One agent per issue; mm waits for each PR to merge before the next issue. No conflicts, slower (you wait on CI per issue). |
+| Worktree collapse | `--worktree` | Each issue is developed in its **own git worktree** off a frozen base, then mm merges the successful branches into one integration branch and opens a **single "mega" PR** that `Closes` every included issue. An agent resolves any merge conflicts (mm validates and commits; a branch it can't cleanly merge is dropped, not force-shipped). |
+
+`--solo` and `--worktree` are competing answers to "stop the conflicting-PR
+pile-up" and are mutually exclusive. Solo's wait is bounded by
+`--merge-timeout <minutes>` (default 60) — a PR that never goes green (failed
+required check, branch-protection review, conflict) stops the drain instead of
+hanging forever. Worktree keeps its scratch trees under
+`.middle-manager/worktrees/`; pass `--keep-worktrees` to leave them for
+inspection.
 
 ---
 

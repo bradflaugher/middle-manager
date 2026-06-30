@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -13,11 +14,33 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/lucasb-eyer/go-colorful"
 
 	"github.com/bradflaugher/middle-manager/pkg/agents"
 	"github.com/bradflaugher/middle-manager/pkg/config"
 	"github.com/bradflaugher/middle-manager/pkg/gitops"
 )
+
+// rainbowText renders s with a per-rune HSV gradient that scrolls with frame, so
+// the "random" agent reads as an animated rainbow in the wizard (issue #3). The
+// hue advances by rune index (a visible spread across the word) and by frame (so
+// it scrolls over time). Degrades to plain truecolor on terminals lipgloss can't
+// give full color to.
+func rainbowText(s string, frame int) string {
+	var b strings.Builder
+	for i, r := range []rune(s) {
+		hue := math.Mod(float64(frame)*8+float64(i)*36, 360)
+		c := colorful.Hsv(hue, 0.85, 1.0)
+		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(c.Hex())).Bold(true).Render(string(r)))
+	}
+	return b.String()
+}
+
+// agentCycleList is the wizard's per-step agent carousel: the "random" sentinel
+// first (the new default, issue #3), then the concrete roster.
+func agentCycleList() []string {
+	return append([]string{agents.RandomAgent}, agents.AgentNames...)
+}
 
 // ---------------------------------------------------------------------------
 // Palette & shared styles  (synthwave-ish, tuned for dark terminals)
@@ -227,9 +250,15 @@ func NewWizardModel(initialCfg *config.LoopConfig) *WizardModel {
 		initialCfg.Execute.Agent == def.Execute.Agent &&
 		initialCfg.Verify.Agent == def.Verify.Agent &&
 		initialCfg.Commit.Agent == def.Commit.Agent
+	// The new default in the picker is "random" — a fresh random installed agent
+	// per iteration (issue #3). Only applied for an untouched config; agents the
+	// user set explicitly (via --config or per-step flags) are respected.
 	if isDefaultAgents {
-		if detected := agents.AutodetectStepAgents(initialCfg.BinaryOverrides); len(agents.AvailableAgents(initialCfg.BinaryOverrides)) > 0 {
-			stepToAgent = detected
+		stepToAgent = map[string]string{
+			"discover": agents.RandomAgent,
+			"execute":  agents.RandomAgent,
+			"verify":   agents.RandomAgent,
+			"commit":   agents.RandomAgent,
 		}
 	}
 
@@ -245,18 +274,34 @@ func NewWizardModel(initialCfg *config.LoopConfig) *WizardModel {
 			"Batch-drain a filtered queue of GitHub issues",
 		},
 		stepToAgent:   stepToAgent,
-		stepsOptions:  []int{4, 3},
-		optionsList:   []string{"YOLO mode (auto-approve)", "Interactive pause between steps", "Allow fixing unrelated test failures", "Fresh run (reset loop state)", "Auto-merge PRs when green"},
-		optionsValues: []bool{initialCfg.Yolo, initialCfg.Interactive, initialCfg.FixUnrelatedTests, initialCfg.Fresh, !initialCfg.NoMerge},
+		stepsOptions:  []int{4, 3, 1},
+		optionsList:   []string{"YOLO mode (auto-approve)", "Interactive pause between steps", "Allow fixing unrelated test failures", "Fresh run (reset loop state)", "Auto-merge PRs when green", "Worktree collapse → one mega PR (queue only)"},
+		optionsValues: []bool{initialCfg.Yolo, initialCfg.Interactive, initialCfg.FixUnrelatedTests, initialCfg.Fresh, !initialCfg.NoMerge, initialCfg.Worktree},
 	}
 }
 
-func (m *WizardModel) Init() tea.Cmd { return textinput.Blink }
+type wizardTickMsg struct{}
+
+// wizardTick drives the rainbow animation at ~11fps — fast enough to read as
+// motion, slow enough not to burn CPU re-rendering the wizard tree.
+func wizardTick() tea.Cmd {
+	return tea.Tick(90*time.Millisecond, func(time.Time) tea.Msg { return wizardTickMsg{} })
+}
+
+func (m *WizardModel) Init() tea.Cmd { return tea.Batch(textinput.Blink, wizardTick()) }
 
 func (m *WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 
 	switch msg := msg.(type) {
+	case wizardTickMsg:
+		m.frame++
+		// Stop re-arming once the wizard is done/quitting so no ticker leaks past
+		// teardown.
+		if m.done || m.quitting {
+			return m, nil
+		}
+		return m, wizardTick()
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -441,6 +486,11 @@ func (m *WizardModel) nextStep() (tea.Model, tea.Cmd) {
 
 	case stateSteps:
 		m.cfg.Steps = m.stepsOptions[m.stepsIndex]
+		// 1 step == solo mode: one agent does everything and mm waits for the PR
+		// to merge (serializing a queue so issues never conflict). WaitForMerge
+		// tracks Solo so toggling solo off (back-navigation) doesn't strand it on.
+		m.cfg.Solo = m.cfg.Steps == 1
+		m.cfg.WaitForMerge = m.cfg.Solo
 		m.cfg.Commit.Enabled = m.cfg.Steps == 4
 		m.state = stateOptions
 
@@ -450,6 +500,11 @@ func (m *WizardModel) nextStep() (tea.Model, tea.Cmd) {
 		m.cfg.FixUnrelatedTests = m.optionsValues[2]
 		m.cfg.Fresh = m.optionsValues[3]
 		m.cfg.NoMerge = !m.optionsValues[4]
+		// Worktree collapse is a queue-only strategy and competes with solo; ignore
+		// the toggle outside queue mode or when solo is selected, so the wizard can
+		// never emit a config that Validate() would reject (which would hard-exit
+		// after the user already completed the whole wizard).
+		m.cfg.Worktree = m.optionsValues[5] && m.cfg.Mode == "queue" && !m.cfg.Solo
 		m.state = stateMaxIters
 		cmd = m.resetInput("Max iterations per task (default 10)")
 		m.textInput.SetValue("10")
@@ -537,24 +592,25 @@ func (m *WizardModel) prevStep() (tea.Model, tea.Cmd) {
 }
 
 func (m *WizardModel) cycleAgent(stepIdx, dir int) {
-	if len(agents.AgentNames) == 0 {
+	cycle := agentCycleList() // "random" + the concrete roster
+	if len(cycle) == 0 {
 		return
 	}
 	step := stepLabels[stepIdx]
 	current := m.stepToAgent[step]
 	idx, found := 0, false
-	for i, name := range agents.AgentNames {
+	for i, name := range cycle {
 		if name == current {
 			idx, found = i, true
 			break
 		}
 	}
-	// If the current agent isn't in the roster (e.g. a custom binary from
-	// config), snap to the first roster entry instead of jumping past it.
+	// If the current agent isn't in the carousel (e.g. a custom binary from
+	// config), snap to the first entry instead of jumping past it.
 	if found {
-		idx = wrap(idx+dir, len(agents.AgentNames))
+		idx = wrap(idx+dir, len(cycle))
 	}
-	m.stepToAgent[step] = agents.AgentNames[idx]
+	m.stepToAgent[step] = cycle[idx]
 }
 
 func (m *WizardModel) View() tea.View {
@@ -599,7 +655,7 @@ func (m *WizardModel) View() tea.View {
 	case stateAgents:
 		s.WriteString(stepHeader(5, "Agents per step"))
 		if m.customAgents {
-			s.WriteString("  Pick an agent for each step (←/→ to change):\n\n")
+			s.WriteString("  Pick an agent for each step (←/→ to change · " + rainbowText("random", m.frame) + " rolls a fresh one each iteration):\n\n")
 			for i, step := range stepLabels {
 				cursor := "  "
 				st := stFg
@@ -607,20 +663,25 @@ func (m *WizardModel) View() tea.View {
 					cursor = stMag.Render("❯ ")
 					st = stMag
 				}
-				s.WriteString(fmt.Sprintf("  %s%-12s %s\n", cursor, step+":", st.Render("◄ "+m.stepToAgent[step]+" ►")))
+				value := st.Render("◄ ") + m.renderAgent(m.stepToAgent[step], st) + st.Render(" ►")
+				s.WriteString(fmt.Sprintf("  %s%-12s %s\n", cursor, step+":", value))
 			}
 			s.WriteString("\n" + stDim.Render("  c: done customizing"))
 		} else {
-			s.WriteString("  Autodetected agents:\n\n")
+			s.WriteString("  Default is " + rainbowText("random", m.frame) + " — a fresh installed agent per iteration:\n\n")
 			for _, step := range stepLabels {
-				s.WriteString(fmt.Sprintf("  %-12s %s\n", step+":", stGreen.Render(m.stepToAgent[step])))
+				s.WriteString(fmt.Sprintf("  %-12s %s\n", step+":", m.renderAgent(m.stepToAgent[step], stGreen)))
 			}
 			s.WriteString("\n" + stDim.Render("  c: customize"))
 		}
 		s.WriteString("\n")
 	case stateSteps:
 		s.WriteString(stepHeader(6, "Loop shape"))
-		labels := []string{"4 steps  discover → execute → verify → commit  (opens PR)", "3 steps  discover → execute → verify  (local commit, no PR agent)"}
+		labels := []string{
+			"4 steps  discover → execute → verify → commit  (opens PR)",
+			"3 steps  discover → execute → verify  (local commit, no PR agent)",
+			"1 step   solo — one agent does it all, then mm waits for the PR to merge",
+		}
 		for i, label := range labels {
 			s.WriteString(radio(i == m.stepsIndex, label))
 		}
@@ -655,6 +716,15 @@ func (m *WizardModel) View() tea.View {
 	return altView(out)
 }
 
+// renderAgent renders one agent name, rainbow-animated when it's the "random"
+// sentinel and plainly styled otherwise.
+func (m *WizardModel) renderAgent(name string, st lipgloss.Style) string {
+	if name == agents.RandomAgent {
+		return rainbowText(name, m.frame)
+	}
+	return st.Render(name)
+}
+
 func (m *WizardModel) confirmView() string {
 	row := func(k, v string) string {
 		return fmt.Sprintf("  %s %s\n", stDim.Render(fmt.Sprintf("%-11s", k)), stFg.Render(v))
@@ -680,12 +750,22 @@ func (m *WizardModel) confirmView() string {
 		b.WriteString(row("max issues", strconv.Itoa(m.cfg.IssueQueue.Limit)))
 	}
 	b.WriteString(row("steps", fmt.Sprintf("%d  (%s)", m.cfg.Steps, strings.Join(m.cfg.ActiveSteps(), " → "))))
-	b.WriteString(row("agents", fmt.Sprintf("%s / %s / %s / %s", m.cfg.Discover.Agent, m.cfg.Execute.Agent, m.cfg.Verify.Agent, m.cfg.Commit.Agent)))
+	if m.cfg.Solo {
+		b.WriteString(row("solo agent", agentLabel(m.cfg.Execute.Agent)))
+	} else {
+		b.WriteString(row("agents", fmt.Sprintf("%s / %s / %s / %s", agentLabel(m.cfg.Discover.Agent), agentLabel(m.cfg.Execute.Agent), agentLabel(m.cfg.Verify.Agent), agentLabel(m.cfg.Commit.Agent))))
+	}
 	b.WriteString(row("yolo", boolStr(m.cfg.Yolo)))
 	b.WriteString(row("interactive", boolStr(m.cfg.Interactive)))
 	b.WriteString(row("fix tests", boolStr(m.cfg.FixUnrelatedTests)))
 	b.WriteString(row("fresh", boolStr(m.cfg.Fresh)))
 	b.WriteString(row("auto-merge", boolStr(!m.cfg.NoMerge)))
+	if m.cfg.Solo {
+		b.WriteString(row("wait merge", boolStr(m.cfg.WaitForMerge)))
+	}
+	if m.cfg.Mode == "queue" {
+		b.WriteString(row("worktree", boolStr(m.cfg.Worktree)))
+	}
 	b.WriteString(row("max iters", strconv.Itoa(m.cfg.MaxIterations)))
 	b.WriteString("\n  " + stGreen.Render("Press enter to launch the loop."))
 	return b.String()
@@ -721,6 +801,15 @@ func boolStr(b bool) string {
 		return stGreen.Render("on")
 	}
 	return stDim.Render("off")
+}
+
+// agentLabel styles an agent name for the (static) confirm screen — "random" in
+// violet so it stands out as the special sentinel without needing animation.
+func agentLabel(name string) string {
+	if name == agents.RandomAgent {
+		return stViol.Render(name)
+	}
+	return stFg.Render(name)
 }
 
 func RunWizardTUI(initialCfg *config.LoopConfig) (*config.LoopConfig, error) {

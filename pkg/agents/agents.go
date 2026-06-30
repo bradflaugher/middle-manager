@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +20,45 @@ import (
 
 // AgentNames is the ordered roster of coding-agent CLIs middle-manager can stack.
 var AgentNames = []string{"grok", "claude", "codex", "opencode", "agy", "crush"}
+
+// RandomAgent is the sentinel a step's Agent can hold to mean "pick a random
+// installed agent at runtime" (resolved per loop iteration, never per build).
+// It is intentionally NOT in AgentNames or AgentSpecs — it is never a real
+// binary, and every "is this a known agent?" guard must treat it specially.
+const RandomAgent = "random"
+
+// IsRandom reports whether an agent name is the random sentinel.
+func IsRandom(name string) bool { return name == RandomAgent }
+
+// PickRandomAgentFrom returns the agent at index idx (mod len) from pool after
+// dropping blanks and the random sentinel, or "" if the filtered pool is empty.
+// Splitting out the index keeps the random selection testable and panic-free
+// (it never calls rand.IntN on an empty slice).
+func PickRandomAgentFrom(pool []string, idx int) string {
+	filtered := make([]string, 0, len(pool))
+	for _, name := range pool {
+		if name == "" || IsRandom(name) {
+			continue
+		}
+		filtered = append(filtered, name)
+	}
+	if len(filtered) == 0 {
+		return ""
+	}
+	n := len(filtered)
+	return filtered[((idx%n)+n)%n]
+}
+
+// PickRandomAgent returns a uniformly-random installed/available agent, or ""
+// when none are installed. The global math/rand/v2 source is auto-seeded, so two
+// drains starting in the same second still diverge (no manual time-based seed).
+func PickRandomAgent(binaryOverrides map[string]string) string {
+	pool := AvailableAgents(binaryOverrides)
+	if len(pool) == 0 {
+		return ""
+	}
+	return PickRandomAgentFrom(pool, rand.IntN(len(pool)))
+}
 
 // AgentSpec describes how to invoke one coding-agent CLI in plain headless mode.
 //

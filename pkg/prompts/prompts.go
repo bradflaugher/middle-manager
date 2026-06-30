@@ -162,6 +162,83 @@ You are the **Ship** agent. Persist learnings and commit verified work.
 
 If there is nothing to commit, say so and exit cleanly.`
 
+const SoloTemplate = `# Solo Build — Iteration {iteration}
+
+You are the **only** agent on this task. There is no separate planner, verifier, or
+committer — you do everything end to end in this one step.
+
+## Mission
+{mission}
+
+## Repository
+` + "`" + `{repo}` + "`" + `
+
+## GitHub Issue (if applicable)
+- Number: {issue_number}
+- Title: {issue_title}
+- Body:
+{issue_body}
+
+## Repository memory (AGENTS.md / CLAUDE.md)
+{agent_memory}
+
+## Previous errors (if any)
+{error_log}
+
+## Your job
+
+1. **Scope** the change against the mission and the codebase (read before you edit).
+2. **Implement** the minimal correct change. Match existing style.
+3. **Run the tests / build yourself** and make them pass. Do NOT skip this — you are
+   your own verifier, so the project's correctness rests entirely on this step.
+4. **Self-review** the diff for bugs, security issues, and scope creep.
+5. Do **not** commit, push, open a PR, or merge — middle-manager does all git/PR work
+   deterministically right after this step (it commits, links ` + "`" + `Closes #{issue_number}` + "`" + `,
+   opens one PR, and waits for it to merge). Your job is the working-tree change only.
+
+## Output format
+
+End your response with EXACTLY one verdict line, as the very last line:
+
+` + "```" + `
+VERDICT: PASS
+` + "```" + `
+
+Emit ` + "`" + `VERDICT: PASS` + "`" + ` only if you implemented the mission AND the tests/build pass.
+Otherwise emit ` + "`" + `VERDICT: FAIL` + "`" + ` followed by what is still broken. A missing or
+ambiguous verdict is treated as FAIL — the work will not ship.`
+
+const CollapseTemplate = `# Collapse / Merge-Conflict Resolution
+
+You are resolving a Git **merge conflict** while middle-manager consolidates several
+independently-developed issue branches into one integration branch.
+
+## Repository (this is a git worktree on the integration branch)
+` + "`" + `{repo}` + "`" + `
+
+## Branch being merged
+{merge_branch}
+
+## Conflicted files (resolve every one)
+{conflict_files}
+
+## Repository memory (AGENTS.md / CLAUDE.md)
+{agent_memory}
+
+## Your job
+
+1. Open each conflicted file and resolve it so it integrates BOTH sides' intent —
+   keep both features working; do not blindly discard either side.
+2. Remove every conflict marker (` + "`<<<<<<<`" + `, ` + "`=======`" + `, ` + "`>>>>>>>`" + `). Make sure
+   the merged result still builds.
+3. Stage your resolutions with ` + "`" + `git add` + "`" + ` on the resolved files.
+4. **Do NOT run ` + "`" + `git commit` + "`" + `, ` + "`" + `git merge --continue` + "`" + `, ` + "`" + `git merge --abort` + "`" + `,
+   ` + "`" + `git push` + "`" + `, or ` + "`" + `git reset` + "`" + `.** middle-manager verifies there are no remaining
+   conflict markers and creates the merge commit itself.
+
+When every conflicted file is resolved and staged, stop. If a file genuinely cannot
+be reconciled, say so explicitly and leave it unstaged.`
+
 // LoadPrompt reads custom prompt file if it exists, otherwise returns the default embedded one.
 func LoadPrompt(repoPath, name string) string {
 	customPath := filepath.Join(repoPath, ".middle-manager", "prompts", name+".md")
@@ -180,6 +257,10 @@ func LoadPrompt(repoPath, name string) string {
 		return VerifyTemplate
 	case "commit":
 		return CommitTemplate
+	case "solo":
+		return SoloTemplate
+	case "collapse":
+		return CollapseTemplate
 	default:
 		return ""
 	}

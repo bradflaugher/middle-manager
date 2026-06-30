@@ -128,6 +128,10 @@ func cmdIssues(cfg *config.LoopConfig) {
 		os.Exit(1)
 	}
 	cfg.Mode = "queue"
+	if err := cfg.Validate(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 	runQueue(cfg)
 }
 
@@ -212,6 +216,11 @@ func cmdRun(cfg *config.LoopConfig) {
 			os.Exit(0)
 		}
 		cfg = wizardCfg
+	}
+
+	if err := cfg.Validate(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 
 	if cfg.Mode == "queue" && cfg.IssueQueue != nil {

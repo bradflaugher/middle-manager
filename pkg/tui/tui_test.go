@@ -377,6 +377,90 @@ func TestTerminalNoticeFiresOnce(t *testing.T) {
 	}
 }
 
+// The new default in the agent picker is "random" for every step (issue #3),
+// applied only when the incoming config is untouched.
+func TestWizardDefaultsToRandom(t *testing.T) {
+	m := NewWizardModel(config.NewDefaultConfig())
+	for _, step := range []string{"discover", "execute", "verify", "commit"} {
+		if m.stepToAgent[step] != "random" {
+			t.Errorf("default %s agent = %q, want random", step, m.stepToAgent[step])
+		}
+	}
+}
+
+// The agent carousel must include "random" first, then cycle through the roster.
+func TestCycleAgentIncludesRandom(t *testing.T) {
+	m := NewWizardModel(config.NewDefaultConfig())
+	m.stepToAgent["discover"] = "random"
+	m.cycleAgent(0, 1) // forward off "random" → first concrete agent
+	if m.stepToAgent["discover"] == "random" {
+		t.Fatal("cycling forward off random should move to a concrete agent")
+	}
+	m.cycleAgent(0, -1) // back → "random" again
+	if m.stepToAgent["discover"] != "random" {
+		t.Fatalf("cycling back should return to random, got %q", m.stepToAgent["discover"])
+	}
+}
+
+// Selecting the 1-step loop shape turns on solo mode (and its merge wait).
+func TestWizardSoloSelection(t *testing.T) {
+	m := NewWizardModel(config.NewDefaultConfig())
+	m.state = stateSteps
+	// stepsOptions is [4, 3, 1]; index 2 is solo.
+	m.stepsIndex = 2
+	m = sendW(m, keyEnter())
+	if !m.cfg.Solo {
+		t.Fatal("1-step selection did not enable Solo")
+	}
+	if !m.cfg.WaitForMerge {
+		t.Fatal("Solo must enable WaitForMerge")
+	}
+	if m.cfg.Commit.Enabled {
+		t.Fatal("Solo must disable the commit step")
+	}
+}
+
+// Regression: in queue mode, selecting solo (1 step) AND toggling the worktree
+// checkbox must NOT emit a Solo+Worktree config (which Validate rejects, hard-
+// exiting after the wizard). The worktree toggle is suppressed under solo.
+func TestWizardSoloSuppressesWorktree(t *testing.T) {
+	m := NewWizardModel(config.NewDefaultConfig())
+	m.cfg.Mode = "queue"
+	// Pick solo at the loop-shape step.
+	m.state = stateSteps
+	m.stepsIndex = 2 // [4,3,1] -> 1 == solo
+	m = sendW(m, keyEnter())
+	if !m.cfg.Solo {
+		t.Fatal("precondition: solo should be set")
+	}
+	// Now at stateOptions, turn the worktree checkbox on and advance.
+	m.state = stateOptions
+	m.optionsValues[5] = true
+	m = sendW(m, keyEnter())
+	if m.cfg.Worktree {
+		t.Fatal("worktree must be suppressed when solo is selected (would fail Validate)")
+	}
+	if err := m.cfg.Validate(); err != nil {
+		t.Fatalf("wizard produced a config Validate rejects: %v", err)
+	}
+}
+
+// rainbowText must produce visible, styled output (one ANSI-wrapped run per
+// rune) and stay rune-safe for multibyte input.
+func TestRainbowTextRenders(t *testing.T) {
+	out := rainbowText("random", 0)
+	if stripANSITest(out) != "random" {
+		t.Fatalf("rainbow stripped = %q, want random", stripANSITest(out))
+	}
+	if !strings.Contains(out, "\x1b[") {
+		t.Fatal("rainbow output carries no ANSI color")
+	}
+	// Different frames must differ (animation actually moves).
+	if rainbowText("random", 0) == rainbowText("random", 10) {
+		t.Fatal("rainbow did not change across frames")
+	}
+}
+
 // Explicitly-configured per-step agents must be respected, not autodetected over.
 func TestWizardRespectsConfiguredAgents(t *testing.T) {
 	cfg := config.NewDefaultConfig()

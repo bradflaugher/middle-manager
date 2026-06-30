@@ -73,6 +73,58 @@ func TestBuildCommandUnknownAgent(t *testing.T) {
 	}
 }
 
+func TestIsRandom(t *testing.T) {
+	if !IsRandom(RandomAgent) {
+		t.Error("RandomAgent must satisfy IsRandom")
+	}
+	for _, name := range AgentNames {
+		if IsRandom(name) {
+			t.Errorf("concrete agent %q must not be random", name)
+		}
+	}
+	if IsRandom("") {
+		t.Error("empty string is not random")
+	}
+}
+
+func TestPickRandomAgentFrom(t *testing.T) {
+	// Filters blanks and the sentinel; index wraps; empty pool -> "".
+	pool := []string{"", "claude", RandomAgent, "grok"}
+	// filtered = [claude, grok]
+	if got := PickRandomAgentFrom(pool, 0); got != "claude" {
+		t.Errorf("idx 0 = %q, want claude", got)
+	}
+	if got := PickRandomAgentFrom(pool, 1); got != "grok" {
+		t.Errorf("idx 1 = %q, want grok", got)
+	}
+	if got := PickRandomAgentFrom(pool, 2); got != "claude" {
+		t.Errorf("idx 2 (wrap) = %q, want claude", got)
+	}
+	if got := PickRandomAgentFrom(pool, -1); got != "grok" {
+		t.Errorf("idx -1 (wrap) = %q, want grok", got)
+	}
+	if got := PickRandomAgentFrom([]string{RandomAgent, ""}, 0); got != "" {
+		t.Errorf("pool with no concrete agents = %q, want empty", got)
+	}
+	if got := PickRandomAgentFrom(nil, 5); got != "" {
+		t.Errorf("nil pool = %q, want empty", got)
+	}
+}
+
+// PickRandomAgent must never panic and must always return either "" (nothing
+// installed) or a real installed agent — never the sentinel.
+func TestPickRandomAgentNeverReturnsSentinel(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		got := PickRandomAgent(nil)
+		if got == RandomAgent {
+			t.Fatal("PickRandomAgent returned the sentinel")
+		}
+		if got != "" && !AgentAvailable(got, "") {
+			t.Fatalf("PickRandomAgent returned %q which is not installed", got)
+		}
+	}
+}
+
 func TestWithRootSandbox(t *testing.T) {
 	has := func(env []string, want string) bool {
 		for _, e := range env {

@@ -3,6 +3,9 @@ package loop
 import (
 	"strings"
 	"testing"
+
+	"github.com/bradflaugher/middle-manager/pkg/agents"
+	"github.com/bradflaugher/middle-manager/pkg/config"
 )
 
 // The PR body's merge guidance must match the loop's actual merge behavior:
@@ -46,6 +49,40 @@ func TestParseVerifierUpdates(t *testing.T) {
 				t.Errorf("ParseVerifierUpdates(%q) = %q, want %q", c.in, got, c.want)
 			}
 		})
+	}
+}
+
+// resolveAgent must map the random sentinel to whatever was rolled for the
+// iteration, and pass concrete agents through unchanged.
+func TestResolveAgentRandom(t *testing.T) {
+	l := &MiddleManagerLoop{cfg: config.NewDefaultConfig()}
+	l.iterationAgent = "grok"
+
+	if got := l.resolveAgent(&config.StepConfig{Agent: agents.RandomAgent}); got != "grok" {
+		t.Errorf("random resolved to %q, want the iteration's grok", got)
+	}
+	if got := l.resolveAgent(&config.StepConfig{Agent: "claude"}); got != "claude" {
+		t.Errorf("explicit agent changed to %q, want claude", got)
+	}
+	// No agent rolled (nothing installed) → random resolves to empty.
+	l.iterationAgent = ""
+	if got := l.resolveAgent(&config.StepConfig{Agent: agents.RandomAgent}); got != "" {
+		t.Errorf("random with no roll = %q, want empty", got)
+	}
+}
+
+func TestPRNumberFromURL(t *testing.T) {
+	cases := map[string]int{
+		"https://github.com/o/r/pull/42": 42,
+		"https://github.com/o/r/pull/7":  7,
+		"":                               0,
+		"not-a-url":                      0,
+		"https://github.com/o/r/pull/x":  0,
+	}
+	for url, want := range cases {
+		if got := prNumberFromURL(url); got != want {
+			t.Errorf("prNumberFromURL(%q) = %d, want %d", url, got, want)
+		}
 	}
 }
 

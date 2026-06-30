@@ -2,11 +2,13 @@ package gitops
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
 	"regexp"
 	"strings"
+	"time"
 )
 
 type GitError struct {
@@ -722,6 +724,257 @@ func EnableAutoMerge(repo string, number int, method string, deleteBranch bool, 
 		return "", fmt.Errorf("%s", msg)
 	}
 	return strings.TrimSpace(stdout.String()), nil
+}
+
+// ---------------------------------------------------------------------------
+// Worktree-collapse mode (issue #1) — each issue is developed in its own git
+// worktree, then the branches are merged into one integration branch for a
+// single "mega" PR. mm owns every commit; an agent only resolves conflicts.
+// ---------------------------------------------------------------------------
+
+// RevParse resolves a ref (branch, tag, SHA) to a full commit SHA. Used to
+// freeze the base at drain start so every worktree branches off the SAME commit
+// and the later collapse merges are predictable.
+func RevParse(repo, ref string) (string, error) {
+	sha, _, _, err := RunGit(repo, "rev-parse", ref)
+	if err != nil {
+		return "", err
+	}
+	return sha, nil
+}
+
+// WorktreeAddBranch creates branch at startPoint and checks it out in a fresh
+// worktree at path. The branch must not already be checked out elsewhere.
+func WorktreeAddBranch(repo, path, branch, startPoint string) error {
+	_, stderr, code, err := RunGit(repo, "worktree", "add", "-b", branch, path, startPoint)
+	if err != nil || code != 0 {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("git worktree add -b %s failed: %s", branch, stderr)
+	}
+	return nil
+}
+
+// WorktreeRemove force-removes a worktree (force so a dirty leftover tree from a
+// failed issue still gets cleaned). Branches it held are preserved.
+func WorktreeRemove(repo, path string) error {
+	_, _, _, err := RunGit(repo, "worktree", "remove", "--force", path)
+	return err
+}
+
+// WorktreePrune drops administrative records for worktrees whose directories are
+// already gone, so a re-run doesn't trip over stale entries.
+func WorktreePrune(repo string) {
+	_, _, _, _ = RunGit(repo, "worktree", "prune")
+}
+
+// MergeNoCommit merges branch into the current worktree WITHOUT committing
+// (--no-ff so every issue stays an identifiable, revertable unit). It returns
+// conflicted=true when the merge left unmerged paths for an agent to resolve,
+// and upToDate=true when branch was already an ancestor (nothing to merge).
+func MergeNoCommit(repo, branch string) (conflicted bool, upToDate bool, err error) {
+	stdout, _, code, mergeErr := RunGit(repo, "merge", "--no-ff", "--no-commit", branch)
+	if code == 0 {
+		// Clean merge stopped before commit, OR nothing to do. Distinguish via
+		// MERGE_HEAD: absent means "already up to date".
+		if !RefExists(repo, "MERGE_HEAD") {
+			return false, true, nil
+		}
+		if strings.Contains(stdout, "Already up to date") {
+			return false, true, nil
+		}
+		return false, false, nil
+	}
+	// Non-zero with unmerged paths is the conflict case (an agent will resolve).
+	if len(UnmergedPaths(repo)) > 0 {
+		return true, false, nil
+	}
+	return false, false, mergeErr
+}
+
+// MergeInProgress reports whether a merge is mid-flight (MERGE_HEAD present) —
+// i.e. mm still owes the merge commit. False once the merge is committed or
+// aborted (e.g. if a conflict-resolution agent committed it itself).
+func MergeInProgress(repo string) bool {
+	return RefExists(repo, "MERGE_HEAD")
+}
+
+// UnmergedPaths lists files still in conflict (diff-filter=U).
+func UnmergedPaths(repo string) []string {
+	stdout, _, _, _ := RunGit(repo, "diff", "--name-only", "--diff-filter=U")
+	if strings.TrimSpace(stdout) == "" {
+		return nil
+	}
+	return strings.Split(stdout, "\n")
+}
+
+// StagedHasConflictMarkers reports whether the staged content still contains
+// leftover conflict markers — a fail-closed check before mm commits an
+// agent-resolved merge, so a half-resolved tree never lands in the mega PR.
+func StagedHasConflictMarkers(repo string) bool {
+	// `git diff --cached --check` exits non-zero when staged content has conflict
+	// markers (it also flags whitespace; we only treat marker hits as fatal).
+	stdout, _, code, _ := RunGit(repo, "diff", "--cached", "--check")
+	if code == 0 {
+		return false
+	}
+	return strings.Contains(stdout, "leftover conflict marker")
+}
+
+// CommitMerge stages everything and creates the (merge) commit. With MERGE_HEAD
+// present git records it as a merge commit; mm always owns this commit so a
+// flaky agent can't decide history.
+func CommitMerge(repo, message string) error {
+	if _, _, code, err := RunGit(repo, "add", "-A"); err != nil || code != 0 {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("git add failed before merge commit")
+	}
+	_, stderr, code, err := RunGit(repo, "commit", "--no-edit", "-m", message)
+	if err != nil || code != 0 {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("git commit (merge) failed: %s", stderr)
+	}
+	return nil
+}
+
+// AbortMergeAndReset backs out an in-progress/failed merge and hard-resets to
+// prevSHA, then cleans untracked leftovers — so a dropped issue leaves the
+// integration branch exactly as it was before the attempt.
+func AbortMergeAndReset(repo, prevSHA string) {
+	_, _, _, _ = RunGit(repo, "merge", "--abort")
+	if prevSHA != "" {
+		_, _, _, _ = RunGit(repo, "reset", "--hard", prevSHA)
+	}
+	_, _, _, _ = RunGit(repo, "clean", "-fd")
+}
+
+// ---------------------------------------------------------------------------
+// Single-PR status + bounded wait-for-merge (issue #2, solo serialization)
+// ---------------------------------------------------------------------------
+
+// PRStatus is a point-in-time view of one PR used by the wait-for-merge loop.
+type PRStatus struct {
+	State            string // OPEN | MERGED | CLOSED
+	Merged           bool   // derived: State == MERGED
+	MergeStateStatus string // CLEAN | BLOCKED | BEHIND | DIRTY | UNSTABLE | UNKNOWN
+	Mergeable        string // MERGEABLE | CONFLICTING | UNKNOWN
+	ChecksState      string // passing | pending | failing | none
+	AutoMergeEnabled bool
+}
+
+// GetPRStatus fetches the authoritative state of a single PR via gh's JSON API
+// (never by scraping CLI text). NOTE: `gh pr view --json` has no "merged" field —
+// a merged PR reports state=="MERGED" (and a non-empty mergedAt), so we derive
+// Merged from those rather than requesting an invalid field (which gh rejects).
+func GetPRStatus(repo string, number int) (*PRStatus, error) {
+	if !GHAvailable() {
+		return nil, fmt.Errorf("gh CLI not available")
+	}
+	cmd := exec.Command("gh", "pr", "view", fmt.Sprintf("%d", number),
+		"--json", "state,mergedAt,mergeStateStatus,mergeable,statusCheckRollup,autoMergeRequest")
+	cmd.Dir = repo
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("gh pr view %d: %s", number, strings.TrimSpace(stderr.String()))
+	}
+	var data struct {
+		State             string    `json:"state"`
+		MergedAt          string    `json:"mergedAt"`
+		MergeStateStatus  string    `json:"mergeStateStatus"`
+		Mergeable         string    `json:"mergeable"`
+		StatusCheckRollup []prCheck `json:"statusCheckRollup"`
+		AutoMergeRequest  *struct {
+			EnabledAt string `json:"enabledAt"`
+		} `json:"autoMergeRequest"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &data); err != nil {
+		return nil, fmt.Errorf("parse gh pr view %d: %w", number, err)
+	}
+	state := strings.ToUpper(data.State)
+	return &PRStatus{
+		State:            state,
+		Merged:           state == "MERGED" || data.MergedAt != "",
+		MergeStateStatus: strings.ToUpper(data.MergeStateStatus),
+		Mergeable:        strings.ToUpper(data.Mergeable),
+		ChecksState:      rollupChecksState(data.StatusCheckRollup),
+		AutoMergeEnabled: data.AutoMergeRequest != nil,
+	}, nil
+}
+
+// DisableAutoMerge cancels a previously-enabled auto-merge so an aborted PR
+// can't silently land later, after the drain has already moved on.
+func DisableAutoMerge(repo string, number int) {
+	if !GHAvailable() {
+		return
+	}
+	cmd := exec.Command("gh", "pr", "merge", fmt.Sprintf("%d", number), "--disable-auto")
+	cmd.Dir = repo
+	_ = cmd.Run()
+}
+
+// WaitForPRMerge blocks until PR number merges, a terminal/blocked state is
+// detected, the timeout elapses, or ctx is cancelled. It NEVER waits forever.
+// merged=true only on an actual merge; otherwise reason explains why it stopped.
+// Polling backs off (start→max) so a long CI wait doesn't hammer the gh API.
+func WaitForPRMerge(ctx context.Context, repo string, number int, timeout time.Duration, log func(string)) (merged bool, reason string) {
+	logf := func(format string, a ...interface{}) {
+		if log != nil {
+			log(fmt.Sprintf(format, a...))
+		}
+	}
+	deadline := time.Now().Add(timeout)
+	interval := 15 * time.Second
+	const maxInterval = 60 * time.Second
+
+	for {
+		st, err := GetPRStatus(repo, number)
+		if err != nil {
+			// Transient gh failure: don't abort the drain on a single blip, just
+			// retry until the deadline.
+			logf("⚠️ could not read PR #%d status: %v (will retry)", number, err)
+		} else {
+			switch {
+			case st.Merged || st.State == "MERGED":
+				return true, "merged"
+			case st.State == "CLOSED":
+				return false, "PR was closed without merging"
+			case st.Mergeable == "CONFLICTING" || st.MergeStateStatus == "DIRTY":
+				return false, "PR has merge conflicts (auto-merge cannot complete)"
+			case st.ChecksState == "failing" && RequiredChecksState(repo, number) == "failing":
+				// Only a REQUIRED failing check actually blocks GitHub auto-merge.
+				// A red optional/advisory check leaves the PR UNSTABLE-but-mergeable,
+				// so don't cancel a merge GitHub will still complete.
+				return false, "a required check is failing (auto-merge cannot complete)"
+			default:
+				logf("⏳ PR #%d not merged yet (state=%s merge=%s checks=%s) — waiting…",
+					number, st.State, st.MergeStateStatus, st.ChecksState)
+			}
+		}
+
+		if time.Now().After(deadline) {
+			return false, fmt.Sprintf("timed out after %s waiting for PR #%d to merge", timeout, number)
+		}
+
+		// Sleep with cancellation, then widen the interval up to the cap.
+		select {
+		case <-ctx.Done():
+			return false, "canceled"
+		case <-time.After(interval):
+		}
+		if interval < maxInterval {
+			interval += 15 * time.Second
+			if interval > maxInterval {
+				interval = maxInterval
+			}
+		}
+	}
 }
 
 func PlanIsComplete(planText string) bool {

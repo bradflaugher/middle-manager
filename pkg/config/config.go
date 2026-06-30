@@ -53,6 +53,25 @@ type LoopConfig struct {
 	StreamOutput      bool              `json:"stream_output"`
 	BatchSize         int               `json:"batch_size"`
 
+	// Solo is single-agent mode: one agent does discover+execute+verify+tests in
+	// a single step (Steps==1) and emits the VERDICT; mm still commits/PRs
+	// deterministically. In a queue it serializes by waiting for each PR to merge.
+	Solo bool `json:"solo"`
+	// Worktree turns a queue drain into the worktree-collapse strategy: each issue
+	// runs in its own git worktree (no per-issue PR), then one agent collapses the
+	// branches into a single "mega" PR. Queue mode only.
+	Worktree bool `json:"worktree"`
+	// WaitForMerge makes the loop block until the PR it opened actually merges
+	// (bounded by MergeTimeoutMinutes) before returning. Implied by Solo; in a
+	// queue this is what serializes issues so they never conflict.
+	WaitForMerge bool `json:"wait_for_merge"`
+	// MergeTimeoutMinutes bounds the WaitForMerge poll so a stuck PR (failed
+	// required check, branch-protection review) can never hang the drain forever.
+	MergeTimeoutMinutes int `json:"merge_timeout_minutes"`
+	// KeepWorktrees leaves the per-issue worktrees on disk after a collapse for
+	// debugging instead of pruning them.
+	KeepWorktrees bool `json:"keep_worktrees"`
+
 	// Interactive Wizard overrides
 	Wizard   bool
 	NoWizard bool
@@ -60,16 +79,17 @@ type LoopConfig struct {
 
 func NewDefaultConfig() *LoopConfig {
 	return &LoopConfig{
-		Steps:           4,
-		MaxIterations:   10,
-		Yolo:            true,
-		BranchPrefix:    "mm",
-		NoMerge:         true,
-		AgentMemoryFile: "AGENTS.md",
-		StreamOutput:    false,
-		BatchSize:       1,
-		Fresh:           true,
-		BinaryOverrides: make(map[string]string),
+		Steps:               4,
+		MaxIterations:       10,
+		Yolo:                true,
+		BranchPrefix:        "mm",
+		NoMerge:             true,
+		AgentMemoryFile:     "AGENTS.md",
+		StreamOutput:        false,
+		BatchSize:           1,
+		Fresh:               true,
+		MergeTimeoutMinutes: 60,
+		BinaryOverrides:     make(map[string]string),
 		Discover: StepConfig{
 			Agent:   "claude",
 			Enabled: true,
@@ -93,7 +113,10 @@ func (cfg *LoopConfig) StepFor(name string) *StepConfig {
 	switch name {
 	case "discover":
 		return &cfg.Discover
-	case "execute":
+	case "execute", "solo":
+		// Solo mode reuses the Execute step's agent/model slot — it is the one
+		// "programmer" agent that does the whole job — so the wizard's existing
+		// per-step agent picker configures it without a new field.
 		return &cfg.Execute
 	case "verify":
 		return &cfg.Verify
@@ -104,7 +127,19 @@ func (cfg *LoopConfig) StepFor(name string) *StepConfig {
 	}
 }
 
+// IsSolo reports whether the run is single-agent solo mode. Steps==1 and the
+// Solo flag are kept equivalent here so every consumer (ActiveSteps, the
+// commit/PR path, the queue serializer) agrees regardless of how the config was
+// built (CLI, JSON, or direct construction).
+func (cfg *LoopConfig) IsSolo() bool {
+	return cfg.Solo || cfg.Steps == 1
+}
+
 func (cfg *LoopConfig) ActiveSteps() []string {
+	// Solo collapses the whole pipeline into a single agent step.
+	if cfg.IsSolo() {
+		return []string{"solo"}
+	}
 	names := []string{"discover", "execute", "verify", "commit"}
 	if cfg.Steps == 3 {
 		names = []string{"discover", "execute", "verify"}
@@ -116,6 +151,20 @@ func (cfg *LoopConfig) ActiveSteps() []string {
 		}
 	}
 	return active
+}
+
+// Validate rejects incoherent flag combinations before a run starts.
+func (cfg *LoopConfig) Validate() error {
+	if cfg.Worktree && cfg.IsSolo() {
+		return fmt.Errorf("--worktree and --solo are competing queue strategies; pick one")
+	}
+	// Worktree is a queue strategy and needs an actual issue queue to drain.
+	// The --worktree flag flips Mode to "queue" on its own, so a Mode check alone
+	// is unreachable — guard on the queue source itself.
+	if cfg.Worktree && cfg.IssueQueue == nil {
+		return fmt.Errorf("--worktree drains a GitHub issue queue — pass --label and/or --author")
+	}
+	return nil
 }
 
 func (cfg *LoopConfig) StatePath() string {
@@ -213,6 +262,26 @@ func ConfigFromMap(data map[string]interface{}, repo string) *LoopConfig {
 	if v, ok := data["fix_unrelated_tests"].(bool); ok {
 		cfg.FixUnrelatedTests = v
 	}
+	if v, ok := data["solo"].(bool); ok {
+		cfg.Solo = v
+		if v {
+			cfg.Steps = 1
+			cfg.Commit.Enabled = false
+			cfg.WaitForMerge = true
+		}
+	}
+	if v, ok := data["worktree"].(bool); ok {
+		cfg.Worktree = v
+	}
+	if v, ok := data["wait_for_merge"].(bool); ok {
+		cfg.WaitForMerge = v
+	}
+	if v, ok := data["merge_timeout_minutes"].(float64); ok && int(v) > 0 {
+		cfg.MergeTimeoutMinutes = int(v)
+	}
+	if v, ok := data["keep_worktrees"].(bool); ok {
+		cfg.KeepWorktrees = v
+	}
 
 	for _, step := range []string{"discover", "execute", "verify", "commit"} {
 		if sVal, ok := data[step].(map[string]interface{}); ok {
@@ -249,7 +318,21 @@ func ConfigFromMap(data map[string]interface{}, repo string) *LoopConfig {
 		}
 	}
 
+	normalizeSolo(cfg)
 	return cfg
+}
+
+// normalizeSolo keeps the solo invariants consistent no matter which knob set
+// it: solo ⇔ Steps==1, no commit agent, and WaitForMerge forced on (solo's
+// contract is "watch the PR until it merges", so --no-wait-merge must not be
+// able to silently strand a queue mid-drain).
+func normalizeSolo(cfg *LoopConfig) {
+	if cfg.IsSolo() {
+		cfg.Solo = true
+		cfg.Steps = 1
+		cfg.Commit.Enabled = false
+		cfg.WaitForMerge = true
+	}
 }
 
 // ParseArgs parses CLI arguments and merges with file-based configurations.
@@ -350,6 +433,12 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 			if steps == 3 {
 				cfg.Commit.Enabled = false
 			}
+			if steps == 1 {
+				// 1 step is solo mode: one agent, mm waits for the PR to merge.
+				cfg.Solo = true
+				cfg.Commit.Enabled = false
+				cfg.WaitForMerge = true
+			}
 			i++
 		case arg == "--max-iterations" && i+1 < len(restArgs):
 			iters, _ := strconv.Atoi(restArgs[i+1])
@@ -428,6 +517,28 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 			i++
 		case arg == "--no-pr":
 			cfg.NoPR = true
+		case arg == "--solo":
+			cfg.Solo = true
+			cfg.Steps = 1
+			cfg.Commit.Enabled = false
+			cfg.WaitForMerge = true
+		case arg == "--worktree":
+			cfg.Worktree = true
+			if cfg.Mode == "" || cfg.Mode == "feature" {
+				cfg.Mode = "queue"
+			}
+		case arg == "--wait-merge":
+			cfg.WaitForMerge = true
+		case arg == "--no-wait-merge":
+			cfg.WaitForMerge = false
+		case arg == "--keep-worktrees":
+			cfg.KeepWorktrees = true
+		case arg == "--merge-timeout" && i+1 < len(restArgs):
+			mt, _ := strconv.Atoi(restArgs[i+1])
+			if mt > 0 {
+				cfg.MergeTimeoutMinutes = mt
+			}
+			i++
 		case arg == "--state-dir" && i+1 < len(restArgs):
 			cfg.StateDir = restArgs[i+1]
 			i++
@@ -479,6 +590,10 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 			cfg.MaxIterations = 5
 		}
 	}
+
+	// Re-assert solo invariants last, so flag order (e.g. --solo then
+	// --no-wait-merge, or quick mode overwriting Steps) can't leave solo half-set.
+	normalizeSolo(cfg)
 
 	return command, cfg, nil
 }

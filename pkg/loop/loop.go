@@ -54,6 +54,13 @@ type MiddleManagerLoop struct {
 	// title/body already fetched by ListIssues so the loop need not re-fetch it
 	// (avoiding a per-issue gh failure window mid-drain).
 	prefetchedIssue map[string]string
+
+	// iterationAgent holds the agent rolled for the current iteration when any
+	// step is configured as "random". Resolved ONCE per iteration and reused by
+	// every random step that iteration, so one agent owns the whole issue attempt
+	// (the "new random agent per iteration" contract) rather than thrashing
+	// between agents mid-issue.
+	iterationAgent string
 }
 
 // SetPrefetchedIssue lets the queue runner hand the loop the issue metadata it
@@ -209,6 +216,16 @@ func (l *MiddleManagerLoop) PromptForStep(step string, iteration int, issueData 
 	return prompts.RenderPrompt(template, ctx)
 }
 
+// resolveAgent maps a step's configured agent to the concrete agent to run.
+// A "random" sentinel resolves to the agent rolled once for this iteration
+// (see RunOnce); everything else passes through unchanged.
+func (l *MiddleManagerLoop) resolveAgent(sc *config.StepConfig) string {
+	if agents.IsRandom(sc.Agent) {
+		return l.iterationAgent // "" when no agents are installed; handled by RunStep
+	}
+	return sc.Agent
+}
+
 func (l *MiddleManagerLoop) RunStep(step string, iteration int, issueData map[string]string) (string, int, error) {
 	sc := l.cfg.StepFor(step)
 	if !sc.Enabled {
@@ -216,9 +233,17 @@ func (l *MiddleManagerLoop) RunStep(step string, iteration int, issueData map[st
 		return "", 0, nil
 	}
 
-	agent := sc.Agent
+	agent := l.resolveAgent(sc)
+	if agent == "" {
+		// Configured "random" but nothing is installed to roll from.
+		l.Log(fmt.Sprintf("No installed agents available to run step %s — install one of: %s", step, strings.Join(agents.AgentNames, ", ")), colors.Red)
+		return "", 127, nil
+	}
 	binary := l.cfg.BinaryOverrides[agent]
 	model := sc.Model
+	if agents.IsRandom(sc.Agent) {
+		model = "" // a rolled agent has no business inheriting the sentinel's model
+	}
 	if !agents.AgentAvailable(agent, binary) && !l.cfg.DryRun {
 		fallback := agents.AutodetectAgent(step, l.cfg.BinaryOverrides, "")
 		if fallback != "" && fallback != agent {
@@ -299,6 +324,35 @@ func (l *MiddleManagerLoop) MaybeCommitAndPR(iteration int, issueData map[string
 		return msg
 	}
 
+	// Solo mode (issue #2): one agent already did everything and self-certified
+	// with a VERDICT. mm still owns git deterministically — it commits the work,
+	// opens exactly one PR, enables auto-merge, then (WaitForMerge) blocks until
+	// the PR actually lands so a queue serializes and never conflicts. Keyed on
+	// IsSolo() (Solo || Steps==1) so a Steps==1 config never falls through to the
+	// 3-step path and opens no PR.
+	if l.cfg.IsSolo() {
+		if gitops.RepoIsGit(l.cfg.Repo) && gitops.HasChanges(l.cfg.Repo) && !l.cfg.DryRun {
+			committed, err := gitops.CommitAllWithError(l.cfg.Repo, commitMsg())
+			if err != nil {
+				return fmt.Errorf("solo commit failed: %w", err)
+			}
+			if committed {
+				l.Log("Committed solo agent's verified work", colors.Green)
+			}
+		}
+		if !gitops.RepoIsGit(l.cfg.Repo) {
+			return nil
+		}
+		if l.cfg.NoPR {
+			branch, _ := gitops.CurrentBranch(l.cfg.Repo)
+			if err := gitops.PushBranch(l.cfg.Repo, branch, l.cfg.DryRun); err != nil {
+				return fmt.Errorf("push of branch %q failed: %w", branch, err)
+			}
+			return nil
+		}
+		return l.pushAndOpenPR(iteration, issueData)
+	}
+
 	if l.cfg.Steps < 4 || !l.cfg.Commit.Enabled {
 		if gitops.HasChanges(l.cfg.Repo) && !l.cfg.DryRun {
 			committed, err := gitops.CommitAllWithError(l.cfg.Repo, commitMsg())
@@ -307,7 +361,11 @@ func (l *MiddleManagerLoop) MaybeCommitAndPR(iteration int, issueData map[string
 			}
 			if committed {
 				l.Log("Committed changes (3-step mode, no PR agent)", colors.Green)
-				if gitops.RepoIsGit(l.cfg.Repo) {
+				// NoPR keeps the commit purely local — used by worktree mode, where
+				// the collapse step merges these local branches and pushes only the
+				// single integration branch (pushing each issue branch would clutter
+				// the remote for no benefit).
+				if gitops.RepoIsGit(l.cfg.Repo) && !l.cfg.NoPR {
 					branch, _ := gitops.CurrentBranch(l.cfg.Repo)
 					if err := gitops.PushBranch(l.cfg.Repo, branch, l.cfg.DryRun); err != nil {
 						return fmt.Errorf("push of branch %q failed: %w", branch, err)
@@ -344,6 +402,15 @@ func (l *MiddleManagerLoop) MaybeCommitAndPR(iteration int, issueData map[string
 		return nil
 	}
 
+	return l.pushAndOpenPR(iteration, issueData)
+}
+
+// pushAndOpenPR pushes the current branch, opens exactly one PR linking the
+// issue, enables auto-merge, and — when WaitForMerge is set — blocks until the
+// PR actually merges (bounded by MergeTimeoutMinutes). A wait that ends without
+// a merge returns an error so the caller fails closed and a queue stops rather
+// than starting the next issue off a base the PR never landed on.
+func (l *MiddleManagerLoop) pushAndOpenPR(iteration int, issueData map[string]string) error {
 	branch, _ := gitops.CurrentBranch(l.cfg.Repo)
 	if err := gitops.PushBranch(l.cfg.Repo, branch, l.cfg.DryRun); err != nil {
 		return fmt.Errorf("push of branch %q failed: %w", branch, err)
@@ -368,25 +435,48 @@ func (l *MiddleManagerLoop) MaybeCommitAndPR(iteration int, issueData map[string
 	l.lastPRURL = prURL
 	l.Log(fmt.Sprintf("PR created: %s", prURL), colors.Green)
 
-	if !l.cfg.NoMerge {
-		parts := strings.Split(strings.TrimSpace(prURL), "/")
-		if len(parts) > 0 {
-			prNumStr := parts[len(parts)-1]
-			prNum, err := strconv.Atoi(prNumStr)
-			if err == nil {
-				l.Log(fmt.Sprintf("Enabling GitHub auto-merge on PR #%d...", prNum), colors.Cyan)
-				out, err := gitops.EnableAutoMerge(l.cfg.Repo, prNum, "squash", true, l.cfg.DryRun)
-				if err != nil {
-					l.Log(fmt.Sprintf("⚠️ Could not enable auto-merge: %v", err), colors.Yellow)
-				} else if out != "" {
-					l.Log(fmt.Sprintf("Auto-merge enabled: %s", out), colors.Green)
-				} else {
-					l.Log("Auto-merge enabled.", colors.Green)
-				}
-			}
+	prNum := prNumberFromURL(prURL)
+	if !l.cfg.NoMerge && prNum > 0 {
+		l.Log(fmt.Sprintf("Enabling GitHub auto-merge on PR #%d...", prNum), colors.Cyan)
+		out, err := gitops.EnableAutoMerge(l.cfg.Repo, prNum, "squash", true, l.cfg.DryRun)
+		if err != nil {
+			l.Log(fmt.Sprintf("⚠️ Could not enable auto-merge: %v", err), colors.Yellow)
+		} else if out != "" {
+			l.Log(fmt.Sprintf("Auto-merge enabled: %s", out), colors.Green)
+		} else {
+			l.Log("Auto-merge enabled.", colors.Green)
 		}
 	}
+
+	if l.cfg.WaitForMerge && prNum > 0 && !l.cfg.DryRun {
+		timeout := time.Duration(l.cfg.MergeTimeoutMinutes) * time.Minute
+		if timeout <= 0 {
+			timeout = 60 * time.Minute
+		}
+		l.Log(fmt.Sprintf("⏳ Waiting for PR #%d to merge (auto-merge on; bounded by %s). CI must pass.", prNum, timeout), colors.Cyan)
+		merged, reason := gitops.WaitForPRMerge(l.ctx, l.cfg.Repo, prNum, timeout, func(m string) { l.Log(m, colors.Dim) })
+		if merged {
+			l.Log(fmt.Sprintf("✅ PR #%d merged.", prNum), colors.Green)
+			return nil
+		}
+		// Don't leave a half-armed auto-merge that could land after we've moved on.
+		gitops.DisableAutoMerge(l.cfg.Repo, prNum)
+		return fmt.Errorf("PR #%d did not merge: %s", prNum, reason)
+	}
 	return nil
+}
+
+// prNumberFromURL extracts the trailing PR number from a gh PR URL.
+func prNumberFromURL(prURL string) int {
+	parts := strings.Split(strings.TrimSpace(prURL), "/")
+	if len(parts) == 0 {
+		return 0
+	}
+	n, err := strconv.Atoi(parts[len(parts)-1])
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // prBody builds the PR description. The merge guidance must match what the loop
@@ -435,13 +525,34 @@ func (l *MiddleManagerLoop) RunOnce(iteration int, issueData map[string]string) 
 
 	activeSteps := l.cfg.ActiveSteps()
 
+	// Roll the random agent for THIS iteration (issue #3). One roll fills every
+	// "random" step so a single agent owns the iteration; explicit agents are
+	// untouched. Re-rolled each iteration so retries vary the agent.
+	l.iterationAgent = ""
+	for _, step := range activeSteps {
+		if agents.IsRandom(l.cfg.StepFor(step).Agent) {
+			l.iterationAgent = agents.PickRandomAgent(l.cfg.BinaryOverrides)
+			if l.iterationAgent == "" && l.cfg.DryRun {
+				l.iterationAgent = agents.AgentNames[0] // so dry-run still prints a command
+			}
+			if l.iterationAgent != "" {
+				l.Log(fmt.Sprintf("🎲 random → %s for iteration %d", l.iterationAgent, iteration), colors.Magenta+colors.Bold)
+			}
+			break
+		}
+	}
+
 	for _, step := range activeSteps {
 		if step == "commit" {
 			continue // Handled separately
 		}
 
 		sc := l.cfg.StepFor(step)
-		l.Log(fmt.Sprintf("\n[Step: %s] Starting step with agent '%s'...", strings.ToUpper(step), strings.ToUpper(sc.Agent)), colors.Cyan)
+		shownAgent := l.resolveAgent(sc)
+		if shownAgent == "" {
+			shownAgent = sc.Agent // nothing rolled (no agents installed); show the sentinel
+		}
+		l.Log(fmt.Sprintf("\n[Step: %s] Starting step with agent '%s'...", strings.ToUpper(step), strings.ToUpper(shownAgent)), colors.Cyan)
 
 		// Wait/Pause check if TUI is paused
 		l.checkTUIPause()
@@ -495,10 +606,12 @@ func (l *MiddleManagerLoop) RunOnce(iteration int, issueData map[string]string) 
 			}
 		}
 
-		if step == "verify" {
+		// Both the dedicated verifier and the solo agent emit the VERDICT line that
+		// gates the commit; capture whichever ran.
+		if step == "verify" || step == "solo" {
 			verifierStdout = stdout
 			if exitCode != 0 {
-				l.Log("❌ Verifier reported CLI error/failure", colors.Red)
+				l.Log("❌ Agent reported CLI error/failure on the verdict step", colors.Red)
 				verifierPassed = false
 			}
 		}
@@ -512,7 +625,7 @@ func (l *MiddleManagerLoop) RunOnce(iteration int, issueData map[string]string) 
 		}
 	}
 
-	if contains(activeSteps, "verify") && verifierPassed {
+	if (contains(activeSteps, "verify") || contains(activeSteps, "solo")) && verifierPassed {
 		verdict := l.ParseVerifierUpdates(verifierStdout)
 		l.Log(fmt.Sprintf("🔍 Verifier Verdict: %s", verdict), colors.Green)
 		// Fail closed: only an explicit PASS ships. A FAIL or a missing/garbled
@@ -584,9 +697,15 @@ func (l *MiddleManagerLoop) ResolveStepAgents() {
 
 	assigned := make(map[string]string)
 
-	// First pass: keep explicitly requested agents if they are installed
+	// First pass: keep explicitly requested agents if they are installed. A
+	// "random" sentinel is preserved as-is (resolved per-iteration at runtime) so
+	// the diversification pass below never rewrites it to a concrete agent.
 	for _, step := range activeSteps {
 		sc := l.cfg.StepFor(step)
+		if agents.IsRandom(sc.Agent) {
+			assigned[step] = sc.Agent
+			continue
+		}
 		binary := l.cfg.BinaryOverrides[sc.Agent]
 		if agents.AgentAvailable(sc.Agent, binary) {
 			assigned[step] = sc.Agent

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -117,6 +118,7 @@ func keyEnter() tea.KeyPressMsg      { return tea.KeyPressMsg{Code: tea.KeyEnter
 func keyDown() tea.KeyPressMsg       { return tea.KeyPressMsg{Code: tea.KeyDown} }
 func keyUp() tea.KeyPressMsg         { return tea.KeyPressMsg{Code: tea.KeyUp} }
 func keyRune(r rune) tea.KeyPressMsg { return tea.KeyPressMsg{Code: r, Text: string(r)} }
+func keyEsc() tea.KeyPressMsg        { return tea.KeyPressMsg{Code: tea.KeyEsc} }
 
 // Guard the exact regression: a space press must stringify to "space".
 func TestSpaceKeyStringIsSpace(t *testing.T) {
@@ -214,8 +216,9 @@ func TestQueueFilterBlankLabel(t *testing.T) {
 	if q.Limit != 5 {
 		t.Errorf("limit = %d, want 5", q.Limit)
 	}
-	if m.state != stateAgents {
-		t.Errorf("state = %v, want stateAgents", m.state)
+	// Queue filters now lead to the strategy screen (per-issue vs worktree).
+	if m.state != stateStrategy {
+		t.Errorf("state = %v, want stateStrategy", m.state)
 	}
 }
 
@@ -255,8 +258,9 @@ func TestFeatureMissionRequired(t *testing.T) {
 
 	m.textInput.SetValue("add dark mode toggle")
 	m = sendW(m, keyEnter())
-	if m.state != stateAgents {
-		t.Fatalf("valid mission did not advance to stateAgents (state=%v)", m.state)
+	// Loop shape now comes right after the mission (before agents).
+	if m.state != stateSteps {
+		t.Fatalf("valid mission did not advance to stateSteps (state=%v)", m.state)
 	}
 }
 
@@ -420,28 +424,114 @@ func TestWizardSoloSelection(t *testing.T) {
 	}
 }
 
-// Regression: in queue mode, selecting solo (1 step) AND toggling the worktree
-// checkbox must NOT emit a Solo+Worktree config (which Validate rejects, hard-
-// exiting after the wizard). The worktree toggle is suppressed under solo.
-func TestWizardSoloSuppressesWorktree(t *testing.T) {
+// Choosing the worktree strategy must remove solo from the loop-shape menu (the
+// two are mutually exclusive), so the wizard can never emit a Solo+Worktree
+// config that Validate() would reject.
+func TestWizardWorktreeExcludesSolo(t *testing.T) {
 	m := NewWizardModel(config.NewDefaultConfig())
 	m.cfg.Mode = "queue"
-	// Pick solo at the loop-shape step.
-	m.state = stateSteps
-	m.stepsIndex = 2 // [4,3,1] -> 1 == solo
+	m.cfg.IssueQueue = &config.IssueQueueConfig{State: "open", Limit: 20}
+	// Strategy screen: pick "worktree collapse" (index 1).
+	m.state = stateStrategy
+	m.strategyIndex = 1
 	m = sendW(m, keyEnter())
-	if !m.cfg.Solo {
-		t.Fatal("precondition: solo should be set")
+	if !m.cfg.Worktree {
+		t.Fatal("worktree strategy did not set cfg.Worktree")
 	}
-	// Now at stateOptions, turn the worktree checkbox on and advance.
-	m.state = stateOptions
-	m.optionsValues[5] = true
-	m = sendW(m, keyEnter())
-	if m.cfg.Worktree {
-		t.Fatal("worktree must be suppressed when solo is selected (would fail Validate)")
+	if m.state != stateSteps {
+		t.Fatalf("strategy should advance to the loop-shape step, got %v", m.state)
+	}
+	// The shape menu must NOT offer the solo (1-step) option under worktree.
+	for _, s := range m.stepsChoices() {
+		if s == 1 {
+			t.Fatal("worktree mode must exclude the solo loop shape")
+		}
 	}
 	if err := m.cfg.Validate(); err != nil {
-		t.Fatalf("wizard produced a config Validate rejects: %v", err)
+		t.Fatalf("worktree queue config should be valid, got: %v", err)
+	}
+}
+
+// The new/adaptive screens must render without panicking, including the tricky
+// cases: solo's single agent row and a stale step index under worktree (2
+// choices) left over from a non-worktree visit (3 choices).
+func TestWizardRendersNewScreensWithoutPanic(t *testing.T) {
+	m := NewWizardModel(config.NewDefaultConfig())
+	m.width, m.height = 100, 40
+
+	for _, st := range []wizardState{stateStrategy, stateSteps, stateAgents} {
+		m.state = st
+		_ = m.View()
+	}
+
+	// Solo: the agents screen shows exactly one (Execute) row.
+	m.cfg.Solo, m.cfg.Steps = true, 1
+	m.state = stateAgents
+	_ = m.View()
+	m.customAgents = true
+	_ = m.View()
+
+	// Worktree: loop shape has only 2 choices; a stale stepsIndex must not panic.
+	m.cfg.Solo, m.cfg.Steps, m.cfg.Worktree = false, 4, true
+	m.stepsIndex = 2
+	m.state = stateSteps
+	_ = m.View()
+}
+
+// Full queue path drives the new screen order forwards then backwards, locking
+// the rewired transitions: filters → strategy → loop shape → agents, and esc
+// unwinds them in reverse.
+func TestWizardQueueNavigationOrder(t *testing.T) {
+	m := NewWizardModel(config.NewDefaultConfig())
+	m.cfg.Repo = os.TempDir()
+	m.state = stateMode
+	m.modeIndex = 3 // queue
+	m = sendW(m, keyEnter())
+	if m.state != stateQueueFilters {
+		t.Fatalf("mode→ %v, want queueFilters", m.state)
+	}
+	m = sendW(m, keyEnter()) // blank label → author
+	m = sendW(m, keyEnter()) // blank author → max-issues
+	m.textInput.SetValue("10")
+	m = sendW(m, keyEnter())
+	if m.state != stateStrategy {
+		t.Fatalf("filters→ %v, want strategy", m.state)
+	}
+	m = sendW(m, keyEnter()) // per-issue → loop shape
+	if m.state != stateSteps {
+		t.Fatalf("strategy→ %v, want steps", m.state)
+	}
+	m = sendW(m, keyEnter()) // 4-step → agents
+	if m.state != stateAgents {
+		t.Fatalf("steps→ %v, want agents", m.state)
+	}
+	// Unwind.
+	for _, want := range []wizardState{stateSteps, stateStrategy, stateQueueFilters} {
+		m = sendW(m, keyEsc())
+		if m.state != want {
+			t.Fatalf("esc → %v, want %v", m.state, want)
+		}
+	}
+}
+
+// Per-issue strategy keeps the solo shape available.
+func TestWizardPerIssueKeepsSolo(t *testing.T) {
+	m := NewWizardModel(config.NewDefaultConfig())
+	m.cfg.Mode = "queue"
+	m.state = stateStrategy
+	m.strategyIndex = 0 // per-issue PRs
+	m = sendW(m, keyEnter())
+	if m.cfg.Worktree {
+		t.Fatal("per-issue strategy must not set worktree")
+	}
+	hasSolo := false
+	for _, s := range m.stepsChoices() {
+		if s == 1 {
+			hasSolo = true
+		}
+	}
+	if !hasSolo {
+		t.Fatal("per-issue strategy should keep the solo shape available")
 	}
 }
 

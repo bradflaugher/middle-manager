@@ -192,8 +192,9 @@ const (
 	stateMission
 	stateIssueDetails
 	stateQueueFilters
+	stateStrategy // queue-only: per-issue PRs vs worktree collapse
+	stateSteps    // loop shape (asked before agents so agents can adapt)
 	stateAgents
-	stateSteps
 	stateOptions
 	stateMaxIters
 	stateConfirm
@@ -214,7 +215,7 @@ type WizardModel struct {
 	agentIndex    int
 	stepToAgent   map[string]string
 	stepsIndex    int
-	stepsOptions  []int
+	strategyIndex int // 0=per-issue PRs, 1=worktree collapse (queue only)
 	optionsIndex  int
 	optionsList   []string
 	optionsValues []bool
@@ -274,10 +275,60 @@ func NewWizardModel(initialCfg *config.LoopConfig) *WizardModel {
 			"Batch-drain a filtered queue of GitHub issues",
 		},
 		stepToAgent:   stepToAgent,
-		stepsOptions:  []int{4, 3, 1},
-		optionsList:   []string{"YOLO mode (auto-approve)", "Interactive pause between steps", "Allow fixing unrelated test failures", "Fresh run (reset loop state)", "Auto-merge PRs when green", "Worktree collapse → one mega PR (queue only)"},
-		optionsValues: []bool{initialCfg.Yolo, initialCfg.Interactive, initialCfg.FixUnrelatedTests, initialCfg.Fresh, !initialCfg.NoMerge, initialCfg.Worktree},
+		strategyIndex: boolToIndex(initialCfg.Worktree),
+		optionsList:   []string{"YOLO mode (auto-approve)", "Interactive pause between steps", "Allow fixing unrelated test failures", "Fresh run (reset loop state)", "Auto-merge PRs when green"},
+		optionsValues: []bool{initialCfg.Yolo, initialCfg.Interactive, initialCfg.FixUnrelatedTests, initialCfg.Fresh, !initialCfg.NoMerge},
 	}
+}
+
+func boolToIndex(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// stepsChoices is the loop-shape menu. Solo (1 step) is omitted under worktree
+// collapse because the two strategies are mutually exclusive.
+func (m *WizardModel) stepsChoices() []int {
+	if m.cfg.Worktree {
+		return []int{4, 3}
+	}
+	return []int{4, 3, 1}
+}
+
+// stepLabelFor maps a loop-shape choice to its radio label.
+func stepLabelFor(steps int) string {
+	switch steps {
+	case 1:
+		return "1 step   solo — one agent does it all, then mm waits for the PR to merge"
+	case 3:
+		return "3 steps  discover → execute → verify  (local commit, no PR agent)"
+	default:
+		return "4 steps  discover → execute → verify → commit  (opens PR)"
+	}
+}
+
+// agentStepKeys is the set of step rows to show on the agents screen, adapted to
+// the chosen loop shape: solo asks for one agent (the Execute slot), 3-step for
+// three, 4-step for all four.
+func (m *WizardModel) agentStepKeys() []string {
+	if m.cfg.IsSolo() {
+		return []string{"execute"}
+	}
+	if m.cfg.Steps == 3 {
+		return []string{"discover", "execute", "verify"}
+	}
+	return []string{"discover", "execute", "verify", "commit"}
+}
+
+// agentRowLabel is the left-column label for an agent row ("solo" reads better
+// than "execute" when it's the lone agent).
+func (m *WizardModel) agentRowLabel(stepKey string) string {
+	if m.cfg.IsSolo() {
+		return "solo"
+	}
+	return stepKey
 }
 
 type wizardTickMsg struct{}
@@ -367,13 +418,15 @@ func (m *WizardModel) moveCursor(dir int) {
 	switch m.state {
 	case stateMode:
 		m.modeIndex = wrap(m.modeIndex+dir, len(m.modes))
+	case stateStrategy:
+		m.strategyIndex = wrap(m.strategyIndex+dir, 2)
 	case stateSteps:
-		m.stepsIndex = wrap(m.stepsIndex+dir, len(m.stepsOptions))
+		m.stepsIndex = wrap(m.stepsIndex+dir, len(m.stepsChoices()))
 	case stateOptions:
 		m.optionsIndex = wrap(m.optionsIndex+dir, len(m.optionsList))
 	case stateAgents:
 		if m.customAgents {
-			m.agentIndex = wrap(m.agentIndex+dir, len(stepLabels))
+			m.agentIndex = wrap(m.agentIndex+dir, len(m.agentStepKeys()))
 		}
 	}
 }
@@ -435,7 +488,7 @@ func (m *WizardModel) nextStep() (tea.Model, tea.Cmd) {
 			m.err = fmt.Errorf("a mission is required — describe what to build or fix")
 			return m, nil
 		}
-		m.state = stateAgents
+		m.state = stateSteps
 
 	case stateIssueDetails:
 		m.cfg.Issue = strings.TrimSpace(m.textInput.Value())
@@ -443,7 +496,7 @@ func (m *WizardModel) nextStep() (tea.Model, tea.Cmd) {
 			m.err = fmt.Errorf("issue number/url is required")
 			return m, nil
 		}
-		m.state = stateAgents
+		m.state = stateSteps
 
 	case stateQueueFilters:
 		val := strings.TrimSpace(m.textInput.Value())
@@ -474,24 +527,39 @@ func (m *WizardModel) nextStep() (tea.Model, tea.Cmd) {
 			m.cfg.IssueQueue.Label = m.queueLabel
 			m.cfg.IssueQueue.Author = m.queueAuthor
 			m.cfg.IssueQueue.Limit = limit
-			m.state = stateAgents
+			m.state = stateStrategy
 		}
 
-	case stateAgents:
-		m.cfg.Discover.Agent = m.stepToAgent["discover"]
-		m.cfg.Execute.Agent = m.stepToAgent["execute"]
-		m.cfg.Verify.Agent = m.stepToAgent["verify"]
-		m.cfg.Commit.Agent = m.stepToAgent["commit"]
+	case stateStrategy:
+		// Worktree collapse competes with solo; choosing it removes solo from the
+		// next (loop-shape) screen. Reset the dependent cursors so a stale index
+		// can't point past the (possibly shorter) shape menu.
+		m.cfg.Worktree = m.strategyIndex == 1
+		m.stepsIndex = 0
+		m.agentIndex = 0
 		m.state = stateSteps
 
 	case stateSteps:
-		m.cfg.Steps = m.stepsOptions[m.stepsIndex]
+		choices := m.stepsChoices()
+		if m.stepsIndex >= len(choices) {
+			m.stepsIndex = len(choices) - 1
+		}
+		m.cfg.Steps = choices[m.stepsIndex]
 		// 1 step == solo mode: one agent does everything and mm waits for the PR
 		// to merge (serializing a queue so issues never conflict). WaitForMerge
 		// tracks Solo so toggling solo off (back-navigation) doesn't strand it on.
 		m.cfg.Solo = m.cfg.Steps == 1
 		m.cfg.WaitForMerge = m.cfg.Solo
 		m.cfg.Commit.Enabled = m.cfg.Steps == 4
+		m.agentIndex = 0 // agents screen now shows a shape-dependent row set
+		m.customAgents = false
+		m.state = stateAgents
+
+	case stateAgents:
+		m.cfg.Discover.Agent = m.stepToAgent["discover"]
+		m.cfg.Execute.Agent = m.stepToAgent["execute"]
+		m.cfg.Verify.Agent = m.stepToAgent["verify"]
+		m.cfg.Commit.Agent = m.stepToAgent["commit"]
 		m.state = stateOptions
 
 	case stateOptions:
@@ -500,11 +568,6 @@ func (m *WizardModel) nextStep() (tea.Model, tea.Cmd) {
 		m.cfg.FixUnrelatedTests = m.optionsValues[2]
 		m.cfg.Fresh = m.optionsValues[3]
 		m.cfg.NoMerge = !m.optionsValues[4]
-		// Worktree collapse is a queue-only strategy and competes with solo; ignore
-		// the toggle outside queue mode or when solo is selected, so the wizard can
-		// never emit a config that Validate() would reject (which would hard-exit
-		// after the user already completed the whole wizard).
-		m.cfg.Worktree = m.optionsValues[5] && m.cfg.Mode == "queue" && !m.cfg.Solo
 		m.state = stateMaxIters
 		cmd = m.resetInput("Max iterations per task (default 10)")
 		m.textInput.SetValue("10")
@@ -563,25 +626,28 @@ func (m *WizardModel) prevStep() (tea.Model, tea.Cmd) {
 		default: // label -> mode
 			m.state = stateMode
 		}
-	case stateAgents:
+	case stateStrategy:
+		m.state = stateQueueFilters
+		m.queueSub = 2
+		cmd = m.resetInput("Max issues (default 20)")
+		m.textInput.SetValue(m.queueLimit)
+	case stateSteps:
 		switch m.cfg.Mode {
+		case "queue":
+			m.state = stateStrategy
 		case "issue":
 			m.state = stateIssueDetails
+			cmd = m.resetInput("Issue number or URL")
 			m.textInput.SetValue(m.cfg.Issue)
-		case "queue":
-			m.state = stateQueueFilters
-			m.queueSub = 2
-			m.resetInput("Max issues (default 20)")
-			m.textInput.SetValue(m.queueLimit)
 		default:
 			m.state = stateMission
+			cmd = m.resetInput("Mission (e.g. add dark-mode toggle)")
 			m.textInput.SetValue(m.cfg.Mission)
 		}
-		cmd = m.textInput.Focus()
-	case stateSteps:
-		m.state = stateAgents
-	case stateOptions:
+	case stateAgents:
 		m.state = stateSteps
+	case stateOptions:
+		m.state = stateAgents
 	case stateMaxIters:
 		m.state = stateOptions
 	case stateConfirm:
@@ -593,10 +659,11 @@ func (m *WizardModel) prevStep() (tea.Model, tea.Cmd) {
 
 func (m *WizardModel) cycleAgent(stepIdx, dir int) {
 	cycle := agentCycleList() // "random" + the concrete roster
-	if len(cycle) == 0 {
+	keys := m.agentStepKeys()
+	if len(cycle) == 0 || stepIdx < 0 || stepIdx >= len(keys) {
 		return
 	}
-	step := stepLabels[stepIdx]
+	step := keys[stepIdx]
 	current := m.stepToAgent[step]
 	idx, found := 0, false
 	for i, name := range cycle {
@@ -627,24 +694,24 @@ func (m *WizardModel) View() tea.View {
 
 	switch m.state {
 	case stateRepo:
-		s.WriteString(stepHeader(1, "Repository"))
+		s.WriteString(stepHeader("Repository"))
 		s.WriteString("  Where is the codebase?\n\n  " + m.textInput.View() + "\n")
 	case stateBaseBranch:
-		s.WriteString(stepHeader(2, "Base branch"))
+		s.WriteString(stepHeader("Base branch"))
 		s.WriteString("  Target base branch (e.g. main, dev, master)?\n\n  " + m.textInput.View() + "\n")
 	case stateMode:
-		s.WriteString(stepHeader(3, "What do you want to do?"))
+		s.WriteString(stepHeader("What do you want to do?"))
 		for i, label := range m.modeLabels {
 			s.WriteString(radio(i == m.modeIndex, label))
 		}
 	case stateMission:
-		s.WriteString(stepHeader(4, "Mission"))
+		s.WriteString(stepHeader("Mission"))
 		s.WriteString("  What should the agents build or fix?\n\n  " + m.textInput.View() + "\n")
 	case stateIssueDetails:
-		s.WriteString(stepHeader(4, "GitHub issue"))
+		s.WriteString(stepHeader("GitHub issue"))
 		s.WriteString("  Issue number (e.g. 42) or URL:\n\n  " + m.textInput.View() + "\n")
 	case stateQueueFilters:
-		s.WriteString(stepHeader(4, "Queue filters"))
+		s.WriteString(stepHeader("Queue filters"))
 		hints := []string{
 			"Filter by label (optional):",
 			"Filter by author login (optional):",
@@ -652,11 +719,30 @@ func (m *WizardModel) View() tea.View {
 		}
 		s.WriteString("  " + hints[m.queueSub] + "\n\n  " + m.textInput.View() + "\n")
 
+	case stateStrategy:
+		s.WriteString(stepHeader("Queue strategy"))
+		s.WriteString("  How should the queue be turned into PRs?\n\n")
+		labels := []string{
+			"Per-issue PRs  —  one PR per issue, opened back-to-back (fast)",
+			"Worktree collapse  —  build each issue in isolation, ship ONE mega PR (no conflicts)",
+		}
+		for i, label := range labels {
+			s.WriteString(radio(i == m.strategyIndex, label))
+		}
+		s.WriteString("\n" + stDim.Render("  Tip: for per-issue PRs, pick the solo loop shape next to drain one merged PR at a time."))
+		s.WriteString("\n")
+
+	case stateSteps:
+		s.WriteString(stepHeader("Loop shape"))
+		for i, steps := range m.stepsChoices() {
+			s.WriteString(radio(i == m.stepsIndex, stepLabelFor(steps)))
+		}
 	case stateAgents:
-		s.WriteString(stepHeader(5, "Agents per step"))
+		s.WriteString(stepHeader("Agents"))
+		keys := m.agentStepKeys()
 		if m.customAgents {
-			s.WriteString("  Pick an agent for each step (←/→ to change · " + rainbowText("random", m.frame) + " rolls a fresh one each iteration):\n\n")
-			for i, step := range stepLabels {
+			s.WriteString("  Pick an agent (←/→ to change · " + rainbowText("random", m.frame) + " rolls a fresh one each iteration):\n\n")
+			for i, step := range keys {
 				cursor := "  "
 				st := stFg
 				if i == m.agentIndex {
@@ -664,37 +750,27 @@ func (m *WizardModel) View() tea.View {
 					st = stMag
 				}
 				value := st.Render("◄ ") + m.renderAgent(m.stepToAgent[step], st) + st.Render(" ►")
-				s.WriteString(fmt.Sprintf("  %s%-12s %s\n", cursor, step+":", value))
+				s.WriteString(fmt.Sprintf("  %s%-12s %s\n", cursor, m.agentRowLabel(step)+":", value))
 			}
 			s.WriteString("\n" + stDim.Render("  c: done customizing"))
 		} else {
 			s.WriteString("  Default is " + rainbowText("random", m.frame) + " — a fresh installed agent per iteration:\n\n")
-			for _, step := range stepLabels {
-				s.WriteString(fmt.Sprintf("  %-12s %s\n", step+":", m.renderAgent(m.stepToAgent[step], stGreen)))
+			for _, step := range keys {
+				s.WriteString(fmt.Sprintf("  %-12s %s\n", m.agentRowLabel(step)+":", m.renderAgent(m.stepToAgent[step], stGreen)))
 			}
 			s.WriteString("\n" + stDim.Render("  c: customize"))
 		}
 		s.WriteString("\n")
-	case stateSteps:
-		s.WriteString(stepHeader(6, "Loop shape"))
-		labels := []string{
-			"4 steps  discover → execute → verify → commit  (opens PR)",
-			"3 steps  discover → execute → verify  (local commit, no PR agent)",
-			"1 step   solo — one agent does it all, then mm waits for the PR to merge",
-		}
-		for i, label := range labels {
-			s.WriteString(radio(i == m.stepsIndex, label))
-		}
 	case stateOptions:
-		s.WriteString(stepHeader(7, "Options"))
+		s.WriteString(stepHeader("Options"))
 		for i, name := range m.optionsList {
 			s.WriteString(checkbox(i == m.optionsIndex, m.optionsValues[i], name))
 		}
 	case stateMaxIters:
-		s.WriteString(stepHeader(8, "Iteration budget"))
+		s.WriteString(stepHeader("Iteration budget"))
 		s.WriteString("  Max loop iterations per task:\n\n  " + m.textInput.View() + "\n")
 	case stateConfirm:
-		s.WriteString(stepHeader(9, "Review & launch"))
+		s.WriteString(stepHeader("Review & launch"))
 		s.WriteString(m.confirmView())
 	}
 
@@ -764,15 +840,19 @@ func (m *WizardModel) confirmView() string {
 		b.WriteString(row("wait merge", boolStr(m.cfg.WaitForMerge)))
 	}
 	if m.cfg.Mode == "queue" {
-		b.WriteString(row("worktree", boolStr(m.cfg.Worktree)))
+		strat := "per-issue PRs"
+		if m.cfg.Worktree {
+			strat = "worktree collapse (one mega PR)"
+		}
+		b.WriteString(row("strategy", stCyan.Render(strat)))
 	}
 	b.WriteString(row("max iters", strconv.Itoa(m.cfg.MaxIterations)))
 	b.WriteString("\n  " + stGreen.Render("Press enter to launch the loop."))
 	return b.String()
 }
 
-func stepHeader(n int, title string) string {
-	return stMag.Render(fmt.Sprintf("  ▸ Step %d  ", n)) + stBold.Render(title) + "\n\n"
+func stepHeader(title string) string {
+	return stMag.Render("  ▸ ") + stBold.Render(title) + "\n\n"
 }
 
 func radio(selected bool, label string) string {

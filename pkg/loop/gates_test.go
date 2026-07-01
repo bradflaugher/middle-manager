@@ -140,6 +140,57 @@ func TestScanForSecrets(t *testing.T) {
 	}
 }
 
+// The corpus must contain only ADDED tracked lines and untracked contents —
+// deletions and untouched files stay out.
+func TestChangedCorpus(t *testing.T) {
+	l, repo := newGateLoop(t)
+	if err := os.WriteFile(filepath.Join(repo, "app.py"), []byte("print('new')\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "notes.txt"), []byte("untracked stuff\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	corpus := l.changedCorpus()
+	if got := corpus["app.py"]; !strings.Contains(got, "print('new')") || strings.Contains(got, "print('hi')") {
+		t.Errorf("tracked corpus wrong (must be added lines only): %q", got)
+	}
+	if corpus["notes.txt"] != "untracked stuff\n" {
+		t.Errorf("untracked corpus wrong: %q", corpus["notes.txt"])
+	}
+	if _, ok := corpus["AGENTS.md"]; ok {
+		t.Error("untouched file leaked into the corpus")
+	}
+}
+
+// When gitleaks is installed its ruleset backs the builtin patterns; findings
+// come back attributed to the real (staged-relative) file path.
+func TestGitleaksScan(t *testing.T) {
+	if _, err := exec.LookPath("gitleaks"); err != nil {
+		t.Skip("gitleaks not installed")
+	}
+	l, repo := newGateLoop(t)
+	// Stripe/Twilio-style keys: covered by gitleaks' community rules,
+	// deliberately NOT by mm's builtin patterns — proves the integration adds
+	// coverage beyond the builtins. Assembled at runtime so the fake keys
+	// never appear as contiguous literals in this source file (GitHub's push
+	// protection flags them otherwise — validating the whole idea, really).
+	payload := "stripe_api_key = \"sk_live_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4\"\n" +
+		"twilio_sid = \"SK" + "0123456789abcdef0123456789abcdef\"\n"
+	if err := os.WriteFile(filepath.Join(repo, "pay.env"), []byte(payload), 0644); err != nil {
+		t.Fatal(err)
+	}
+	hits := l.scanForSecrets()
+	found := false
+	for _, h := range hits {
+		if h.File == "pay.env" && strings.HasPrefix(h.Pattern, "gitleaks:") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("gitleaks did not flag the Stripe key: %+v", hits)
+	}
+}
+
 // The combined gate fails the iteration on a hit, records it in the error log
 // for the next attempt, and honors the --no-secret-scan escape hatch.
 func TestEnforcePreCommitGates(t *testing.T) {

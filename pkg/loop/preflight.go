@@ -2,15 +2,12 @@ package loop
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/bradflaugher/middle-manager/pkg/agents"
@@ -121,19 +118,3 @@ func AcquireRepoLock(stateDir string) (release func(), err error) {
 	return func() { _ = os.Remove(path) }, nil
 }
 
-// pidAlive reports whether a process exists (signal 0 probe). EPERM counts as
-// alive: it means the process exists but belongs to another user — exactly the
-// case where clobbering its lock would be worst. On Windows there is no cheap
-// probe, so a stale lock is always taken over — weaker protection is better
-// than permanently locking a repo behind a crash.
-func pidAlive(pid int) bool {
-	if runtime.GOOS == "windows" {
-		return false
-	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	err = proc.Signal(syscall.Signal(0))
-	return err == nil || errors.Is(err, syscall.EPERM)
-}

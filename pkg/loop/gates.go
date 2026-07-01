@@ -1,8 +1,10 @@
 package loop
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -76,13 +78,69 @@ type secretHit struct {
 	Pattern string
 }
 
-// scanForSecrets inspects what is about to ship — ADDED lines of the working
-// diff plus the content of untracked files — for credential-shaped strings.
-// Deletions are ignored (removing a secret must never block the commit).
+// changedCorpus collects what is about to ship, per file: the ADDED lines of
+// the tracked diff, plus the full content of untracked files (which never
+// appear in `diff HEAD` but WILL be swept up by the commit). Deletions are
+// excluded on purpose — removing a secret must never block the commit.
+func (l *MiddleManagerLoop) changedCorpus() map[string]string {
+	corpus := map[string]string{}
+
+	diff, _, code, err := gitops.RunGit(l.cfg.Repo, "diff", "HEAD")
+	if err == nil && code == 0 {
+		current := ""
+		var b strings.Builder
+		flush := func() {
+			if current != "" && b.Len() > 0 {
+				corpus[current] += b.String()
+			}
+			b.Reset()
+		}
+		for _, line := range strings.Split(diff, "\n") {
+			if strings.HasPrefix(line, "+++ b/") {
+				flush()
+				current = strings.TrimPrefix(line, "+++ b/")
+				continue
+			}
+			if !strings.HasPrefix(line, "+") || strings.HasPrefix(line, "+++") {
+				continue
+			}
+			b.WriteString(strings.TrimPrefix(line, "+"))
+			b.WriteByte('\n')
+		}
+		flush()
+	}
+
+	for _, entry := range gitops.StatusEntries(l.cfg.Repo) {
+		if entry.Status != "??" {
+			continue
+		}
+		abs := filepath.Join(l.cfg.Repo, entry.Path)
+		info, err := os.Stat(abs)
+		if err != nil || info.IsDir() || info.Size() > 1<<20 {
+			continue
+		}
+		b, err := os.ReadFile(abs)
+		if err != nil || strings.ContainsRune(string(b[:min(len(b), 8000)]), '\x00') {
+			continue // unreadable or binary
+		}
+		corpus[entry.Path] = string(b)
+	}
+	return corpus
+}
+
+// scanForSecrets inspects the about-to-ship corpus for credential-shaped
+// strings. The builtin high-confidence patterns always run; when `gitleaks`
+// is installed its full ruleset runs too (see gitleaksScan) and findings are
+// merged. Fail-open on scanner malfunction, fail-closed on findings.
 func (l *MiddleManagerLoop) scanForSecrets() []secretHit {
 	if !gitops.RepoIsGit(l.cfg.Repo) {
 		return nil
 	}
+	corpus := l.changedCorpus()
+	if len(corpus) == 0 {
+		return nil
+	}
+
 	var hits []secretHit
 	seen := map[string]bool{}
 	record := func(file, pattern string) {
@@ -93,46 +151,88 @@ func (l *MiddleManagerLoop) scanForSecrets() []secretHit {
 		}
 	}
 
-	diff, _, code, err := gitops.RunGit(l.cfg.Repo, "diff", "HEAD")
-	if err == nil && code == 0 {
-		current := ""
-		for _, line := range strings.Split(diff, "\n") {
-			if strings.HasPrefix(line, "+++ b/") {
-				current = strings.TrimPrefix(line, "+++ b/")
-				continue
-			}
-			if !strings.HasPrefix(line, "+") || strings.HasPrefix(line, "+++") {
-				continue
-			}
-			for _, p := range secretPatterns {
-				if p.re.MatchString(line) {
-					record(current, p.Name)
-				}
-			}
-		}
-	}
-
-	// Untracked files never appear in `diff HEAD` but WILL be swept up by the
-	// commit — scan their whole content (bounded, text only).
-	for _, entry := range gitops.StatusEntries(l.cfg.Repo) {
-		if entry.Status != "??" {
-			continue
-		}
-		file := entry.Path
-		abs := filepath.Join(l.cfg.Repo, file)
-		info, err := os.Stat(abs)
-		if err != nil || info.IsDir() || info.Size() > 1<<20 {
-			continue
-		}
-		b, err := os.ReadFile(abs)
-		if err != nil || strings.ContainsRune(string(b[:min(len(b), 8000)]), '\x00') {
-			continue // unreadable or binary
-		}
+	for file, content := range corpus {
 		for _, p := range secretPatterns {
-			if p.re.Match(b) {
+			if p.re.MatchString(content) {
 				record(file, p.Name)
 			}
 		}
+	}
+	for _, h := range l.gitleaksScan(corpus) {
+		record(h.File, h.Pattern)
+	}
+	return hits
+}
+
+// gitleaksScan runs gitleaks — when it is installed — over a staged copy of
+// the corpus, so its full community ruleset backs the builtin patterns. The
+// staging keeps two properties the obvious `gitleaks dir <repo>` would lose:
+// only NEW content is scanned (a pre-existing secret elsewhere in the repo
+// must not block an unrelated change), and file attribution stays exact.
+func (l *MiddleManagerLoop) gitleaksScan(corpus map[string]string) []secretHit {
+	bin, err := exec.LookPath("gitleaks")
+	if err != nil {
+		return nil
+	}
+
+	stage := filepath.Join(l.state, "secretscan")
+	_ = os.RemoveAll(stage)
+	defer os.RemoveAll(stage)
+	for file, content := range corpus {
+		dst := filepath.Join(stage, filepath.FromSlash(file))
+		if !strings.HasPrefix(dst, stage+string(filepath.Separator)) {
+			continue // a hostile "../" path must not escape the staging dir
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+			continue
+		}
+		_ = os.WriteFile(dst, []byte(content), 0600)
+	}
+
+	report := filepath.Join(l.state, "gitleaks.json")
+	defer os.Remove(report)
+	// `gitleaks dir` (v8.19+), falling back to the older `detect --no-git`.
+	// Exit 0 = clean, exit 1 = leaks found; anything else is a tool error and
+	// the builtin patterns remain the backstop.
+	run := func(args ...string) (int, string) {
+		cmd := exec.Command(bin, args...)
+		var stderr strings.Builder
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				return exitErr.ExitCode(), stderr.String()
+			}
+			return -1, stderr.String()
+		}
+		return 0, stderr.String()
+	}
+	code, stderr := run("dir", stage, "--no-banner", "--report-format", "json", "--report-path", report)
+	if code != 0 && code != 1 && (strings.Contains(stderr, "unknown command") || strings.Contains(stderr, "unknown flag")) {
+		code, _ = run("detect", "--no-git", "--source", stage, "--no-banner", "--report-format", "json", "--report-path", report)
+	}
+	if code != 0 && code != 1 {
+		l.Log("⚠️ gitleaks is installed but errored — falling back to builtin secret patterns only.", colors.Yellow)
+		return nil
+	}
+
+	b, err := os.ReadFile(report)
+	if err != nil {
+		return nil
+	}
+	var findings []struct {
+		RuleID string `json:"RuleID"`
+		File   string `json:"File"`
+	}
+	if err := json.Unmarshal(b, &findings); err != nil {
+		return nil
+	}
+	var hits []secretHit
+	for _, f := range findings {
+		file := f.File
+		if rel, err := filepath.Rel(stage, file); err == nil && !strings.HasPrefix(rel, "..") {
+			file = filepath.ToSlash(rel)
+		}
+		hits = append(hits, secretHit{File: file, Pattern: "gitleaks:" + f.RuleID})
 	}
 	return hits
 }

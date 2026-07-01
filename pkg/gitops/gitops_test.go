@@ -383,3 +383,35 @@ func TestStatusEntriesFirstLineNotMangled(t *testing.T) {
 		t.Errorf("untracked entry wrong: %+v", entries)
 	}
 }
+
+// directMergeDecision: merge only on unambiguous green; bail (permanently) on
+// red rollup with nothing required; otherwise keep waiting.
+func TestDirectMergeDecision(t *testing.T) {
+	open := func(mergeable, checks string) *gitops.PRStatus {
+		return &gitops.PRStatus{State: "OPEN", Mergeable: mergeable, ChecksState: checks}
+	}
+	cases := []struct {
+		name      string
+		st        *gitops.PRStatus
+		required  string
+		wantMerge bool
+		wantBail  bool
+	}{
+		{"required passing", open("MERGEABLE", "passing"), "passing", true, false},
+		{"no checks at all", open("MERGEABLE", "none"), "none", true, false},
+		{"optional green", open("MERGEABLE", "passing"), "none", true, false},
+		{"required pending", open("MERGEABLE", "pending"), "pending", false, false},
+		{"optional pending", open("MERGEABLE", "pending"), "none", false, false},
+		{"red rollup nothing required", open("MERGEABLE", "failing"), "none", false, true},
+		{"mergeability unknown", open("UNKNOWN", "none"), "none", false, false},
+		{"not open", &gitops.PRStatus{State: "MERGED", Mergeable: "MERGEABLE"}, "none", false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			mergeNow, bail := gitops.DirectMergeDecisionForTest(c.st, c.required)
+			if mergeNow != c.wantMerge || (bail != "") != c.wantBail {
+				t.Errorf("(merge=%v bail=%q), want merge=%v bail=%v", mergeNow, bail, c.wantMerge, c.wantBail)
+			}
+		})
+	}
+}

@@ -693,15 +693,21 @@ func (l *MiddleManagerLoop) pushAndOpenPR(iteration int, issueData map[string]st
 	l.Log(fmt.Sprintf("PR created: %s", prURL), colors.Green)
 
 	prNum := prNumberFromURL(prURL)
+	autoMergeArmed := false
 	if !l.cfg.NoMerge && prNum > 0 {
 		l.Log(fmt.Sprintf("Enabling GitHub auto-merge on PR #%d...", prNum), colors.Cyan)
 		out, err := gitops.EnableAutoMerge(l.cfg.Repo, prNum, "squash", true, l.cfg.DryRun)
 		if err != nil {
-			l.Log(fmt.Sprintf("⚠️ Could not enable auto-merge: %v", err), colors.Yellow)
-		} else if out != "" {
-			l.Log(fmt.Sprintf("Auto-merge enabled: %s", out), colors.Green)
+			// Typical on repos without branch protection, where GitHub refuses to
+			// arm auto-merge. Not a dead end: mm merges deterministically instead.
+			l.Log(fmt.Sprintf("⚠️ Could not enable GitHub auto-merge (%v) — falling back to deterministic merge by middle-manager.", err), colors.Yellow)
 		} else {
-			l.Log("Auto-merge enabled.", colors.Green)
+			autoMergeArmed = true
+			if out != "" {
+				l.Log(fmt.Sprintf("Auto-merge enabled: %s", out), colors.Green)
+			} else {
+				l.Log("Auto-merge enabled.", colors.Green)
+			}
 		}
 	}
 
@@ -710,8 +716,8 @@ func (l *MiddleManagerLoop) pushAndOpenPR(iteration int, issueData map[string]st
 		if timeout <= 0 {
 			timeout = 60 * time.Minute
 		}
-		l.Log(fmt.Sprintf("⏳ Waiting for PR #%d to merge (auto-merge on; bounded by %s). CI must pass.", prNum, timeout), colors.Cyan)
-		merged, reason := gitops.WaitForPRMerge(l.ctx, l.cfg.Repo, prNum, timeout, func(m string) { l.Log(m, colors.Dim) })
+		l.Log(fmt.Sprintf("⏳ Waiting for PR #%d to merge (bounded by %s). CI must pass.", prNum, timeout), colors.Cyan)
+		merged, reason := gitops.WaitForPRMerge(l.ctx, l.cfg.Repo, prNum, timeout, !l.cfg.NoMerge, func(m string) { l.Log(m, colors.Dim) })
 		if merged {
 			l.Log(fmt.Sprintf("✅ PR #%d merged.", prNum), colors.Green)
 			return nil
@@ -719,6 +725,18 @@ func (l *MiddleManagerLoop) pushAndOpenPR(iteration int, issueData map[string]st
 		// Don't leave a half-armed auto-merge that could land after we've moved on.
 		gitops.DisableAutoMerge(l.cfg.Repo, prNum)
 		return fmt.Errorf("PR #%d did not merge: %s", prNum, reason)
+	}
+
+	// Merge requested but native auto-merge unavailable and no long wait asked:
+	// give the deterministic merge a short, bounded window (checks on a small
+	// change usually settle in seconds; a pending CI just leaves the PR open).
+	if !l.cfg.NoMerge && !autoMergeArmed && prNum > 0 && !l.cfg.DryRun {
+		merged, reason := gitops.WaitForPRMerge(l.ctx, l.cfg.Repo, prNum, 3*time.Minute, true, func(m string) { l.Log(m, colors.Dim) })
+		if merged {
+			l.Log(fmt.Sprintf("✅ PR #%d merged deterministically.", prNum), colors.Green)
+		} else {
+			l.Log(fmt.Sprintf("PR #%d left open (%s) — run `mm merge` to sweep it once green.", prNum, reason), colors.Yellow)
+		}
 	}
 	return nil
 }

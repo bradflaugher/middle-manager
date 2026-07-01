@@ -1046,7 +1046,31 @@ func DisableAutoMerge(repo string, number int) {
 // detected, the timeout elapses, or ctx is cancelled. It NEVER waits forever.
 // merged=true only on an actual merge; otherwise reason explains why it stopped.
 // Polling backs off (start→max) so a long CI wait doesn't hammer the gh API.
-func WaitForPRMerge(ctx context.Context, repo string, number int, timeout time.Duration, log func(string)) (merged bool, reason string) {
+// directMergeDecision decides whether mm should merge the PR itself right now
+// (GitHub's native auto-merge isn't armed — e.g. the repo has no branch
+// protection, where GitHub refuses to enable it). Merge only when the PR is
+// unambiguously green: required checks passing, or no required checks AND the
+// full rollup is green/empty. A red rollup with nothing required bails — mm
+// must not merge over red CI just because the repo never marked it required.
+func directMergeDecision(st *PRStatus, requiredChecks string) (mergeNow bool, bail string) {
+	if st.State != "OPEN" || st.Mergeable != "MERGEABLE" {
+		return false, "" // keep waiting (mergeability may still be computing)
+	}
+	switch requiredChecks {
+	case "passing":
+		return true, ""
+	case "none":
+		switch st.ChecksState {
+		case "none", "passing":
+			return true, ""
+		case "failing":
+			return false, "checks are failing and none are required — refusing to merge over red CI"
+		}
+	}
+	return false, ""
+}
+
+func WaitForPRMerge(ctx context.Context, repo string, number int, timeout time.Duration, directMerge bool, log func(string)) (merged bool, reason string) {
 	logf := func(format string, a ...interface{}) {
 		if log != nil {
 			log(fmt.Sprintf(format, a...))
@@ -1076,6 +1100,21 @@ func WaitForPRMerge(ctx context.Context, repo string, number int, timeout time.D
 				// so don't cancel a merge GitHub will still complete.
 				return false, "a required check is failing (auto-merge cannot complete)"
 			default:
+				// Deterministic fallback: when the operator asked for merging but
+				// GitHub auto-merge could not be armed (typical on repos without
+				// branch protection), mm merges the PR itself the moment it is green.
+				if directMerge && !st.AutoMergeEnabled {
+					if mergeNow, bail := directMergeDecision(st, RequiredChecksState(repo, number)); bail != "" {
+						return false, bail
+					} else if mergeNow {
+						logf("🔀 GitHub auto-merge is not armed — merging PR #%d deterministically (checks green or none).", number)
+						if _, err := MergePR(repo, number, "squash", true, false); err != nil {
+							logf("⚠️ direct merge of PR #%d failed: %v (will retry)", number, err)
+						} else {
+							return true, "merged (by middle-manager)"
+						}
+					}
+				}
 				logf("⏳ PR #%d not merged yet (state=%s merge=%s checks=%s) — waiting…",
 					number, st.State, st.MergeStateStatus, st.ChecksState)
 			}

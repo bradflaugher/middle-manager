@@ -856,6 +856,10 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 			cfg.NoSecretScan = true
 		case arg == "--secret-scan":
 			cfg.NoSecretScan = false
+		case arg == "--merge":
+			cfg.NoMerge = false
+		case arg == "--no-merge":
+			cfg.NoMerge = true
 		case arg == "--state-dir" && i+1 < len(restArgs):
 			cfg.StateDir = restArgs[i+1]
 			i++

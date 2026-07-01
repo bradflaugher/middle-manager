@@ -49,7 +49,7 @@ Every handoff between steps is explicit: the planner's report feeds the programm
 **Nothing ships un-verified, and a verifier's word alone isn't enough:**
 
 - A change is only committed on an explicit `VERDICT: PASS` — a FAIL or a missing/garbled verdict **fails closed** and loops back. (The verifier agent runs your tests; mm itself never does.)
-- After a PASS, **deterministic gates** run in Go: a secret scan blocks credential-shaped strings from ever being committed (`--no-secret-scan` to opt out), and unauthorized edits to `AGENTS.md`/`CLAUDE.md`/`.cursorrules` are auto-reverted unless your mission asked for them.
+- After a PASS, **deterministic gates** run in Go: a secret scan blocks credential-shaped strings from ever being committed (with [gitleaks](https://github.com/gitleaks/gitleaks)' full ruleset automatically layered on when it's installed; `--no-secret-scan` to opt out), and unauthorized edits to `AGENTS.md`/`CLAUDE.md`/`.cursorrules` are auto-reverted unless your mission asked for them.
 - The loop can't spin: an iteration that leaves the tree byte-identical **escalates the agent ladder** or stops; `--max-iterations`, per-step timeouts, and `--max-wall-minutes` are the hard outer bounds.
 - Preflight checks (agents installed, `gh` authenticated when PRs are needed, writable state) run **before** any agent burns a token, and a per-repo lock stops two mm runs from fighting over one working tree.
 
@@ -134,6 +134,7 @@ Two screens are worth knowing about:
 | Good-first-issues sprint | `mm --label "good first issue" --issue-limit 10 --close-issues` |
 | Fix the codebase generally | `mm --mode repair` |
 | **Solo:** one agent does it all, wait for the PR to merge | `mm --issue 42 --solo` |
+| Solo, fully hands-off (mm merges the PR when green) | `mm --issue 42 --solo --merge` |
 | **Solo queue:** drain issues one merged PR at a time | `mm --label bug --solo --close-issues` |
 | **Worktree:** drain a queue into ONE mega PR | `mm --label bug --worktree --close-issues` |
 | Roll a **random** installed agent each iteration | `mm "…" --execute-agent random` |
@@ -243,8 +244,13 @@ so wall-clock per agent is the cost proxy.
 - **3 steps** — `discover → execute → verify`, local commit, no PR agent.
 - **1 step — solo** (`--solo`) — **one agent does everything**: scopes,
   implements, tests, self-reviews, and emits the `VERDICT`. mm still owns git
-  deterministically (commit, one PR, `Closes #N`, auto-merge) and **waits for
-  that PR to actually merge** before returning.
+  deterministically (commit, one PR, `Closes #N`) and **waits for that PR to
+  actually merge** before returning.
+
+With `--merge`, mm arms GitHub auto-merge — and on repos where GitHub refuses
+(no branch protection), **mm merges the PR itself** the moment it's green:
+required checks passing, or no checks at all. It will never merge over red CI,
+required or not. Without `--merge`, PRs wait for a human (or `mm merge`).
 
 ### Draining a GitHub issue queue
 

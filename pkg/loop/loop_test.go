@@ -55,22 +55,127 @@ func TestParseVerifierUpdates(t *testing.T) {
 	}
 }
 
-// resolveAgent must map the random sentinel to whatever was rolled for the
-// iteration, and pass concrete agents through unchanged.
+// The step resolver must map the random sentinel to whatever was rolled for
+// the iteration, and pass concrete agents through unchanged.
 func TestResolveAgentRandom(t *testing.T) {
 	l := &MiddleManagerLoop{cfg: config.NewDefaultConfig()}
 	l.iterationAgent = "grok"
 
-	if got := l.resolveAgent(&config.StepConfig{Agent: agents.RandomAgent}); got != "grok" {
+	if got, _, _ := l.resolveStepAgentModel("execute", &config.StepConfig{Agent: agents.RandomAgent}); got != "grok" {
 		t.Errorf("random resolved to %q, want the iteration's grok", got)
 	}
-	if got := l.resolveAgent(&config.StepConfig{Agent: "claude"}); got != "claude" {
+	if got, _, _ := l.resolveStepAgentModel("execute", &config.StepConfig{Agent: "claude"}); got != "claude" {
 		t.Errorf("explicit agent changed to %q, want claude", got)
 	}
 	// No agent rolled (nothing installed) → random resolves to empty.
 	l.iterationAgent = ""
-	if got := l.resolveAgent(&config.StepConfig{Agent: agents.RandomAgent}); got != "" {
+	if got, _, _ := l.resolveStepAgentModel("execute", &config.StepConfig{Agent: agents.RandomAgent}); got != "" {
 		t.Errorf("random with no roll = %q, want empty", got)
+	}
+}
+
+// Escalation ladders: tier 0 is the configured base; every EscalateAfter
+// failed iterations advance one rung, capped at the ladder top; the rung's
+// agent+model replace the base pair.
+func TestEscalationTiers(t *testing.T) {
+	cfg := config.NewDefaultConfig()
+	cfg.EscalateAfter = 2
+	l := &MiddleManagerLoop{cfg: cfg}
+	sc := &config.StepConfig{
+		Agent: "opencode", Model: "cheap-model",
+		Escalate: []config.AgentRef{{Agent: "claude", Model: "opus"}, {Agent: "codex"}},
+	}
+
+	check := func(failed int, wantAgent, wantModel string, wantTier int) {
+		t.Helper()
+		l.failedIters = failed
+		agent, model, tier := l.resolveStepAgentModel("execute", sc)
+		if agent != wantAgent || model != wantModel || tier != wantTier {
+			t.Errorf("failedIters=%d → (%q, %q, %d), want (%q, %q, %d)",
+				failed, agent, model, tier, wantAgent, wantModel, wantTier)
+		}
+	}
+	check(0, "opencode", "cheap-model", 0)
+	check(1, "opencode", "cheap-model", 0)
+	check(2, "claude", "opus", 1)
+	check(4, "codex", "", 2)
+	check(99, "codex", "", 2) // capped at the ladder top
+
+	// A step with no ladder never escalates.
+	l.failedIters = 99
+	if agent, _, tier := l.resolveStepAgentModel("execute", &config.StepConfig{Agent: "grok"}); agent != "grok" || tier != 0 {
+		t.Errorf("ladder-less step escalated: agent=%q tier=%d", agent, tier)
+	}
+}
+
+// With DistinctVerifier on, the verify step must resolve to a different agent
+// than the executor whenever another agent is installed — the critic never
+// grades its own homework.
+func TestDistinctVerifier(t *testing.T) {
+	cfg := config.NewDefaultConfig()
+	cfg.DistinctVerifier = true
+	cfg.Execute.Agent = "claude"
+	cfg.Verify.Agent = "claude"
+	// Hermetic install set: pin EVERY builtin to a nonexistent binary (overrides
+	// do not fall back to PATH), then mark just claude+grok as installed.
+	fakeInstalled := func(installed ...string) map[string]string {
+		m := map[string]string{}
+		for _, name := range agents.AgentNames {
+			m[name] = "/nonexistent/mm-test-binary"
+		}
+		for _, name := range installed {
+			m[name] = "/bin/sh"
+		}
+		return m
+	}
+	cfg.BinaryOverrides = fakeInstalled("claude", "grok")
+	l := &MiddleManagerLoop{cfg: cfg}
+
+	agent, _, _ := l.resolveStepAgentModel("verify", &cfg.Verify)
+	if agent == "claude" {
+		t.Fatalf("verifier = executor (%q); distinct verifier must swap", agent)
+	}
+	if agent != "grok" {
+		t.Fatalf("verifier = %q, want the other installed agent (grok)", agent)
+	}
+
+	// Executor untouched, and a verify agent that already differs is kept.
+	if got, _, _ := l.resolveStepAgentModel("execute", &cfg.Execute); got != "claude" {
+		t.Errorf("execute agent changed to %q", got)
+	}
+	cfg.Verify.Agent = "grok"
+	l2 := &MiddleManagerLoop{cfg: cfg}
+	if got, _, _ := l2.resolveStepAgentModel("verify", &cfg.Verify); got != "grok" {
+		t.Errorf("already-distinct verifier changed to %q", got)
+	}
+
+	// With only the executor installed, keep it rather than break the loop.
+	cfg.Verify.Agent = "claude"
+	cfg.BinaryOverrides = fakeInstalled("claude")
+	l3 := &MiddleManagerLoop{cfg: cfg}
+	if got, _, _ := l3.resolveStepAgentModel("verify", &cfg.Verify); got != "claude" {
+		t.Errorf("single-agent fallback = %q, want claude", got)
+	}
+}
+
+// bumpTier (used when the stall detector finds headroom) must jump to the next
+// escalation boundary so every ladder advances exactly one rung.
+func TestBumpTierAndHeadroom(t *testing.T) {
+	cfg := config.NewDefaultConfig()
+	cfg.EscalateAfter = 3
+	cfg.Execute.Escalate = []config.AgentRef{{Agent: "claude"}}
+	l := &MiddleManagerLoop{cfg: cfg}
+
+	l.failedIters = 1
+	if !l.escalationHeadroom() {
+		t.Fatal("expected headroom before the ladder top")
+	}
+	l.bumpTier()
+	if got := l.tierFor(&cfg.Execute); got != 1 {
+		t.Errorf("after bumpTier tier = %d, want 1", got)
+	}
+	if l.escalationHeadroom() {
+		t.Error("no headroom expected at the ladder top")
 	}
 }
 

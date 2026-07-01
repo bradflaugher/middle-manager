@@ -144,6 +144,29 @@ var AgentSpecs = map[string]AgentSpec{
 	},
 }
 
+// RegisterAgent adds (or overrides) an agent spec in the roster at startup, so
+// operator-defined CLIs from config work in any seat exactly like built-ins.
+// Overriding a built-in name is allowed on purpose — it lets an operator fix a
+// flag mismatch after an upstream CLI changes, without waiting for an mm release.
+func RegisterAgent(name string, spec AgentSpec) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("custom agent needs a name")
+	}
+	if IsRandom(name) {
+		return fmt.Errorf("agent name %q is reserved", RandomAgent)
+	}
+	if spec.Binary == "" {
+		spec.Binary = name
+	}
+	spec.Name = name
+	if _, exists := AgentSpecs[name]; !exists {
+		AgentNames = append(AgentNames, name)
+	}
+	AgentSpecs[name] = spec
+	return nil
+}
+
 type AgentRun struct {
 	Agent     string
 	Command   []string

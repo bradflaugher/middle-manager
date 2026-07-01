@@ -20,12 +20,64 @@ type IssueQueueConfig struct {
 	CloseComment   string `json:"close_comment"`
 }
 
+// AgentRef names one agent (and optionally a model) — used as a rung in a
+// step's escalation ladder. Parsed from "agent" or "agent:model" strings.
+type AgentRef struct {
+	Agent string `json:"agent"`
+	Model string `json:"model"`
+}
+
+// ParseAgentRef parses "agent" or "agent:model". Only the FIRST colon splits,
+// so models containing colons (e.g. ollama tags like "qwen2.5:14b") survive.
+func ParseAgentRef(s string) AgentRef {
+	s = strings.TrimSpace(s)
+	if i := strings.Index(s, ":"); i >= 0 {
+		return AgentRef{Agent: strings.TrimSpace(s[:i]), Model: strings.TrimSpace(s[i+1:])}
+	}
+	return AgentRef{Agent: s}
+}
+
+// ParseAgentRefList parses a comma-separated escalation ladder like
+// "claude:opus,codex" into ordered AgentRefs, skipping empty entries.
+func ParseAgentRefList(s string) []AgentRef {
+	var refs []AgentRef
+	for _, part := range strings.Split(s, ",") {
+		if ref := ParseAgentRef(part); ref.Agent != "" {
+			refs = append(refs, ref)
+		}
+	}
+	return refs
+}
+
+// AgentDef declares a custom agent CLI in config (key "agents"), so any
+// headless coding CLI — not just the built-in roster — can fill any seat.
+// Zero-value fields follow the same semantics as agents.AgentSpec: an empty
+// PrintFlag appends the prompt as the trailing positional argument.
+type AgentDef struct {
+	Binary     string   `json:"binary"`
+	Subcommand []string `json:"subcommand"`
+	PrintFlag  string   `json:"print_flag"`
+	YoloFlags  []string `json:"yolo_flags"`
+	ModelFlag  string   `json:"model_flag"`
+	CwdFlag    string   `json:"cwd_flag"`
+	ExtraArgs  []string `json:"extra_args"`
+	Notes      string   `json:"notes"`
+}
+
 type StepConfig struct {
 	Agent      string   `json:"agent"`
 	Model      string   `json:"model"`
 	ExtraArgs  []string `json:"extra_args"`
 	PromptFile string   `json:"prompt_file"`
 	Enabled    bool     `json:"enabled"`
+	// TimeoutMinutes bounds one invocation of this step's agent. 0 inherits the
+	// global StepTimeoutMinutes; negative disables the timeout for this step.
+	TimeoutMinutes int `json:"timeout_minutes"`
+	// Escalate is the step's ordered escalation ladder: after every
+	// EscalateAfter failed iterations the step moves one rung up, so a cheap
+	// agent gets the first attempts and a stronger one takes over when the
+	// cheap one is verifiably failing.
+	Escalate []AgentRef `json:"escalate"`
 }
 
 type LoopConfig struct {
@@ -80,6 +132,24 @@ type LoopConfig struct {
 	// debugging instead of pruning them.
 	KeepWorktrees bool `json:"keep_worktrees"`
 
+	// CustomAgents registers extra agent CLIs by name (merged into the built-in
+	// roster at startup), so mm works with any combination of agents.
+	CustomAgents map[string]AgentDef `json:"agents"`
+	// StepTimeoutMinutes is the default wall-clock bound for a single agent
+	// invocation; a hung CLI can otherwise stall the factory forever. 0 disables.
+	// Per-step TimeoutMinutes overrides it.
+	StepTimeoutMinutes int `json:"step_timeout_minutes"`
+	// EscalateAfter is how many failed iterations each escalation rung gets
+	// before the ladder advances (min 1).
+	EscalateAfter int `json:"escalate_after"`
+	// DistinctVerifier forces the verify step onto a different agent than the
+	// one that executed, so the critic never grades its own homework. With
+	// "random" steps the verifier gets its own roll.
+	DistinctVerifier bool `json:"distinct_verifier"`
+	// MaxWallMinutes bounds a whole run's wall clock (0 = unbounded); the loop
+	// stops before starting an iteration that would exceed it.
+	MaxWallMinutes int `json:"max_wall_minutes"`
+
 	// Interactive Wizard overrides
 	Wizard   bool
 	NoWizard bool
@@ -97,6 +167,8 @@ func NewDefaultConfig() *LoopConfig {
 		BatchSize:           1,
 		Fresh:               true,
 		MergeTimeoutMinutes: 60,
+		StepTimeoutMinutes:  60,
+		EscalateAfter:       1,
 		BinaryOverrides:     make(map[string]string),
 		Discover: StepConfig{
 			Agent:   "claude",
@@ -331,6 +403,21 @@ func ConfigFromMap(data map[string]interface{}, repo string) *LoopConfig {
 	if v, ok := data["keep_worktrees"].(bool); ok {
 		cfg.KeepWorktrees = v
 	}
+	if v, ok := data["step_timeout_minutes"].(float64); ok {
+		cfg.StepTimeoutMinutes = int(v)
+	}
+	if v, ok := data["escalate_after"].(float64); ok && int(v) > 0 {
+		cfg.EscalateAfter = int(v)
+	}
+	if v, ok := data["distinct_verifier"].(bool); ok {
+		cfg.DistinctVerifier = v
+	}
+	if v, ok := data["max_wall_minutes"].(float64); ok && int(v) > 0 {
+		cfg.MaxWallMinutes = int(v)
+	}
+	if defs, ok := data["agents"].(map[string]interface{}); ok {
+		cfg.CustomAgents = parseAgentDefs(defs)
+	}
 
 	for _, step := range []string{"discover", "execute", "verify", "commit"} {
 		if sVal, ok := data[step].(map[string]interface{}); ok {
@@ -356,6 +443,12 @@ func ConfigFromMap(data map[string]interface{}, repo string) *LoopConfig {
 			if promptFile, ok := sVal["prompt_file"].(string); ok {
 				sc.PromptFile = promptFile
 			}
+			if timeout, ok := sVal["timeout_minutes"].(float64); ok {
+				sc.TimeoutMinutes = int(timeout)
+			}
+			if esc, ok := sVal["escalate"]; ok {
+				sc.Escalate = parseEscalateValue(esc)
+			}
 		}
 	}
 
@@ -369,6 +462,76 @@ func ConfigFromMap(data map[string]interface{}, repo string) *LoopConfig {
 
 	normalizeSolo(cfg)
 	return cfg
+}
+
+// parseEscalateValue accepts a JSON escalation ladder as either a list of
+// objects ({"agent": "claude", "model": "opus"}), a list of "agent:model"
+// strings, or one comma-separated string — whichever the operator finds natural.
+func parseEscalateValue(v interface{}) []AgentRef {
+	switch val := v.(type) {
+	case string:
+		return ParseAgentRefList(val)
+	case []interface{}:
+		var refs []AgentRef
+		for _, item := range val {
+			switch entry := item.(type) {
+			case string:
+				if ref := ParseAgentRef(entry); ref.Agent != "" {
+					refs = append(refs, ref)
+				}
+			case map[string]interface{}:
+				ref := AgentRef{}
+				if a, ok := entry["agent"].(string); ok {
+					ref.Agent = a
+				}
+				if m, ok := entry["model"].(string); ok {
+					ref.Model = m
+				}
+				if ref.Agent != "" {
+					refs = append(refs, ref)
+				}
+			}
+		}
+		return refs
+	}
+	return nil
+}
+
+// parseAgentDefs decodes the "agents" config map into AgentDefs via a JSON
+// round-trip so the struct tags stay the single source of field names.
+func parseAgentDefs(raw map[string]interface{}) map[string]AgentDef {
+	out := make(map[string]AgentDef, len(raw))
+	for name, v := range raw {
+		b, err := json.Marshal(v)
+		if err != nil {
+			continue
+		}
+		var def AgentDef
+		if err := json.Unmarshal(b, &def); err != nil {
+			continue
+		}
+		if def.Binary == "" {
+			def.Binary = name
+		}
+		out[name] = def
+	}
+	return out
+}
+
+// DefaultConfigPath returns the persistent operator config file
+// ($XDG_CONFIG_HOME or ~/.config)/middle-manager/config.json. It is loaded on
+// every run (then overlaid by --config and CLI flags), so custom agents and
+// escalation ladders only need declaring once.
+func DefaultConfigPath() string {
+	configHome := os.Getenv("XDG_CONFIG_HOME")
+	if configHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			return ""
+		}
+		configHome = filepath.Join(home, ".config")
+	}
+	return filepath.Join(configHome, "middle-manager", "config.json")
 }
 
 // normalizeSolo keeps the solo invariants consistent no matter which knob set
@@ -458,14 +621,25 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 		cfg.Repo = wd
 	}
 
+	// Layered config: the persistent operator file (custom agents, default
+	// ladders) loads first, then an explicit --config file overrides it, then
+	// the CLI flags below override both.
+	baseMap, _ := LoadJSONConfig(DefaultConfigPath())
 	if configFilePath != "" {
 		overrideMap, err := LoadJSONConfig(configFilePath)
 		if err != nil {
 			return "", nil, fmt.Errorf("failed to load config file: %w", err)
 		}
 		if overrideMap != nil {
-			cfg = ConfigFromMap(overrideMap, cfg.Repo)
+			if baseMap != nil {
+				baseMap = MergeConfig(baseMap, overrideMap)
+			} else {
+				baseMap = overrideMap
+			}
 		}
+	}
+	if baseMap != nil {
+		cfg = ConfigFromMap(baseMap, cfg.Repo)
 	}
 
 	// Now parse rest of CLI options
@@ -588,6 +762,28 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 				cfg.MergeTimeoutMinutes = mt
 			}
 			i++
+		case arg == "--step-timeout" && i+1 < len(restArgs):
+			st, err := strconv.Atoi(restArgs[i+1])
+			if err == nil {
+				cfg.StepTimeoutMinutes = st // 0 disables
+			}
+			i++
+		case arg == "--escalate-after" && i+1 < len(restArgs):
+			ea, _ := strconv.Atoi(restArgs[i+1])
+			if ea > 0 {
+				cfg.EscalateAfter = ea
+			}
+			i++
+		case arg == "--distinct-verifier":
+			cfg.DistinctVerifier = true
+		case arg == "--no-distinct-verifier":
+			cfg.DistinctVerifier = false
+		case arg == "--max-wall-minutes" && i+1 < len(restArgs):
+			mw, _ := strconv.Atoi(restArgs[i+1])
+			if mw > 0 {
+				cfg.MaxWallMinutes = mw
+			}
+			i++
 		case arg == "--state-dir" && i+1 < len(restArgs):
 			cfg.StateDir = restArgs[i+1]
 			i++
@@ -673,6 +869,14 @@ func parseStepOverride(sc *StepConfig, field string, idx *int, args []string) {
 			if trimmed != "" {
 				sc.ExtraArgs = append(sc.ExtraArgs, trimmed)
 			}
+		}
+		*idx++
+	case "escalate":
+		sc.Escalate = ParseAgentRefList(val)
+		*idx++
+	case "timeout":
+		if t, err := strconv.Atoi(val); err == nil {
+			sc.TimeoutMinutes = t
 		}
 		*idx++
 	}

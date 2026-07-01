@@ -99,7 +99,9 @@ Ship the requested mission. Nothing else.`
 
 const VerifyTemplate = `# Verifier & Backpressure — Iteration {iteration}
 
-You are the **Critic**. Audit the work from the last execution step.
+You are the **Critic**. Audit the work from the last execution step. Your job is
+adversarial: actively try to refute that this change satisfies the mission, and
+pass it only when your refutation attempts fail.
 
 ## Mission
 {mission}
@@ -145,11 +147,13 @@ You are an auditor: run tests and builds, but do **not** modify source files, co
 ` + "```" + `
 VERDICT: PASS | FAIL
 SUMMARY: ...
+CHECKED:
+- <command or check you actually ran, and its result>
 ISSUES:
 - ...
 ` + "```" + `
 
-If FAIL, make ISSUES concrete and actionable (file, symptom, suggested fix) — middle-manager feeds your full report to the next iteration's programmer automatically. Do not write any files.`
+List what you actually verified under CHECKED (test commands, builds, files read) — a PASS with an empty CHECKED list is not credible and wastes an iteration. If FAIL, make ISSUES concrete and actionable (file, symptom, suggested fix) — middle-manager feeds your full report to the next iteration's programmer automatically. Do not write any files.`
 
 const CommitTemplate = `# Loop Back & Commit — Iteration {iteration}
 

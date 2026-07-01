@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -61,6 +62,14 @@ type MiddleManagerLoop struct {
 	// (the "new random agent per iteration" contract) rather than thrashing
 	// between agents mid-issue.
 	iterationAgent string
+
+	// verifierAgent is the separate roll for the verify step when
+	// DistinctVerifier is on — the critic must not grade its own homework.
+	verifierAgent string
+
+	// failedIters counts iterations whose verdict failed; it drives each step's
+	// escalation ladder (tier = failedIters / EscalateAfter, capped per step).
+	failedIters int
 }
 
 // SetPrefetchedIssue lets the queue runner hand the loop the issue metadata it
@@ -257,14 +266,104 @@ func (l *MiddleManagerLoop) PromptForStep(step string, iteration int, issueData 
 	return prompts.RenderPrompt(template, ctx)
 }
 
-// resolveAgent maps a step's configured agent to the concrete agent to run.
-// A "random" sentinel resolves to the agent rolled once for this iteration
-// (see RunOnce); everything else passes through unchanged.
-func (l *MiddleManagerLoop) resolveAgent(sc *config.StepConfig) string {
-	if agents.IsRandom(sc.Agent) {
-		return l.iterationAgent // "" when no agents are installed; handled by RunStep
+// tierFor returns the step's current escalation rung: 0 is the configured
+// base agent, 1..len(Escalate) index into the ladder. Every EscalateAfter
+// failed iterations advance one rung, capped at the top of this step's ladder.
+func (l *MiddleManagerLoop) tierFor(sc *config.StepConfig) int {
+	if sc == nil || len(sc.Escalate) == 0 {
+		return 0
 	}
-	return sc.Agent
+	after := l.cfg.EscalateAfter
+	if after < 1 {
+		after = 1
+	}
+	tier := l.failedIters / after
+	if tier > len(sc.Escalate) {
+		tier = len(sc.Escalate)
+	}
+	return tier
+}
+
+// escalationHeadroom reports whether any active step still has a higher rung
+// to climb to — used by the stall detector to escalate instead of giving up.
+func (l *MiddleManagerLoop) escalationHeadroom() bool {
+	for _, step := range l.cfg.ActiveSteps() {
+		sc := l.cfg.StepFor(step)
+		if sc != nil && l.tierFor(sc) < len(sc.Escalate) {
+			return true
+		}
+	}
+	return false
+}
+
+// bumpTier force-advances every ladder by one rung (each capped individually)
+// by jumping failedIters to the next escalation boundary.
+func (l *MiddleManagerLoop) bumpTier() {
+	after := l.cfg.EscalateAfter
+	if after < 1 {
+		after = 1
+	}
+	l.failedIters = ((l.failedIters / after) + 1) * after
+}
+
+// resolveStepAgentModel maps a step to the concrete agent+model to run,
+// honoring the escalation tier, the per-iteration random roll, and the
+// distinct-verifier policy. Returns ("", "", tier) when nothing is installed.
+func (l *MiddleManagerLoop) resolveStepAgentModel(step string, sc *config.StepConfig) (string, string, int) {
+	tier := l.tierFor(sc)
+	agent := sc.Agent
+	model := sc.Model
+	if tier > 0 {
+		ref := sc.Escalate[tier-1]
+		agent, model = ref.Agent, ref.Model
+	}
+	if agents.IsRandom(agent) {
+		agent = l.iterationAgent
+		model = "" // a rolled agent has no business inheriting the sentinel's model
+	}
+	if step == "verify" && l.cfg.DistinctVerifier {
+		if swapped, ok := l.distinctVerifier(agent); ok {
+			agent = swapped
+			model = "" // the configured model belonged to the displaced agent
+		}
+	}
+	return agent, model, tier
+}
+
+// distinctVerifier returns a different installed agent when the verifier would
+// otherwise be the same agent that executed this iteration's change. Research
+// on verifier reliability is consistent: an independent critic (fresh process,
+// different model) catches failures a self-review rubber-stamps.
+func (l *MiddleManagerLoop) distinctVerifier(verifyAgent string) (string, bool) {
+	execSC := l.cfg.StepFor("execute")
+	execAgent := execSC.Agent
+	if tier := l.tierFor(execSC); tier > 0 {
+		execAgent = execSC.Escalate[tier-1].Agent
+	}
+	if agents.IsRandom(execAgent) {
+		execAgent = l.iterationAgent
+	}
+	if verifyAgent == "" || execAgent == "" || verifyAgent != execAgent {
+		return verifyAgent, false
+	}
+	if l.verifierAgent != "" && l.verifierAgent != execAgent {
+		return l.verifierAgent, true
+	}
+	// Prefer the verify-step priority order, then any other installed agent
+	// (covers custom agents outside the built-in priority list).
+	for _, name := range agents.StepAgentPriority["verify"] {
+		if name != execAgent && agents.AgentAvailable(name, l.cfg.BinaryOverrides[name]) {
+			l.verifierAgent = name
+			return name, true
+		}
+	}
+	for _, name := range agents.AvailableAgents(l.cfg.BinaryOverrides) {
+		if name != execAgent {
+			l.verifierAgent = name
+			return name, true
+		}
+	}
+	return verifyAgent, false // only one agent installed — keep it, better than nothing
 }
 
 func (l *MiddleManagerLoop) RunStep(step string, iteration int, issueData map[string]string) (string, int, error) {
@@ -274,17 +373,16 @@ func (l *MiddleManagerLoop) RunStep(step string, iteration int, issueData map[st
 		return "", 0, nil
 	}
 
-	agent := l.resolveAgent(sc)
+	agent, model, tier := l.resolveStepAgentModel(step, sc)
 	if agent == "" {
 		// Configured "random" but nothing is installed to roll from.
 		l.Log(fmt.Sprintf("No installed agents available to run step %s — install one of: %s", step, strings.Join(agents.AgentNames, ", ")), colors.Red)
 		return "", 127, nil
 	}
-	binary := l.cfg.BinaryOverrides[agent]
-	model := sc.Model
-	if agents.IsRandom(sc.Agent) {
-		model = "" // a rolled agent has no business inheriting the sentinel's model
+	if tier > 0 {
+		l.Log(fmt.Sprintf("⬆ Escalation tier %d/%d for %s → %s %s", tier, len(sc.Escalate), strings.ToUpper(step), strings.ToUpper(agent), model), colors.Magenta+colors.Bold)
 	}
+	binary := l.cfg.BinaryOverrides[agent]
 	if !agents.AgentAvailable(agent, binary) && !l.cfg.DryRun {
 		fallback := agents.AutodetectAgent(step, l.cfg.BinaryOverrides, "")
 		if fallback != "" && fallback != agent {
@@ -334,7 +432,58 @@ func (l *MiddleManagerLoop) RunStep(step string, iteration int, issueData map[st
 		}
 	}
 
-	stdout, exitCode, err := agents.RunAgent(l.ctx, run, l.cfg.DryRun, step, onUpdate)
+	// Per-step wall-clock bound: a hung CLI must never stall the factory. The
+	// per-step setting overrides the global default; negative disables.
+	timeout := time.Duration(0)
+	switch {
+	case sc.TimeoutMinutes > 0:
+		timeout = time.Duration(sc.TimeoutMinutes) * time.Minute
+	case sc.TimeoutMinutes == 0 && l.cfg.StepTimeoutMinutes > 0:
+		timeout = time.Duration(l.cfg.StepTimeoutMinutes) * time.Minute
+	}
+
+	// Failure taxonomy: an agent CLI that exits nonzero is an INFRASTRUCTURE
+	// failure (crash, rate limit, auth blip) and gets one same-tier retry —
+	// escalation budget is reserved for TASK failures (a verifier FAIL), which
+	// the iteration loop handles. Timeouts are not retried: a step that burned
+	// its full window would likely burn another.
+	var (
+		stdout   string
+		exitCode int
+	)
+	const maxAttempts = 2
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		runCtx := l.ctx
+		var cancel context.CancelFunc
+		if timeout > 0 {
+			runCtx, cancel = context.WithTimeout(l.ctx, timeout)
+		}
+		start := time.Now()
+		stdout, exitCode, err = agents.RunAgent(runCtx, run, l.cfg.DryRun, step, onUpdate)
+		timedOut := runCtx.Err() == context.DeadlineExceeded && l.ctx.Err() == nil
+		if cancel != nil {
+			cancel()
+		}
+		l.appendLedger(map[string]interface{}{
+			"type": "step", "iteration": iteration, "step": step,
+			"agent": agent, "model": model, "tier": tier, "attempt": attempt,
+			"duration_s": round1(time.Since(start).Seconds()),
+			"exit_code":  exitCode, "timed_out": timedOut,
+			"output_bytes": len(stdout),
+		})
+		if timedOut {
+			exitCode = 124
+			err = fmt.Errorf("step %s (%s) timed out after %s", step, agent, timeout)
+			l.Log(fmt.Sprintf("⏱ Step %s (%s) hit its %s timeout — treating as a failed attempt.", strings.ToUpper(step), strings.ToUpper(agent), timeout), colors.Red)
+			break
+		}
+		if exitCode == 0 || l.ctx.Err() != nil || l.cfg.DryRun {
+			break
+		}
+		if attempt < maxAttempts {
+			l.Log(fmt.Sprintf("♻️  Step %s (%s) exited %d — retrying once (infrastructure failure, same tier).", strings.ToUpper(step), strings.ToUpper(agent), exitCode), colors.Yellow)
+		}
+	}
 
 	outputFile := filepath.Join(l.state, fmt.Sprintf("%s_output.txt", step))
 	l.WriteText(outputFile, stdout)
@@ -343,9 +492,39 @@ func (l *MiddleManagerLoop) RunStep(step string, iteration int, issueData map[st
 		l.Log(fmt.Sprintf("✅ Step %s (%s) finished successfully (exit code 0).", strings.ToUpper(step), strings.ToUpper(agent)), colors.Green)
 	} else {
 		l.Log(fmt.Sprintf("❌ Step %s (%s) failed (exit code %d).", strings.ToUpper(step), strings.ToUpper(agent), exitCode), colors.Red)
+		// Capture the failing output's tail for the next iteration's prompts —
+		// a retry must add information, never repeat blind.
+		if strings.TrimSpace(stdout) != "" && step != "verify" && step != "solo" {
+			existingErr := l.ReadText(l.errorLogPath, "")
+			header := fmt.Sprintf("=== Step %s (%s) exited %d (iteration %d) — output tail ===\n", step, agent, exitCode, iteration)
+			l.WriteText(l.errorLogPath, header+prompts.Clip(stdout, 4000, true)+"\n"+existingErr)
+		}
 	}
 
 	return stdout, exitCode, err
+}
+
+func round1(f float64) float64 {
+	return float64(int(f*10+0.5)) / 10
+}
+
+// appendLedger writes one JSONL record to the run ledger (<state>/ledger.jsonl):
+// per-attempt step telemetry, per-iteration verdicts, and the run outcome. Plain
+// headless CLIs don't report token spend uniformly, so wall-clock duration per
+// agent/tier is the cost proxy; `mm status` aggregates it.
+func (l *MiddleManagerLoop) appendLedger(entry map[string]interface{}) {
+	entry["ts"] = time.Now().UTC().Format(time.RFC3339)
+	entry["run_id"] = l.runID
+	b, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(l.state, "ledger.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.Write(append(b, '\n'))
 }
 
 // MaybeCommitAndPR commits the verified work, pushes the branch, and opens the
@@ -589,7 +768,7 @@ func (l *MiddleManagerLoop) RunOnce(iteration int, issueData map[string]string) 
 		}
 
 		sc := l.cfg.StepFor(step)
-		shownAgent := l.resolveAgent(sc)
+		shownAgent, _, _ := l.resolveStepAgentModel(step, sc)
 		if shownAgent == "" {
 			shownAgent = sc.Agent // nothing rolled (no agents installed); show the sentinel
 		}
@@ -657,6 +836,15 @@ func (l *MiddleManagerLoop) RunOnce(iteration int, issueData map[string]string) 
 			}
 		}
 
+		// Mechanical gate: an execute step that crashed AND left no working-tree
+		// changes has produced nothing to verify — skip straight to the next
+		// iteration instead of paying for a verifier run that can only FAIL.
+		if step == "execute" && exitCode != 0 && gitops.RepoIsGit(l.cfg.Repo) && !gitops.HasChanges(l.cfg.Repo) && !l.cfg.DryRun {
+			l.Log("⏭ Execute produced no changes and exited nonzero — skipping verify, looping back.", colors.Yellow)
+			verifierPassed = false
+			break
+		}
+
 		// Interactive mode: pause after each step so the operator can inspect /
 		// interject before the next one runs.
 		if l.cfg.Interactive && !l.cfg.StreamOutput {
@@ -673,8 +861,9 @@ func (l *MiddleManagerLoop) RunOnce(iteration int, issueData map[string]string) 
 		l.WriteText(l.verifyLogPath, fmt.Sprintf("=== Verifier report (iteration %d) ===\n%s", iteration, verifierStdout))
 	}
 
+	verdict := ""
 	if (contains(activeSteps, "verify") || contains(activeSteps, "solo")) && verifierPassed {
-		verdict := l.ParseVerifierUpdates(verifierStdout)
+		verdict = l.ParseVerifierUpdates(verifierStdout)
 		l.Log(fmt.Sprintf("🔍 Verifier Verdict: %s", verdict), colors.Green)
 		// Fail closed: only an explicit PASS ships. A FAIL or a missing/garbled
 		// verdict (UNKNOWN) loops back rather than silently committing unverified
@@ -692,14 +881,31 @@ func (l *MiddleManagerLoop) RunOnce(iteration int, issueData map[string]string) 
 		}
 	}
 
+	l.appendLedger(map[string]interface{}{
+		"type": "iteration", "iteration": iteration,
+		"verdict": verdict, "passed": verifierPassed,
+		"agent": l.iterationAgent, "failed_iters": l.failedIters,
+	})
+
 	if !verifierPassed {
+		// A verified task failure is what advances the escalation ladders — the
+		// next iteration's steps may resolve to a stronger agent/model.
+		l.failedIters++
 		// No-progress detection: if the working diff AND the verifier feedback are
-		// identical to the previous failing iteration, the loop is spinning. Bail
-		// instead of burning iterations (and tokens) on a fixed point.
+		// identical to the previous failing iteration, the loop is spinning. If a
+		// ladder still has headroom, force the next rung instead of giving up —
+		// retrying identically is the one guaranteed waste of tokens.
 		sig := l.iterationSignature(verifierStdout)
 		if sig != "" && sig == l.lastSignature {
 			l.stallCount++
 			if l.stallCount >= 1 {
+				if l.escalationHeadroom() {
+					l.bumpTier()
+					l.stallCount = 0
+					l.lastSignature = "" // demand fresh evidence from the new tier
+					l.Log("⬆ No progress at this tier — escalating the ladder instead of stopping.", colors.Magenta+colors.Bold)
+					return true
+				}
 				l.stalled = true
 				l.stallReason = "no progress — working tree and verifier feedback unchanged across iterations"
 				l.Log("🛑 No progress detected (identical diff + verifier feedback). Stopping loop.", colors.Red+colors.Bold)
@@ -884,19 +1090,35 @@ func (l *MiddleManagerLoop) RunUntilComplete() (*LoopResult, error) {
 	iteration := l.ReadIteration()
 	ran := 0
 
+	finish := func(res *LoopResult) *LoopResult {
+		l.appendLedger(map[string]interface{}{
+			"type": "run", "success": res.Success, "reason": res.Reason,
+			"iterations": res.Iterations, "pr_url": res.PRURL,
+			"duration_s": round1(time.Since(l.startTime).Seconds()),
+			"mission":    l.cfg.Mission,
+		})
+		return res
+	}
+
 	for i := 0; i < l.cfg.MaxIterations; i++ {
+		// Run-level budget: stop before an iteration that starts past the wall
+		// clock cap, with a structured reason instead of an open-ended burn.
+		if l.cfg.MaxWallMinutes > 0 && time.Since(l.startTime) > time.Duration(l.cfg.MaxWallMinutes)*time.Minute {
+			return finish(&LoopResult{Success: false, Reason: fmt.Sprintf("wall-clock budget exhausted (%d min)", l.cfg.MaxWallMinutes), PRURL: l.lastPRURL, Iterations: ran}), nil
+		}
+
 		if !l.RunOnce(iteration, issueData) {
 			if l.success {
 				l.Log("Loop finished successfully.", colors.Green)
-				return &LoopResult{Success: true, Reason: "completed successfully", PRURL: l.lastPRURL, Iterations: ran}, nil
+				return finish(&LoopResult{Success: true, Reason: "completed successfully", PRURL: l.lastPRURL, Iterations: ran}), nil
 			}
 			if l.stalled {
-				return &LoopResult{Success: false, Reason: l.stallReason, PRURL: l.lastPRURL, Iterations: ran}, nil
+				return finish(&LoopResult{Success: false, Reason: l.stallReason, PRURL: l.lastPRURL, Iterations: ran}), nil
 			}
 			if l.failReason != "" {
-				return &LoopResult{Success: false, Reason: l.failReason, PRURL: l.lastPRURL, Iterations: ran}, nil
+				return finish(&LoopResult{Success: false, Reason: l.failReason, PRURL: l.lastPRURL, Iterations: ran}), nil
 			}
-			return &LoopResult{Success: false, Reason: "Stopped by user", PRURL: l.lastPRURL, Iterations: ran}, nil
+			return finish(&LoopResult{Success: false, Reason: "Stopped by user", PRURL: l.lastPRURL, Iterations: ran}), nil
 		}
 
 		ran++
@@ -904,7 +1126,7 @@ func (l *MiddleManagerLoop) RunUntilComplete() (*LoopResult, error) {
 		l.WriteIteration(iteration)
 	}
 
-	return &LoopResult{Success: false, Reason: fmt.Sprintf("Max iterations (%d) reached", l.cfg.MaxIterations), PRURL: l.lastPRURL, Iterations: ran}, nil
+	return finish(&LoopResult{Success: false, Reason: fmt.Sprintf("Max iterations (%d) reached", l.cfg.MaxIterations), PRURL: l.lastPRURL, Iterations: ran}), nil
 }
 
 func (l *MiddleManagerLoop) ResetLoopState() {

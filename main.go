@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +41,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	registerCustomAgents(cfg)
+
 	switch cmdName {
 	case "install-path":
 		cmdInstallPath()
@@ -56,6 +61,41 @@ func main() {
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmdName)
 		os.Exit(1)
+	}
+}
+
+// registerCustomAgents merges operator-declared agent CLIs (config key
+// "agents") into the roster before any command runs, so custom agents show up
+// in `mm agents`, the wizard's pickers, random rolls, and escalation ladders
+// exactly like built-ins. Names are sorted so the roster order is stable.
+func registerCustomAgents(cfg *config.LoopConfig) {
+	if len(cfg.CustomAgents) == 0 {
+		return
+	}
+	names := make([]string, 0, len(cfg.CustomAgents))
+	for name := range cfg.CustomAgents {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		def := cfg.CustomAgents[name]
+		notes := def.Notes
+		if notes == "" {
+			notes = "custom agent (from config)"
+		}
+		spec := agents.AgentSpec{
+			Binary:     def.Binary,
+			Subcommand: def.Subcommand,
+			PrintFlag:  def.PrintFlag,
+			YoloFlags:  def.YoloFlags,
+			ModelFlag:  def.ModelFlag,
+			CwdFlag:    def.CwdFlag,
+			ExtraArgs:  def.ExtraArgs,
+			Notes:      notes,
+		}
+		if err := agents.RegisterAgent(name, spec); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: skipping custom agent %q: %v\n", name, err)
+		}
 	}
 }
 
@@ -112,13 +152,92 @@ func cmdStatus(cfg *config.LoopConfig) {
 	fmt.Printf("State: %s\n\n", state)
 
 	fmt.Println(colors.Colored("Logs & State Files:", colors.Bold+colors.Cyan))
-	for _, name := range []string{"error_log.txt", "verify_log.txt", "iteration.txt", "queue.log"} {
+	for _, name := range []string{"error_log.txt", "verify_log.txt", "iteration.txt", "queue.log", "ledger.jsonl"} {
 		p := filepath.Join(state, name)
 		status := colors.Colored("missing", colors.Yellow)
 		if _, err := os.Stat(p); err == nil {
 			status = colors.Colored("exists", colors.Green)
 		}
 		fmt.Printf("  %-16s: %s\n", name, status)
+	}
+
+	printLedgerSummary(filepath.Join(state, "ledger.jsonl"))
+}
+
+// printLedgerSummary aggregates the run ledger into a per-agent scoreboard —
+// wall-clock time is the cost proxy for plain headless CLIs — plus the last
+// run's outcome, so `mm status` answers "where is my time/money going".
+func printLedgerSummary(ledgerPath string) {
+	f, err := os.Open(ledgerPath)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	type agg struct {
+		steps    int
+		retries  int
+		timeouts int
+		seconds  float64
+	}
+	perAgent := map[string]*agg{}
+	var lastRun map[string]interface{}
+
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	for sc.Scan() {
+		var rec map[string]interface{}
+		if err := json.Unmarshal(sc.Bytes(), &rec); err != nil {
+			continue
+		}
+		switch rec["type"] {
+		case "step":
+			agent, _ := rec["agent"].(string)
+			if agent == "" {
+				continue
+			}
+			a := perAgent[agent]
+			if a == nil {
+				a = &agg{}
+				perAgent[agent] = a
+			}
+			a.steps++
+			if d, ok := rec["duration_s"].(float64); ok {
+				a.seconds += d
+			}
+			if att, ok := rec["attempt"].(float64); ok && att > 1 {
+				a.retries++
+			}
+			if to, ok := rec["timed_out"].(bool); ok && to {
+				a.timeouts++
+			}
+		case "run":
+			lastRun = rec
+		}
+	}
+	if len(perAgent) == 0 {
+		return
+	}
+
+	fmt.Println()
+	fmt.Println(colors.Colored("Ledger (all runs in this state dir):", colors.Bold+colors.Cyan))
+	fmt.Println(colors.Colored(fmt.Sprintf("  %-12s %6s %9s %8s %9s", "AGENT", "STEPS", "TIME", "RETRIES", "TIMEOUTS"), colors.Cyan))
+	names := make([]string, 0, len(perAgent))
+	for name := range perAgent {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(i, j int) bool { return perAgent[names[i]].seconds > perAgent[names[j]].seconds })
+	for _, name := range names {
+		a := perAgent[name]
+		fmt.Printf("  %-12s %6d %9s %8d %9d\n", name, a.steps, (time.Duration(a.seconds) * time.Second).Round(time.Second), a.retries, a.timeouts)
+	}
+	if lastRun != nil {
+		outcome := "failed"
+		if ok, _ := lastRun["success"].(bool); ok {
+			outcome = "succeeded"
+		}
+		reason, _ := lastRun["reason"].(string)
+		fmt.Printf("  Last run: %s (%s)\n", outcome, reason)
 	}
 }
 

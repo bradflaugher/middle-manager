@@ -93,6 +93,10 @@ mm
 | **Solo queue:** drain issues one merged PR at a time | `mm --label bug --solo --close-issues` |
 | **Worktree:** drain a queue into ONE mega PR | `mm --label bug --worktree --close-issues` |
 | Roll a **random** installed agent each iteration | `mm "…" --execute-agent random` |
+| **Cheap agent first, escalate on failure** | `mm --issue 42 --execute-agent opencode --execute-escalate "claude:opus"` |
+| Different agent audits the work | `mm --issue 42 --distinct-verifier` |
+| Bound one agent invocation (minutes) | `mm "…" --step-timeout 30` (per-step: `--execute-timeout 90`) |
+| Bound the whole run (minutes) | `mm --label bug --max-wall-minutes 120` |
 | Point at another repo | `mm quick "…" --repo ~/other-project` |
 | Pause between steps | `mm quick "…" -i` |
 
@@ -104,6 +108,96 @@ Cross-run learnings accumulate in `notes.md` there (override with `--notes-file`
 and are injected into every agent prompt — mm never writes to your `AGENTS.md`.
 Custom prompt overrides are read from `<state-dir>/prompts/*.md` or, if you prefer
 to commit them, `<repo>/.middle-manager/prompts/*.md`.
+
+---
+
+## The Software Factory: mixing big and small agents
+
+middle-manager is built around the routing pattern the multi-agent literature
+keeps converging on: **try the cheap configuration first, escalate only when a
+quality check fails** (reported 45–85% cost savings at ~95% retained quality).
+
+### Escalation ladders
+
+Give any step an ordered ladder of `agent[:model]` rungs. The step starts on
+its base agent; after every `--escalate-after N` failed iterations (default 1
+— a *failed iteration* means the verifier said FAIL, or failed closed) it
+climbs one rung:
+
+```bash
+# opencode tries first; claude-on-opus takes over if it verifiably fails; codex is the last resort
+mm --issue 42 --execute-agent opencode --execute-escalate "claude:opus,codex"
+```
+
+Ladders work on every step (`--discover-escalate`, `--verify-escalate`, …) and
+on the solo agent (solo shares the execute slot). Escalation is keyed on
+**verified failure, not vibes**: every retry ships the verifier's concrete
+findings to the next attempt, and the stall detector (identical diff + identical
+feedback) now **forces the next rung instead of giving up** while ladder
+headroom remains — retrying identically is the one guaranteed waste of tokens.
+
+In JSON config, ladders take strings or objects:
+
+```json
+{ "execute": { "agent": "opencode",
+               "escalate": ["claude:opus", {"agent": "codex", "model": "gpt-5"}] } }
+```
+
+### Independent verifier
+
+`--distinct-verifier` guarantees the verify step runs on a **different agent**
+than the one that wrote the code (with `random` steps the verifier gets its own
+roll). A fresh process on a different model is the cheapest known defense
+against self-review rubber-stamping. The verifier is also prompted
+adversarially and must list what it actually checked — a bare "PASS" with no
+evidence reads as suspicious.
+
+### Bring ANY agent (custom agent definitions)
+
+The built-in roster is just a starting point. Declare any headless coding CLI
+in your persistent config at `~/.config/middle-manager/config.json` (loaded on
+every run, then overlaid by `--config` and CLI flags):
+
+```json
+{
+  "agents": {
+    "aider": {
+      "binary": "aider",
+      "print_flag": "--message",
+      "yolo_flags": ["--yes-always"],
+      "model_flag": "--model",
+      "notes": "aider --message PROMPT --yes-always"
+    }
+  }
+}
+```
+
+Custom agents appear in `mm agents`, the wizard's pickers, `random` rolls, and
+escalation ladders exactly like built-ins. Redefining a built-in name is
+allowed on purpose — it lets you fix a flag mismatch the day an upstream CLI
+changes, without waiting for an mm release.
+
+### Robustness: timeouts, retries, budgets
+
+- **Per-step timeout** (`--step-timeout <min>`, default 60; per-step
+  `--execute-timeout <min>`; `0` disables) — a hung CLI can never stall the
+  factory. Timeouts count as failed attempts and feed the escalation ladder.
+- **Infrastructure vs task failures** — an agent CLI that exits nonzero
+  (crash, rate limit, auth blip) gets one same-tier retry before anything
+  else; escalation budget is reserved for *verified task failures*.
+- **Run budget** (`--max-wall-minutes <min>`) — hard wall-clock ceiling for a
+  whole run, with a structured stop reason instead of an open-ended burn.
+- **Cheap mechanical gates** — an execute step that crashed leaving no
+  working-tree changes skips the verifier entirely (nothing to audit, no
+  tokens spent) and loops back with the error output in context.
+
+### The ledger: know where your time goes
+
+Every step attempt is appended to `<state>/ledger.jsonl` — agent, model, tier,
+attempt, duration, exit code, timeout flag — plus per-iteration verdicts and
+the run outcome. `mm status` aggregates it into a per-agent scoreboard
+(steps / time / retries / timeouts). Plain headless CLIs don't report token
+spend uniformly, so wall-clock per agent is the cost proxy.
 
 ---
 
@@ -119,6 +213,12 @@ and uses it for that whole iteration — so the agent varies issue-to-issue and
 retry-to-retry, spreading work across every CLI you have logged in. Set it
 per-step on the CLI too: `--execute-agent random`. With nothing installed it
 fails closed with a clear message instead of guessing.
+
+The wizard's options screen also carries the two factory quality levers —
+**distinct verifier** and **escalate to a stronger agent on repeated failure**
+(a one-rung ladder to the strongest installed agent) — both defaulting ON when
+you have two or more agents installed. The review screen shows the resulting
+ladder before launch.
 
 ### Loop shape: 4-step · 3-step · solo
 

@@ -7,6 +7,20 @@ import (
 	"testing"
 )
 
+// TestMain isolates the whole package from the operator's real persistent
+// config (~/.config/middle-manager/config.json), which ParseArgs now auto-loads.
+func TestMain(m *testing.M) {
+	tmp, err := os.MkdirTemp("", "mm-config-test-*")
+	if err == nil {
+		os.Setenv("XDG_CONFIG_HOME", tmp)
+	}
+	code := m.Run()
+	if tmp != "" {
+		os.RemoveAll(tmp)
+	}
+	os.Exit(code)
+}
+
 func TestSoloFlagParsing(t *testing.T) {
 	_, cfg, err := ParseArgs([]string{"--solo", "--label", "bug"})
 	if err != nil {
@@ -174,6 +188,116 @@ func TestDefaultStatePathOutsideRepo(t *testing.T) {
 	}
 	if DefaultStatePath(other) == got {
 		t.Fatal("two repos with the same basename must not share a state dir")
+	}
+}
+
+// Escalation ladders parse from CLI ("agent:model,agent"), keeping models
+// intact even when they contain colons (ollama-style tags).
+func TestEscalateFlagParsing(t *testing.T) {
+	_, cfg, err := ParseArgs([]string{"--execute-agent", "opencode", "--execute-escalate", "claude:opus, codex", "--execute-timeout", "30"})
+	if err != nil {
+		t.Fatalf("ParseArgs: %v", err)
+	}
+	want := []AgentRef{{Agent: "claude", Model: "opus"}, {Agent: "codex"}}
+	if len(cfg.Execute.Escalate) != 2 || cfg.Execute.Escalate[0] != want[0] || cfg.Execute.Escalate[1] != want[1] {
+		t.Fatalf("Escalate = %+v, want %+v", cfg.Execute.Escalate, want)
+	}
+	if cfg.Execute.TimeoutMinutes != 30 {
+		t.Errorf("per-step timeout = %d, want 30", cfg.Execute.TimeoutMinutes)
+	}
+
+	if ref := ParseAgentRef("opencode:ollama/qwen2.5:14b"); ref.Model != "ollama/qwen2.5:14b" {
+		t.Errorf("colon-bearing model mangled: %+v", ref)
+	}
+}
+
+func TestFactoryFlagParsing(t *testing.T) {
+	_, cfg, err := ParseArgs([]string{"--step-timeout", "0", "--escalate-after", "2", "--distinct-verifier", "--max-wall-minutes", "90"})
+	if err != nil {
+		t.Fatalf("ParseArgs: %v", err)
+	}
+	if cfg.StepTimeoutMinutes != 0 {
+		t.Errorf("--step-timeout 0 should disable the global timeout, got %d", cfg.StepTimeoutMinutes)
+	}
+	if cfg.EscalateAfter != 2 || !cfg.DistinctVerifier || cfg.MaxWallMinutes != 90 {
+		t.Errorf("factory flags not applied: after=%d distinct=%v wall=%d", cfg.EscalateAfter, cfg.DistinctVerifier, cfg.MaxWallMinutes)
+	}
+	if def := NewDefaultConfig(); def.StepTimeoutMinutes != 60 || def.EscalateAfter != 1 {
+		t.Errorf("defaults: timeout=%d after=%d, want 60/1", def.StepTimeoutMinutes, def.EscalateAfter)
+	}
+}
+
+// JSON configs accept ladders as strings, string lists, or object lists, and
+// declare custom agents under "agents".
+func TestJSONFactoryConfig(t *testing.T) {
+	cfg := ConfigFromMap(map[string]interface{}{
+		"step_timeout_minutes": float64(15),
+		"distinct_verifier":    true,
+		"execute": map[string]interface{}{
+			"agent":    "aider",
+			"escalate": []interface{}{"claude:opus", map[string]interface{}{"agent": "codex", "model": "gpt-5"}},
+		},
+		"verify": map[string]interface{}{
+			"agent":    "claude",
+			"escalate": "claude:opus",
+			"enabled":  true,
+		},
+		"agents": map[string]interface{}{
+			"aider": map[string]interface{}{
+				"binary":     "aider",
+				"print_flag": "--message",
+				"yolo_flags": []interface{}{"--yes-always"},
+				"model_flag": "--model",
+			},
+			"noname": map[string]interface{}{},
+		},
+	}, "")
+
+	if cfg.StepTimeoutMinutes != 15 || !cfg.DistinctVerifier {
+		t.Errorf("globals not applied: timeout=%d distinct=%v", cfg.StepTimeoutMinutes, cfg.DistinctVerifier)
+	}
+	if len(cfg.Execute.Escalate) != 2 ||
+		cfg.Execute.Escalate[0] != (AgentRef{Agent: "claude", Model: "opus"}) ||
+		cfg.Execute.Escalate[1] != (AgentRef{Agent: "codex", Model: "gpt-5"}) {
+		t.Errorf("execute ladder = %+v", cfg.Execute.Escalate)
+	}
+	if len(cfg.Verify.Escalate) != 1 || cfg.Verify.Escalate[0].Model != "opus" {
+		t.Errorf("verify ladder (string form) = %+v", cfg.Verify.Escalate)
+	}
+	aider, ok := cfg.CustomAgents["aider"]
+	if !ok || aider.PrintFlag != "--message" || len(aider.YoloFlags) != 1 {
+		t.Errorf("custom agent not parsed: %+v", aider)
+	}
+	if cfg.CustomAgents["noname"].Binary != "noname" {
+		t.Error("custom agent with no binary should default to its name")
+	}
+}
+
+// The persistent operator config auto-loads and CLI flags still win over it.
+func TestDefaultConfigFileAutoLoads(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	dir := filepath.Join(configHome, "middle-manager")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"escalate_after": 3, "max_iterations": 7, "agents": {"myagent": {"binary": "/usr/bin/myagent"}}}`
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, cfg, err := ParseArgs([]string{"--max-iterations", "4"})
+	if err != nil {
+		t.Fatalf("ParseArgs: %v", err)
+	}
+	if cfg.EscalateAfter != 3 {
+		t.Errorf("persistent config not loaded: EscalateAfter=%d", cfg.EscalateAfter)
+	}
+	if cfg.MaxIterations != 4 {
+		t.Errorf("CLI flag must override persistent config: MaxIterations=%d", cfg.MaxIterations)
+	}
+	if cfg.CustomAgents["myagent"].Binary != "/usr/bin/myagent" {
+		t.Errorf("custom agent from persistent config missing: %+v", cfg.CustomAgents)
 	}
 }
 

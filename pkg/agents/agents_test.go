@@ -125,6 +125,66 @@ func TestPickRandomAgentNeverReturnsSentinel(t *testing.T) {
 	}
 }
 
+// RegisterAgent must add custom CLIs to the roster (usable everywhere a
+// built-in is), default the binary to the name, reject the reserved sentinel,
+// and allow deliberate overrides of built-in specs.
+func TestRegisterAgent(t *testing.T) {
+	origNames := append([]string(nil), AgentNames...)
+	origSpecs := make(map[string]AgentSpec, len(AgentSpecs))
+	for k, v := range AgentSpecs {
+		origSpecs[k] = v
+	}
+	t.Cleanup(func() {
+		AgentNames = origNames
+		AgentSpecs = origSpecs
+	})
+
+	if err := RegisterAgent("aider", AgentSpec{PrintFlag: "--message", YoloFlags: []string{"--yes-always"}}); err != nil {
+		t.Fatalf("RegisterAgent: %v", err)
+	}
+	spec, ok := AgentSpecs["aider"]
+	if !ok || spec.Binary != "aider" || spec.Name != "aider" {
+		t.Fatalf("registered spec wrong: %+v", spec)
+	}
+	found := false
+	for _, n := range AgentNames {
+		if n == "aider" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("custom agent not appended to AgentNames")
+	}
+
+	run, err := BuildCommand("aider", "fix it", "/repo", "", true, nil, "")
+	if err != nil {
+		t.Fatalf("BuildCommand for custom agent: %v", err)
+	}
+	want := []string{"aider", "--message", "fix it", "--yes-always"}
+	if !reflect.DeepEqual(run.Command, want) {
+		t.Errorf("custom argv = %v, want %v", run.Command, want)
+	}
+
+	// Re-registering must override, not duplicate the roster entry.
+	before := len(AgentNames)
+	if err := RegisterAgent("aider", AgentSpec{Binary: "/opt/aider"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(AgentNames) != before {
+		t.Error("re-registering duplicated the roster entry")
+	}
+	if AgentSpecs["aider"].Binary != "/opt/aider" {
+		t.Error("re-registering did not override the spec")
+	}
+
+	if err := RegisterAgent(RandomAgent, AgentSpec{}); err == nil {
+		t.Error("the random sentinel must be rejected as an agent name")
+	}
+	if err := RegisterAgent("  ", AgentSpec{}); err == nil {
+		t.Error("blank agent names must be rejected")
+	}
+}
+
 func TestWithRootSandbox(t *testing.T) {
 	has := func(env []string, want string) bool {
 		for _, e := range env {

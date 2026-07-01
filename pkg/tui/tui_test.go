@@ -10,6 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/bradflaugher/middle-manager/pkg/agents"
 	"github.com/bradflaugher/middle-manager/pkg/config"
 )
 
@@ -537,6 +538,80 @@ func TestWizardPerIssueKeepsSolo(t *testing.T) {
 
 // rainbowText must produce visible, styled output (one ANSI-wrapped run per
 // rune) and stay rune-safe for multibyte input.
+// The options screen owns the two new factory toggles. Committing it must map
+// checkbox #5 to DistinctVerifier and checkbox #6 to an escalation ladder
+// preset on the execute slot (a stronger installed agent, or none available).
+func TestWizardFactoryOptions(t *testing.T) {
+	m := newTestWizard()
+	m.state = stateOptions
+	if len(m.optionsList) != 7 || len(m.optionsValues) != 7 {
+		t.Fatalf("options screen has %d/%d entries, want 7", len(m.optionsList), len(m.optionsValues))
+	}
+
+	m.cfg.Execute.Agent = "opencode"
+	m.optionsValues[5] = true // distinct verifier
+	m.optionsValues[6] = true // escalation preset
+	m = sendW(m, keyEnter())  // commit options → maxIters
+
+	if !m.cfg.DistinctVerifier {
+		t.Error("distinct-verifier checkbox not applied")
+	}
+	// The preset picks the strongest INSTALLED agent, so on a machine with no
+	// agent CLIs the ladder is legitimately empty; when set it must be a single
+	// non-executor rung.
+	if len(m.cfg.Execute.Escalate) > 1 {
+		t.Errorf("preset ladder should be one rung, got %+v", m.cfg.Execute.Escalate)
+	}
+	if len(m.cfg.Execute.Escalate) == 1 && m.cfg.Execute.Escalate[0].Agent == "opencode" {
+		t.Error("preset escalated to the executor itself")
+	}
+
+	// Toggling escalation OFF must clear the ladder ("never escalate").
+	m2 := newTestWizard()
+	m2.state = stateOptions
+	m2.cfg.Execute.Escalate = []config.AgentRef{{Agent: "claude"}}
+	m2.optionsValues[6] = false
+	m2 = sendW(m2, keyEnter())
+	if len(m2.cfg.Execute.Escalate) != 0 {
+		t.Errorf("escalation OFF left a ladder: %+v", m2.cfg.Execute.Escalate)
+	}
+
+	// A config-shaped ladder survives when the toggle stays ON.
+	m3 := newTestWizard()
+	m3.state = stateOptions
+	ladder := []config.AgentRef{{Agent: "claude", Model: "opus"}, {Agent: "codex"}}
+	m3.cfg.Execute.Escalate = ladder
+	m3.optionsValues[6] = true
+	m3 = sendW(m3, keyEnter())
+	if len(m3.cfg.Execute.Escalate) != 2 {
+		t.Errorf("config ladder clobbered by preset: %+v", m3.cfg.Execute.Escalate)
+	}
+}
+
+// escalationPreset must pick a strong installed agent that differs from the
+// base executor, and return nil when nothing else is installed.
+func TestEscalationPreset(t *testing.T) {
+	// Hermetic: overrides never fall back to PATH.
+	overrides := map[string]string{}
+	for _, name := range agents.AgentNames {
+		overrides[name] = "/nonexistent/mm-test-binary"
+	}
+	if got := escalationPreset("opencode", overrides); got != nil {
+		t.Errorf("no installed agents should yield no ladder, got %+v", got)
+	}
+
+	overrides["claude"] = "/bin/sh"
+	got := escalationPreset("opencode", overrides)
+	if len(got) != 1 || got[0].Agent != "claude" {
+		t.Errorf("preset = %+v, want [claude]", got)
+	}
+	// The executor itself is never its own escalation.
+	overrides["codex"] = "/bin/sh"
+	if got := escalationPreset("claude", overrides); len(got) != 1 || got[0].Agent != "codex" {
+		t.Errorf("preset for claude base = %+v, want [codex]", got)
+	}
+}
+
 func TestRainbowTextRenders(t *testing.T) {
 	out := rainbowText("random", 0)
 	if stripANSITest(out) != "random" {

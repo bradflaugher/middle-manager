@@ -307,9 +307,39 @@ func NewWizardModel(initialCfg *config.LoopConfig) *WizardModel {
 		},
 		stepToAgent:   stepToAgent,
 		strategyIndex: boolToIndex(initialCfg.Worktree),
-		optionsList:   []string{"YOLO mode (auto-approve)", "Interactive pause between steps", "Allow fixing unrelated test failures", "Fresh run (reset loop state)", "Auto-merge PRs when green"},
-		optionsValues: []bool{initialCfg.Yolo, initialCfg.Interactive, initialCfg.FixUnrelatedTests, initialCfg.Fresh, !initialCfg.NoMerge},
+		optionsList: []string{
+			"YOLO mode (auto-approve)",
+			"Interactive pause between steps",
+			"Allow fixing unrelated test failures",
+			"Fresh run (reset loop state)",
+			"Auto-merge PRs when green",
+			"Distinct verifier — a different agent audits the work",
+			"Escalate to a stronger agent after repeated failures",
+		},
+		optionsValues: []bool{
+			initialCfg.Yolo, initialCfg.Interactive, initialCfg.FixUnrelatedTests,
+			initialCfg.Fresh, !initialCfg.NoMerge,
+			// Both quality levers default ON in the guided flow: an independent
+			// critic and a failure-triggered escalation ladder cost nothing when
+			// everything passes, and they're the two patterns with the strongest
+			// evidence behind them. Both no-op gracefully with one installed agent.
+			initialCfg.DistinctVerifier || len(agents.AvailableAgents(initialCfg.BinaryOverrides)) >= 2,
+			len(initialCfg.Execute.Escalate) > 0 || len(agents.AvailableAgents(initialCfg.BinaryOverrides)) >= 2,
+		},
 	}
+}
+
+// escalationPreset builds the wizard's one-rung ladder: the strongest
+// installed agent that isn't already the base executor. Power users can shape
+// full multi-rung ladders (with models) via config or --execute-escalate.
+func escalationPreset(baseAgent string, overrides map[string]string) []config.AgentRef {
+	priority := []string{"claude", "codex", "grok", "opencode", "crush", "agy"}
+	for _, name := range priority {
+		if name != baseAgent && agents.AgentAvailable(name, overrides[name]) {
+			return []config.AgentRef{{Agent: name}}
+		}
+	}
+	return nil
 }
 
 func boolToIndex(b bool) int {
@@ -599,6 +629,17 @@ func (m *WizardModel) nextStep() (tea.Model, tea.Cmd) {
 		m.cfg.FixUnrelatedTests = m.optionsValues[2]
 		m.cfg.Fresh = m.optionsValues[3]
 		m.cfg.NoMerge = !m.optionsValues[4]
+		m.cfg.DistinctVerifier = m.optionsValues[5]
+		// Escalation: ON pins a stronger installed agent as the executor's ladder
+		// (the execute slot also powers solo) unless config already shaped one;
+		// OFF means "never escalate" and clears any ladder.
+		if m.optionsValues[6] {
+			if len(m.cfg.Execute.Escalate) == 0 {
+				m.cfg.Execute.Escalate = escalationPreset(m.cfg.Execute.Agent, m.cfg.BinaryOverrides)
+			}
+		} else {
+			m.cfg.Execute.Escalate = nil
+		}
 		m.state = stateMaxIters
 		cmd = m.resetInput("Max iterations per task (default 10)")
 		m.textInput.SetValue("10")
@@ -868,6 +909,20 @@ func (m *WizardModel) confirmView() string {
 	b.WriteString(row("fix tests", boolStr(m.cfg.FixUnrelatedTests)))
 	b.WriteString(row("fresh", boolStr(m.cfg.Fresh)))
 	b.WriteString(row("auto-merge", boolStr(!m.cfg.NoMerge)))
+	b.WriteString(row("distinct ✓", boolStr(m.cfg.DistinctVerifier)))
+	if len(m.cfg.Execute.Escalate) > 0 {
+		rungs := make([]string, 0, len(m.cfg.Execute.Escalate))
+		for _, ref := range m.cfg.Execute.Escalate {
+			label := ref.Agent
+			if ref.Model != "" {
+				label += ":" + ref.Model
+			}
+			rungs = append(rungs, label)
+		}
+		b.WriteString(row("escalation", agentLabel(m.cfg.Execute.Agent)+" → "+stMag.Render(strings.Join(rungs, " → "))))
+	} else {
+		b.WriteString(row("escalation", boolStr(false)))
+	}
 	if m.cfg.Solo {
 		b.WriteString(row("wait merge", boolStr(m.cfg.WaitForMerge)))
 	}

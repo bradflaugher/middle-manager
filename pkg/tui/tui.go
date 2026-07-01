@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"image/color"
 	"math"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"charm.land/bubbles/v2/progress"
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
@@ -34,6 +36,39 @@ func rainbowText(s string, frame int) string {
 		b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(c.Hex())).Bold(true).Render(string(r)))
 	}
 	return b.String()
+}
+
+// gradientText renders s with a static left-to-right blend across the given
+// color stops (lipgloss.Blend1D) — the non-animated cousin of rainbowText, for
+// headers that should look rich without motion.
+func gradientText(s string, stops ...color.Color) string {
+	runes := []rune(s)
+	if len(runes) == 0 {
+		return ""
+	}
+	if len(runes) == 1 && len(stops) > 0 {
+		return lipgloss.NewStyle().Foreground(stops[0]).Bold(true).Render(s)
+	}
+	colors := lipgloss.Blend1D(len(runes), stops...)
+	var b strings.Builder
+	for i, r := range runes {
+		b.WriteString(lipgloss.NewStyle().Foreground(colors[i]).Bold(true).Render(string(r)))
+	}
+	return b.String()
+}
+
+// synthGradient is the house blend used for wordmarks, breadcrumbs, and bars.
+func synthGradient(s string) string { return gradientText(s, cMagenta, cViolet, cCyan) }
+
+// newGradientBar builds a static synthwave progress bar. Rendered via ViewAs
+// (no spring animation), so it needs no Update plumbing and never allocates a
+// frame loop — the monitor's own tick already redraws it.
+func newGradientBar(width int) progress.Model {
+	return progress.New(
+		progress.WithColors(cMagenta, cViolet, cCyan),
+		progress.WithoutPercentage(),
+		progress.WithWidth(width),
+	)
 }
 
 // agentCycleList is the wizard's per-step agent carousel: the "random" sentinel
@@ -68,12 +103,6 @@ var (
 	stGreen = lipgloss.NewStyle().Foreground(cGreen).Bold(true)
 	stAmber = lipgloss.NewStyle().Foreground(cAmber).Bold(true)
 	stRed   = lipgloss.NewStyle().Foreground(cRed).Bold(true)
-
-	titleBar = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(cInk).
-			Background(cMagenta).
-			Padding(0, 2)
 
 	titleTag = lipgloss.NewStyle().
 			Foreground(cInk).
@@ -126,10 +155,12 @@ var stepLabels = []string{"discover", "execute", "verify", "commit"}
 // Banner / one-shot render helpers (used by main + merge mode)
 // ---------------------------------------------------------------------------
 
-// RenderBanner produces the masthead shown by `mm` headers.
+// RenderBanner produces the masthead shown by `mm` headers: a gradient
+// wordmark instead of a flat pill, so every entry point opens with the house
+// synthwave blend.
 func RenderBanner(version string) string {
 	logo := stMag.Render("▌") + stViol.Render("▐ ") +
-		titleBar.Render("middle-manager") + " " +
+		synthGradient("middle-manager") + " " +
 		titleTag.Render(version)
 	tag := stDim.Render("  micromanaged multi-agent coding loop · bring your own agents")
 	return logo + "\n" + tag
@@ -686,7 +717,8 @@ func (m *WizardModel) View() tea.View {
 	}
 
 	var s strings.Builder
-	s.WriteString(RenderBanner("setup") + "\n\n")
+	s.WriteString(RenderBanner("setup") + "\n")
+	s.WriteString(m.breadcrumb() + "\n\n")
 
 	if m.err != nil {
 		s.WriteString(stRed.Render("  ✗ "+m.err.Error()) + "\n\n")
@@ -851,6 +883,58 @@ func (m *WizardModel) confirmView() string {
 	return b.String()
 }
 
+// flow returns the ordered wizard screens for the mode in play, so the
+// breadcrumb can show true progress. Before the mode is committed the
+// highlighted mode option is used as a preview (the trail length adapts live
+// as the user moves the cursor over modes with longer/shorter flows).
+func (m *WizardModel) flow() []wizardState {
+	seq := []wizardState{stateRepo, stateBaseBranch, stateMode}
+	mode := m.modes[m.modeIndex]
+	if m.state > stateMode && m.cfg.Mode != "" {
+		mode = m.cfg.Mode
+	}
+	switch mode {
+	case "issue":
+		seq = append(seq, stateIssueDetails)
+	case "queue":
+		seq = append(seq, stateQueueFilters, stateStrategy)
+	default:
+		seq = append(seq, stateMission)
+	}
+	return append(seq, stateSteps, stateAgents, stateOptions, stateMaxIters, stateConfirm)
+}
+
+// breadcrumb renders the gradient dot trail across the wizard flow: filled
+// gradient dots behind you, a bold marker where you are, dim hollow dots ahead.
+func (m *WizardModel) breadcrumb() string {
+	flow := m.flow()
+	cur := 0
+	for i, st := range flow {
+		if st == m.state {
+			cur = i
+			break
+		}
+	}
+	colors := lipgloss.Blend1D(len(flow), cMagenta, cViolet, cCyan)
+	var b strings.Builder
+	b.WriteString("  ")
+	for i := range flow {
+		switch {
+		case i < cur:
+			b.WriteString(lipgloss.NewStyle().Foreground(colors[i]).Render("●"))
+		case i == cur:
+			b.WriteString(lipgloss.NewStyle().Foreground(colors[i]).Bold(true).Render("◉"))
+		default:
+			b.WriteString(stDim.Render("○"))
+		}
+		if i < len(flow)-1 {
+			b.WriteString(stDim.Render("─"))
+		}
+	}
+	b.WriteString(stDim.Render(fmt.Sprintf("  %d/%d", cur+1, len(flow))))
+	return b.String()
+}
+
 func stepHeader(title string) string {
 	return stMag.Render("  ▸ ") + stBold.Render(title) + "\n\n"
 }
@@ -955,6 +1039,7 @@ type MonitorModel struct {
 	iteration    int
 	currentStep  string
 	currentAgent string
+	stepStart    time.Time // when the current step began, for the live pill timer
 	state        string
 	branch       string
 	duration     time.Duration
@@ -970,6 +1055,8 @@ type MonitorModel struct {
 	skipStep     bool
 	interject    string
 	textInput    textinput.Model
+	iterBar      progress.Model // iteration budget, rendered statically via ViewAs
+	queueBar     progress.Model // queue position across a batch drain
 
 	// queue progress — only populated when the monitor is shared across a
 	// batch drain of multiple issues. queueTotal == 0 means "single run", and
@@ -996,6 +1083,8 @@ func NewMonitorModel(cfg *config.LoopConfig) *MonitorModel {
 		state:       "starting",
 		logViewport: vp,
 		textInput:   ti,
+		iterBar:     newGradientBar(14),
+		queueBar:    newGradientBar(14),
 	}
 }
 
@@ -1028,6 +1117,9 @@ func (m *MonitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case TUIStatusMsg:
 		m.iteration = msg.Iteration
 		if msg.Step != "" {
+			if msg.Step != m.currentStep {
+				m.stepStart = time.Now() // new step → restart the pill timer
+			}
 			m.currentStep = msg.Step
 		}
 		if msg.Agent != "" {
@@ -1072,6 +1164,12 @@ func (m *MonitorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "pgdown":
 			m.logViewport.HalfPageDown()
+			return m, nil
+		case "home":
+			m.logViewport.GotoTop()
+			return m, nil
+		case "end":
+			m.logViewport.GotoBottom()
 			return m, nil
 		case "enter":
 			if m.state == "completed" || m.state == "failed" {
@@ -1147,12 +1245,18 @@ func (m *MonitorModel) pushLog(s string) {
 	if !strings.HasSuffix(s, "\n") {
 		s += "\n"
 	}
+	// Follow mode, like tail -f: only auto-scroll when the operator was already
+	// at the bottom. Previously every append forced GotoBottom, which yanked the
+	// view back down while they were paging up through history.
+	follow := m.logViewport.AtBottom()
 	m.logs = append(m.logs, s)
 	if len(m.logs) > 2000 {
 		m.logs = m.logs[len(m.logs)-2000:]
 	}
 	m.logViewport.SetContent(strings.Join(m.logs, ""))
-	m.logViewport.GotoBottom()
+	if follow {
+		m.logViewport.GotoBottom()
+	}
 }
 
 func renderLiveLog(text string, isThought bool) string {
@@ -1220,10 +1324,10 @@ func (m *MonitorModel) View() tea.View {
 
 	var footer string
 	if m.state == "completed" || m.state == "failed" {
-		footer = stDim.Render(" pgup/pgdn scroll · enter: exit")
+		footer = stDim.Render(" pgup/pgdn/home/end scroll · enter: exit")
 	} else {
 		footer = inputBar.Render(m.textInput.View()) + "\n" +
-			stDim.Render(" pgup/pgdn scroll · enter: queue note for next step · /pause /resume /skip · /quit aborts now · ^c quit")
+			stDim.Render(" pgup/pgdn/home/end scroll · enter: queue note for next step · /pause /resume /skip · /quit aborts now · ^c quit")
 	}
 
 	// Build the fixed chrome in priority order (title > pipeline > panels) and
@@ -1234,6 +1338,11 @@ func (m *MonitorModel) View() tea.View {
 	const logBorders = 2 // logPanel top+bottom border rows
 	const minLog = 1     // never let the log fully vanish
 	label := panelLabel.Render(" live agent output")
+	// Surface follow-mode state: once the operator scrolls up, new output stops
+	// yanking the view down, so show where they are and how to resume following.
+	if !m.logViewport.AtBottom() {
+		label += stAmber.Render(fmt.Sprintf("  ▲ %d%% — end to follow", int(m.logViewport.ScrollPercent()*100)))
+	}
 	build := func(withPanels, withPipeline bool) string {
 		h := m.titleRow(inner)
 		if withPipeline {
@@ -1271,7 +1380,7 @@ func (m *MonitorModel) View() tea.View {
 }
 
 func (m *MonitorModel) titleRow(width int) string {
-	left := titleBar.Render("middle-manager") + " " + stDim.Render(filepath.Base(m.cfg.Repo))
+	left := stMag.Render("▌") + stViol.Render("▐ ") + synthGradient("middle-manager") + " " + stDim.Render(filepath.Base(m.cfg.Repo))
 	// m.state is driven by the loop and only ever reports running/completed/
 	// failed; pause lives in the separate m.paused flag (set by /pause and by
 	// interactive RequestPause), so fold it into an effective state here. Read
@@ -1328,8 +1437,14 @@ func (m *MonitorModel) pipelineRow() string {
 					Render("✗ "+label))
 				break
 			}
+			// Live per-step timer on the active pill: the monitor tick redraws
+			// every 300ms, so this counts up in real time.
+			text := spinFrame(m.frame) + " " + label
+			if !m.stepStart.IsZero() {
+				text += " " + time.Since(m.stepStart).Round(time.Second).String()
+			}
 			pill := lipgloss.NewStyle().Bold(true).Foreground(cInk).Background(cMagenta).Padding(0, 1).
-				Render(spinFrame(m.frame) + " " + label)
+				Render(text)
 			pills = append(pills, pill)
 		default:
 			pills = append(pills, stDim.Render("○ "+label))
@@ -1356,16 +1471,39 @@ func (m *MonitorModel) panelsRow() string {
 		}
 	}
 
+	// Gradient progress bars, sized to the panel. Static ViewAs renders (the
+	// tick redraws them); the fraction text keeps them readable at any width.
+	barW := pw - 20
+	if barW < 6 {
+		barW = 6
+	}
+	if barW > 16 {
+		barW = 16
+	}
+	m.iterBar.SetWidth(barW)
+	m.queueBar.SetWidth(barW)
+
+	iterVal := stBold.Render(strconv.Itoa(m.iteration))
+	if m.cfg.MaxIterations > 0 {
+		frac := float64(m.iteration) / float64(m.cfg.MaxIterations)
+		if frac > 1 {
+			frac = 1
+		}
+		iterVal = m.iterBar.ViewAs(frac) + " " + stBold.Render(fmt.Sprintf("%d/%d", m.iteration, m.cfg.MaxIterations))
+	}
+
 	repo := filepath.Base(m.cfg.Repo)
 	dash := panelLabel.Render("dashboard") + "\n" +
 		kv("repo", stFg.Render(repo)) +
 		kv("branch", stViol.Render(orDash(m.branch))) +
-		kv("iter", stBold.Render(strconv.Itoa(m.iteration))) +
+		kv("iter", iterVal) +
 		kv("step", stCyan.Render(strings.ToUpper(orDash(m.currentStep)))) +
 		kv("agent", stGreen.Render(orDash(m.currentAgent))) +
 		kv("elapsed", stFg.Render(m.duration.Round(time.Second).String()))
 	if m.queueTotal > 0 {
-		dash += kv("queue", stViol.Render(fmt.Sprintf("%d/%d", m.queuePos, m.queueTotal)))
+		queueVal := m.queueBar.ViewAs(float64(m.queuePos)/float64(m.queueTotal)) + " " +
+			stViol.Render(fmt.Sprintf("%d/%d", m.queuePos, m.queueTotal))
+		dash += kv("queue", queueVal)
 		if m.queueIssue != "" {
 			valW := pw - 14 // key column (8) + border/padding headroom
 			if valW < 6 {

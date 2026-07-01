@@ -563,3 +563,96 @@ func TestWizardRespectsConfiguredAgents(t *testing.T) {
 		t.Fatalf("configured agents overridden: %v", m.stepToAgent)
 	}
 }
+
+// gradientText must keep the visible width of its input (styling only) and
+// handle degenerate inputs without panicking.
+func TestGradientTextWidth(t *testing.T) {
+	got := gradientText("middle-manager", cMagenta, cViolet, cCyan)
+	if w := utf8.RuneCountInString(stripANSITest(got)); w != len("middle-manager") {
+		t.Fatalf("gradient changed visible width: %d", w)
+	}
+	if gradientText("", cMagenta) != "" {
+		t.Fatal("empty input must render empty")
+	}
+	if utf8.RuneCountInString(stripANSITest(gradientText("x", cMagenta, cCyan))) != 1 {
+		t.Fatal("single rune must render one cell")
+	}
+}
+
+// The wizard breadcrumb adapts its length to the selected mode's flow and
+// reports a sane position counter.
+func TestWizardBreadcrumbAdaptsToMode(t *testing.T) {
+	m := newTestWizard()
+	if !strings.Contains(stripANSITest(m.breadcrumb()), "1/9") {
+		t.Fatalf("feature flow should start at 1/9: %q", stripANSITest(m.breadcrumb()))
+	}
+	// Highlighting the queue mode previews its longer flow (extra strategy step).
+	for i, mode := range m.modes {
+		if mode == "queue" {
+			m.modeIndex = i
+		}
+	}
+	if !strings.Contains(stripANSITest(m.breadcrumb()), "/10") {
+		t.Fatalf("queue flow should preview 10 steps: %q", stripANSITest(m.breadcrumb()))
+	}
+	if got, want := len(m.flow()), 10; got != want {
+		t.Fatalf("queue flow length = %d, want %d", got, want)
+	}
+}
+
+// Follow mode: appended output must NOT yank the view down while the operator
+// has scrolled up, and must keep auto-scrolling while they are at the bottom.
+func TestPushLogFollowMode(t *testing.T) {
+	m := NewMonitorModel(&config.LoopConfig{Repo: "/tmp/x"})
+	m.logViewport.SetHeight(4)
+	m.logViewport.SetWidth(40)
+	for i := 0; i < 30; i++ {
+		m.pushLog("line\n")
+	}
+	if !m.logViewport.AtBottom() {
+		t.Fatal("should follow output while at the bottom")
+	}
+	m.logViewport.GotoTop()
+	m.pushLog("new line while scrolled\n")
+	if m.logViewport.AtBottom() {
+		t.Fatal("append must not force-scroll while the operator is reading history")
+	}
+	m.logViewport.GotoBottom()
+	m.pushLog("another\n")
+	if !m.logViewport.AtBottom() {
+		t.Fatal("follow mode must resume once back at the bottom")
+	}
+}
+
+// A step change restarts the live pill timer; a repeat of the same step must
+// not (the timer measures the step, not the message cadence).
+func TestStepTimerResetsOnStepChange(t *testing.T) {
+	m := NewMonitorModel(&config.LoopConfig{Repo: "/tmp/x"})
+	m.Update(TUIStatusMsg{Step: "execute", State: "running"})
+	first := m.stepStart
+	if first.IsZero() {
+		t.Fatal("step start not recorded")
+	}
+	m.Update(TUIStatusMsg{Step: "execute", State: "running"})
+	if !m.stepStart.Equal(first) {
+		t.Fatal("same-step status must not restart the timer")
+	}
+	m.Update(TUIStatusMsg{Step: "verify", State: "running"})
+	if m.stepStart.Equal(first) {
+		t.Fatal("new step must restart the timer")
+	}
+}
+
+// The iteration budget bar must render inside the dashboard panel and cap at
+// 100% even if iteration overshoots MaxIterations.
+func TestDashboardIterationBar(t *testing.T) {
+	m := NewMonitorModel(&config.LoopConfig{Repo: "/tmp/x", MaxIterations: 10})
+	m.width, m.height = 100, 40
+	m.iteration = 3
+	out := stripANSITest(m.panelsRow())
+	if !strings.Contains(out, "3/10") {
+		t.Fatalf("dashboard missing iteration fraction: %q", out)
+	}
+	m.iteration = 99 // overshoot must not panic or exceed the bar
+	_ = m.panelsRow()
+}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -41,6 +42,10 @@ func (e *GitError) Error() string {
 func RunGit(repo string, args ...string) (string, string, int, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = repo
+	// Never let a headless drain hang on an interactive credential prompt: a
+	// push against a remote with no cached credentials must fail loudly (and be
+	// reported) rather than block the loop forever on a hidden tty question.
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -142,8 +147,17 @@ func ensureBranch(repo string, branch string, baseBranch string) (string, error)
 	}
 
 	if hasBranch {
-		_, _, _, err := RunGit(repo, "checkout", branch)
-		return branch, err
+		if _, _, _, err := RunGit(repo, "checkout", branch); err != nil {
+			return branch, err
+		}
+		// A leftover branch from an earlier run can be stale: created off an old
+		// base commit but holding no work of its own (the run failed before
+		// committing anything). Fast-forward it onto the current base so a retry
+		// doesn't build — and open a PR — on an outdated base, which is a classic
+		// source of surprise merge conflicts. Branches with their own commits are
+		// left untouched (that is resumable work).
+		fastForwardStaleBranch(repo, branch, baseBranch)
+		return branch, nil
 	}
 
 	if baseBranch != "" && !RefExists(repo, baseBranch) {
@@ -164,6 +178,35 @@ func ensureBranch(repo string, branch string, baseBranch string) (string, error)
 	return branch, err
 }
 
+// fastForwardStaleBranch resets branch to baseBranch when — and only when —
+// doing so cannot lose anything: the branch must be a strict ancestor of the
+// base (no unique commits) and the working tree must be clean. Any doubt means
+// no reset.
+func fastForwardStaleBranch(repo, branch, baseBranch string) {
+	base := strings.TrimSpace(baseBranch)
+	if base == "" {
+		return
+	}
+	if !RefExists(repo, base) {
+		if !RefExists(repo, "origin/"+base) {
+			return
+		}
+		base = "origin/" + base
+	}
+	branchSHA, err1 := RevParse(repo, branch)
+	baseSHA, err2 := RevParse(repo, base)
+	if err1 != nil || err2 != nil || branchSHA == baseSHA {
+		return
+	}
+	if _, _, code, _ := RunGit(repo, "merge-base", "--is-ancestor", branch, base); code != 0 {
+		return // branch has its own commits — resumable work, keep it
+	}
+	if HasChanges(repo) {
+		return // never hard-reset under uncommitted work
+	}
+	_, _, _, _ = RunGit(repo, "reset", "--hard", baseSHA)
+}
+
 func CommitAll(repo string, message string) bool {
 	committed, _ := CommitAllWithError(repo, message)
 	return committed
@@ -177,11 +220,74 @@ func CommitAllWithError(repo string, message string) (bool, error) {
 	if err != nil || code != 0 {
 		return false, err
 	}
-	_, _, code, err = RunGit(repo, "commit", "-m", message)
+	_, _, code, err = gitCommit(repo, "commit", "-m", message)
 	if err != nil || code != 0 {
 		return false, err
 	}
 	return true, nil
+}
+
+// gitCommit runs a git commit command, retrying once with a synthetic identity
+// when the host has no user.name/user.email configured — a fresh box must not
+// abandon an entire verified iteration over missing git identity.
+func gitCommit(repo string, args ...string) (string, string, int, error) {
+	stdout, stderr, code, err := RunGit(repo, args...)
+	if code != 0 && missingIdentity(stderr) {
+		fallback := append([]string{
+			"-c", "user.name=middle-manager",
+			"-c", "user.email=middle-manager@localhost",
+		}, args...)
+		return RunGit(repo, fallback...)
+	}
+	return stdout, stderr, code, err
+}
+
+func missingIdentity(stderr string) bool {
+	s := strings.ToLower(stderr)
+	return strings.Contains(s, "please tell me who you are") ||
+		strings.Contains(s, "unable to auto-detect email address") ||
+		strings.Contains(s, "empty ident name")
+}
+
+// PullFFOnly brings branch current from origin without ever creating a merge
+// commit in the operator's repo: a diverged local base fails cleanly (for the
+// caller to report) instead of leaving a surprise merge commit or a conflicted
+// tree for the drain to trip over.
+func PullFFOnly(repo, branch string) error {
+	_, stderr, code, err := RunGit(repo, "pull", "--ff-only", "origin", branch)
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		return fmt.Errorf("git pull --ff-only origin %s failed: %s", branch, stderr)
+	}
+	return nil
+}
+
+// DiffSummary is a reviewer-oriented snapshot of the working tree: porcelain
+// status (which includes untracked files a plain diff misses) plus a diffstat
+// against HEAD. Injected into verifier prompts so the critic audits the actual
+// change surface instead of trusting the builder's summary.
+func DiffSummary(repo string) string {
+	if !RepoIsGit(repo) {
+		return ""
+	}
+	status, _, _, _ := RunGit(repo, "status", "--porcelain")
+	stat, _, _, _ := RunGit(repo, "diff", "--stat", "HEAD")
+	var b strings.Builder
+	if status != "" {
+		b.WriteString("git status --porcelain:\n" + status + "\n")
+	}
+	if stat != "" {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString("git diff --stat HEAD:\n" + stat + "\n")
+	}
+	if b.Len() == 0 {
+		return "(working tree clean — no uncommitted changes)"
+	}
+	return b.String()
 }
 
 func PushBranch(repo string, branch string, dryRun bool) error {
@@ -222,6 +328,21 @@ func GHAvailable() bool {
 	return err == nil
 }
 
+// runGH executes gh non-interactively in repo and returns trimmed
+// stdout/stderr. GH_PROMPT_DISABLED keeps gh from ever blocking an unattended
+// run on an interactive question; the update notifier is suppressed so its
+// banner can't leak into parsed output.
+func runGH(repo string, args ...string) (string, string, error) {
+	cmd := exec.Command("gh", args...)
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(), "GH_PROMPT_DISABLED=1", "GH_NO_UPDATE_NOTIFIER=1")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	return strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), err
+}
+
 // FetchIssue resolves issue metadata for the given ref. On any failure it
 // returns the best-effort number with EMPTY title/body plus a non-nil error —
 // it never launders gh stderr into the body, which would otherwise be fed to the
@@ -242,14 +363,10 @@ func FetchIssue(repo string, issueRef string) (map[string]string, error) {
 		return map[string]string{"number": number, "title": "", "body": "", "url": issueRef}, fmt.Errorf("gh CLI not available")
 	}
 
-	cmd := exec.Command("gh", "issue", "view", number, "--json", "number,title,body,url")
-	cmd.Dir = repo
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	stdout, stderr, err := runGH(repo, "issue", "view", number, "--json", "number,title,body,url")
+	if err != nil {
 		return map[string]string{"number": number, "title": "", "body": "", "url": issueRef},
-			fmt.Errorf("gh issue view %s: %s", number, strings.TrimSpace(stderr.String()))
+			fmt.Errorf("gh issue view %s: %s", number, stderr)
 	}
 
 	var data struct {
@@ -258,7 +375,7 @@ func FetchIssue(repo string, issueRef string) (map[string]string, error) {
 		Body   string `json:"body"`
 		URL    string `json:"url"`
 	}
-	if err := json.Unmarshal(stdout.Bytes(), &data); err != nil {
+	if err := json.Unmarshal([]byte(stdout), &data); err != nil {
 		return map[string]string{"number": number, "title": "", "body": "", "url": issueRef},
 			fmt.Errorf("parse gh issue view %s: %w", number, err)
 	}
@@ -296,13 +413,9 @@ func ListIssues(repo string, label, author string, limit int, state string) ([]m
 		args = append(args, "--author", author)
 	}
 
-	cmd := exec.Command("gh", args...)
-	cmd.Dir = repo
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("gh issue list: %s", strings.TrimSpace(stderr.String()))
+	stdout, stderr, err := runGH(repo, args...)
+	if err != nil {
+		return nil, fmt.Errorf("gh issue list: %s", stderr)
 	}
 
 	type ghAuthor struct {
@@ -317,7 +430,7 @@ func ListIssues(repo string, label, author string, limit int, state string) ([]m
 	}
 
 	var items []ghIssue
-	if err := json.Unmarshal(stdout.Bytes(), &items); err != nil {
+	if err := json.Unmarshal([]byte(stdout), &items); err != nil {
 		return nil, fmt.Errorf("parse gh issue list: %w", err)
 	}
 
@@ -351,9 +464,7 @@ func CloseIssue(repo string, number string, comment string, dryRun bool) bool {
 	if comment != "" {
 		args = append(args, "--comment", comment)
 	}
-	cmd := exec.Command("gh", args...)
-	cmd.Dir = repo
-	if err := cmd.Run(); err != nil {
+	if _, _, err := runGH(repo, args...); err != nil {
 		return false
 	}
 	return true
@@ -395,19 +506,15 @@ func CreatePR(repo string, title, body, branch, baseBranch, issueNumber string, 
 	if !GHAvailable() {
 		return "", fmt.Errorf("gh CLI not available; skipping PR creation")
 	}
-	cmd := exec.Command("gh", args...)
-	cmd.Dir = repo
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		detail := strings.TrimSpace(stderr.String())
+	stdout, stderr, err := runGH(repo, args...)
+	if err != nil {
+		detail := stderr
 		if detail == "" {
-			detail = strings.TrimSpace(stdout.String())
+			detail = stdout
 		}
 		return "", fmt.Errorf("%s", detail)
 	}
-	return strings.TrimSpace(stdout.String()), nil
+	return stdout, nil
 }
 
 // AppendCloses appends a GitHub "Closes #N" auto-link line to a PR body when
@@ -508,13 +615,9 @@ func ListOpenPRs(repo string, author string, label string, limit int) ([]PullReq
 		args = append(args, "--label", label)
 	}
 
-	cmd := exec.Command("gh", args...)
-	cmd.Dir = repo
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("gh pr list: %s", strings.TrimSpace(stderr.String()))
+	stdout, stderr, err := runGH(repo, args...)
+	if err != nil {
+		return nil, fmt.Errorf("gh pr list: %s", stderr)
 	}
 
 	type ghPR struct {
@@ -534,7 +637,7 @@ func ListOpenPRs(repo string, author string, label string, limit int) ([]PullReq
 	}
 
 	var items []ghPR
-	if err := json.Unmarshal(stdout.Bytes(), &items); err != nil {
+	if err := json.Unmarshal([]byte(stdout), &items); err != nil {
 		return nil, fmt.Errorf("parse gh pr list: %w", err)
 	}
 
@@ -604,15 +707,10 @@ func RequiredChecksState(repo string, prNumber int) string {
 	if !GHAvailable() {
 		return "none"
 	}
-	cmd := exec.Command("gh", "pr", "checks", fmt.Sprintf("%d", prNumber), "--required", "--json", "bucket")
-	cmd.Dir = repo
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
 	// gh exits non-zero when checks are pending/failing (and when there are no
 	// required checks), so the exit code is not a reliable signal — parse the
 	// JSON instead. Empty/unparseable output means "no required checks".
-	_ = cmd.Run()
-	out := strings.TrimSpace(stdout.String())
+	out, _, _ := runGH(repo, "pr", "checks", fmt.Sprintf("%d", prNumber), "--required", "--json", "bucket")
 	if out == "" {
 		return "none"
 	}
@@ -674,19 +772,15 @@ func MergePR(repo string, number int, method string, deleteBranch bool, dryRun b
 	if !GHAvailable() {
 		return "", fmt.Errorf("gh CLI not available")
 	}
-	cmd := exec.Command("gh", args...)
-	cmd.Dir = repo
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
+	stdout, stderr, err := runGH(repo, args...)
+	if err != nil {
+		msg := stderr
 		if msg == "" {
-			msg = strings.TrimSpace(stdout.String())
+			msg = stdout
 		}
 		return "", fmt.Errorf("%s", msg)
 	}
-	return strings.TrimSpace(stdout.String()), nil
+	return stdout, nil
 }
 
 // EnableAutoMerge configures auto-merge on a PR via the gh CLI.
@@ -711,19 +805,15 @@ func EnableAutoMerge(repo string, number int, method string, deleteBranch bool, 
 	if !GHAvailable() {
 		return "", fmt.Errorf("gh CLI not available")
 	}
-	cmd := exec.Command("gh", args...)
-	cmd.Dir = repo
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
+	stdout, stderr, err := runGH(repo, args...)
+	if err != nil {
+		msg := stderr
 		if msg == "" {
-			msg = strings.TrimSpace(stdout.String())
+			msg = stdout
 		}
 		return "", fmt.Errorf("%s", msg)
 	}
-	return strings.TrimSpace(stdout.String()), nil
+	return stdout, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -832,7 +922,7 @@ func CommitMerge(repo, message string) error {
 		}
 		return fmt.Errorf("git add failed before merge commit")
 	}
-	_, stderr, code, err := RunGit(repo, "commit", "--no-edit", "-m", message)
+	_, stderr, code, err := gitCommit(repo, "commit", "--no-edit", "-m", message)
 	if err != nil || code != 0 {
 		if err != nil {
 			return err
@@ -875,14 +965,10 @@ func GetPRStatus(repo string, number int) (*PRStatus, error) {
 	if !GHAvailable() {
 		return nil, fmt.Errorf("gh CLI not available")
 	}
-	cmd := exec.Command("gh", "pr", "view", fmt.Sprintf("%d", number),
+	stdout, stderr, err := runGH(repo, "pr", "view", fmt.Sprintf("%d", number),
 		"--json", "state,mergedAt,mergeStateStatus,mergeable,statusCheckRollup,autoMergeRequest")
-	cmd.Dir = repo
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("gh pr view %d: %s", number, strings.TrimSpace(stderr.String()))
+	if err != nil {
+		return nil, fmt.Errorf("gh pr view %d: %s", number, stderr)
 	}
 	var data struct {
 		State             string    `json:"state"`
@@ -894,7 +980,7 @@ func GetPRStatus(repo string, number int) (*PRStatus, error) {
 			EnabledAt string `json:"enabledAt"`
 		} `json:"autoMergeRequest"`
 	}
-	if err := json.Unmarshal(stdout.Bytes(), &data); err != nil {
+	if err := json.Unmarshal([]byte(stdout), &data); err != nil {
 		return nil, fmt.Errorf("parse gh pr view %d: %w", number, err)
 	}
 	state := strings.ToUpper(data.State)
@@ -914,9 +1000,7 @@ func DisableAutoMerge(repo string, number int) {
 	if !GHAvailable() {
 		return
 	}
-	cmd := exec.Command("gh", "pr", "merge", fmt.Sprintf("%d", number), "--disable-auto")
-	cmd.Dir = repo
-	_ = cmd.Run()
+	_, _, _ = runGH(repo, "pr", "merge", fmt.Sprintf("%d", number), "--disable-auto")
 }
 
 // WaitForPRMerge blocks until PR number merges, a terminal/blocked state is

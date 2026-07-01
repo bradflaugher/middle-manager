@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -145,5 +147,48 @@ func TestIsSolo(t *testing.T) {
 	}
 	if (&LoopConfig{Steps: 4}).IsSolo() != false {
 		t.Error("4-step is not solo")
+	}
+}
+
+// The default state dir must live OUTSIDE the repo (no pollution), be
+// deterministic, and keep same-basename repos apart.
+func TestDefaultStatePathOutsideRepo(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	repo := t.TempDir()
+
+	got := DefaultStatePath(repo)
+	if !strings.HasPrefix(got, filepath.Join(stateHome, "middle-manager")) {
+		t.Fatalf("state path %q not under XDG_STATE_HOME", got)
+	}
+	if rel, err := filepath.Rel(repo, got); err == nil && !strings.HasPrefix(rel, "..") {
+		t.Fatalf("state path %q is inside the repo %q", got, repo)
+	}
+	if got != DefaultStatePath(repo) {
+		t.Fatal("state path is not deterministic")
+	}
+
+	other := filepath.Join(t.TempDir(), filepath.Base(repo))
+	if err := os.MkdirAll(other, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if DefaultStatePath(other) == got {
+		t.Fatal("two repos with the same basename must not share a state dir")
+	}
+}
+
+// NotesPath must stay stable once pinned, even when the queue overrides
+// StateDir per issue — otherwise cross-issue learnings fragment.
+func TestNotesPathPinnedAcrossStateDirOverride(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	cfg := NewDefaultConfig()
+	cfg.Repo = t.TempDir()
+
+	notes := cfg.NotesPath()
+	cfg.NotesFile = notes // what the queue runner does before per-issue overrides
+
+	cfg.StateDir = t.TempDir() // per-issue override
+	if cfg.NotesPath() != notes {
+		t.Fatalf("notes moved with StateDir: %q != %q", cfg.NotesPath(), notes)
 	}
 }

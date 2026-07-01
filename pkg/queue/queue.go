@@ -44,6 +44,11 @@ func NewIssueQueueRunner(cfg *config.LoopConfig) (*IssueQueueRunner, error) {
 		return nil, fmt.Errorf("issue_queue config required")
 	}
 	baseStateDir := cfg.StatePath()
+	// Pin the notes file to the drain's base state dir BEFORE per-issue StateDir
+	// overrides, so every issue reads and appends the same cross-run learnings.
+	if cfg.NotesFile == "" {
+		cfg.NotesFile = filepath.Join(baseStateDir, "notes.md")
+	}
 	logPath := filepath.Join(baseStateDir, "queue.log")
 	ctx, cancel := context.WithCancel(context.Background())
 	return &IssueQueueRunner{
@@ -174,11 +179,11 @@ func (r *IssueQueueRunner) Run() int {
 			_, _, codeCheckout, _ := gitops.RunGit(r.cfg.Repo, "checkout", baseBranch)
 			if codeCheckout != 0 {
 				r.Log(fmt.Sprintf("⚠️ Failed to checkout branch %q", baseBranch), colors.Yellow)
-			} else {
-				_, _, codePull, _ := gitops.RunGit(r.cfg.Repo, "pull", "origin", baseBranch)
-				if codePull != 0 {
-					r.Log("⚠️ Failed to pull from origin", colors.Yellow)
-				}
+			} else if err := gitops.PullFFOnly(r.cfg.Repo, baseBranch); err != nil {
+				// --ff-only: never manufacture a merge commit on the operator's base
+				// branch; a diverged base is reported and the drain continues off the
+				// local commit it can actually see.
+				r.Log(fmt.Sprintf("⚠️ Could not fast-forward %q from origin: %v", baseBranch, err), colors.Yellow)
 			}
 		}
 
@@ -273,9 +278,12 @@ func (r *IssueQueueRunner) drainWorktree(issues []map[string]string) int {
 		baseBranch = gitops.DetectBaseBranch(repo)
 	}
 	// Bring the base current, then FREEZE it: every issue branches off the same
-	// commit so the later collapse is predictable.
+	// commit so the later collapse is predictable. ff-only: a diverged base must
+	// not gain a surprise merge commit here.
 	_, _, _, _ = gitops.RunGit(repo, "checkout", baseBranch)
-	_, _, _, _ = gitops.RunGit(repo, "pull", "origin", baseBranch)
+	if err := gitops.PullFFOnly(repo, baseBranch); err != nil {
+		r.Log(fmt.Sprintf("⚠️ Could not fast-forward %q from origin: %v — freezing the local commit.", baseBranch, err), colors.Yellow)
+	}
 	baseSHA, err := gitops.RevParse(repo, baseBranch)
 	if err != nil || baseSHA == "" {
 		// The base may exist only as a remote-tracking ref (fresh clone, or an
@@ -538,7 +546,7 @@ func (r *IssueQueueRunner) resolveConflictWithAgent(intPath, branch string, file
 		return false
 	}
 
-	template := prompts.LoadPrompt(r.cfg.Repo, "collapse")
+	template := prompts.LoadPrompt(r.cfg.Repo, r.baseStateDir, "collapse")
 	prompt := prompts.RenderPrompt(template, map[string]string{
 		"repo":           intPath,
 		"merge_branch":   branch,

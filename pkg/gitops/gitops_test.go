@@ -239,3 +239,114 @@ func runGitRaw(t *testing.T, repo string, args ...string) {
 		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, string(out))
 	}
 }
+
+// A leftover issue branch with NO unique commits must fast-forward to the
+// moved base on re-ensure, so retries never build on a stale base.
+func TestEnsureIssueBranchFastForwardsStaleBranch(t *testing.T) {
+	repo := initGitRepo(t)
+	base, err := gitops.CurrentBranch(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	branch, err := gitops.EnsureIssueBranch(repo, "mm", "7", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runGitRaw(t, repo, "checkout", base)
+	writeCommit(t, repo, "advance.txt", "x\n", "advance base")
+	newBase, _ := gitops.RevParse(repo, base)
+
+	if _, err := gitops.EnsureIssueBranch(repo, "mm", "7", base); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := gitops.RevParse(repo, branch); got != newBase {
+		t.Fatalf("stale branch not fast-forwarded: %s != %s", got, newBase)
+	}
+}
+
+// A branch that already holds its own commits is resumable work and must be
+// left exactly where it was.
+func TestEnsureIssueBranchKeepsBranchWithOwnCommits(t *testing.T) {
+	repo := initGitRepo(t)
+	base, _ := gitops.CurrentBranch(repo)
+
+	if _, err := gitops.EnsureIssueBranch(repo, "mm", "8", base); err != nil {
+		t.Fatal(err)
+	}
+	writeCommit(t, repo, "work.txt", "wip\n", "issue work")
+	workSHA, _ := gitops.RevParse(repo, "mm/issue-8")
+
+	runGitRaw(t, repo, "checkout", base)
+	writeCommit(t, repo, "advance.txt", "x\n", "advance base")
+
+	if _, err := gitops.EnsureIssueBranch(repo, "mm", "8", base); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := gitops.RevParse(repo, "mm/issue-8"); got != workSHA {
+		t.Fatalf("branch with its own commits was reset: %s != %s", got, workSHA)
+	}
+}
+
+// Never hard-reset under uncommitted work: EnsureIssueBranch is also called
+// right before the commit step, when the agent's changes are still uncommitted.
+func TestEnsureIssueBranchNoResetUnderDirtyTree(t *testing.T) {
+	repo := initGitRepo(t)
+	base, _ := gitops.CurrentBranch(repo)
+
+	if _, err := gitops.EnsureIssueBranch(repo, "mm", "9", base); err != nil {
+		t.Fatal(err)
+	}
+	staleSHA, _ := gitops.RevParse(repo, "mm/issue-9")
+
+	runGitRaw(t, repo, "checkout", base)
+	writeCommit(t, repo, "advance.txt", "x\n", "advance base")
+	runGitRaw(t, repo, "checkout", "mm/issue-9")
+
+	dirty := filepath.Join(repo, "uncommitted.txt")
+	if err := os.WriteFile(dirty, []byte("agent work in flight"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := gitops.EnsureIssueBranch(repo, "mm", "9", base); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := gitops.RevParse(repo, "mm/issue-9"); got != staleSHA {
+		t.Fatal("branch was reset despite a dirty working tree")
+	}
+	if _, err := os.Stat(dirty); err != nil {
+		t.Fatal("uncommitted work was destroyed")
+	}
+}
+
+// A box with no git identity must still be able to commit verified work — the
+// commit falls back to a synthetic identity instead of dropping the iteration.
+func TestCommitAllFallsBackWhenIdentityMissing(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+	repo := initGitRepo(t)
+	runGitRaw(t, repo, "config", "--unset", "user.email")
+	runGitRaw(t, repo, "config", "--unset", "user.name")
+
+	if err := os.WriteFile(filepath.Join(repo, "f.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	committed, err := gitops.CommitAllWithError(repo, "identity fallback test")
+	if err != nil || !committed {
+		t.Fatalf("commit without identity failed: committed=%v err=%v", committed, err)
+	}
+}
+
+// DiffSummary must surface untracked files (which `git diff` misses) so the
+// verifier sees the full change surface.
+func TestDiffSummaryIncludesUntracked(t *testing.T) {
+	repo := initGitRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "brand-new.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	sum := gitops.DiffSummary(repo)
+	if !strings.Contains(sum, "brand-new.txt") {
+		t.Fatalf("untracked file missing from diff summary: %q", sum)
+	}
+}

@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -27,31 +29,37 @@ type StepConfig struct {
 }
 
 type LoopConfig struct {
-	Repo              string            `json:"repo"`
-	Steps             int               `json:"steps"`
-	MaxIterations     int               `json:"max_iterations"`
-	Yolo              bool              `json:"yolo"`
-	DryRun            bool              `json:"dry_run"`
-	Interactive       bool              `json:"interactive"`
-	Issue             string            `json:"issue"`
-	Mode              string            `json:"mode"` // repair | issue | queue | feature
-	Mission           string            `json:"mission"`
-	Fresh             bool              `json:"fresh"`
-	IssueQueue        *IssueQueueConfig `json:"issue_queue"`
-	BranchPrefix      string            `json:"branch_prefix"`
-	BaseBranch        string            `json:"base_branch"`
-	NoPR              bool              `json:"no_pr"`
-	NoMerge           bool              `json:"no_merge"`
-	Discover          StepConfig        `json:"discover"`
-	Execute           StepConfig        `json:"execute"`
-	Verify            StepConfig        `json:"verify"`
-	Commit            StepConfig        `json:"commit"`
-	BinaryOverrides   map[string]string `json:"binary_overrides"`
-	StateDir          string            `json:"state_dir"`
-	AgentMemoryFile   string            `json:"agent_memory_file"`
-	FixUnrelatedTests bool              `json:"fix_unrelated_tests"`
-	StreamOutput      bool              `json:"stream_output"`
-	BatchSize         int               `json:"batch_size"`
+	Repo            string            `json:"repo"`
+	Steps           int               `json:"steps"`
+	MaxIterations   int               `json:"max_iterations"`
+	Yolo            bool              `json:"yolo"`
+	DryRun          bool              `json:"dry_run"`
+	Interactive     bool              `json:"interactive"`
+	Issue           string            `json:"issue"`
+	Mode            string            `json:"mode"` // repair | issue | queue | feature
+	Mission         string            `json:"mission"`
+	Fresh           bool              `json:"fresh"`
+	IssueQueue      *IssueQueueConfig `json:"issue_queue"`
+	BranchPrefix    string            `json:"branch_prefix"`
+	BaseBranch      string            `json:"base_branch"`
+	NoPR            bool              `json:"no_pr"`
+	NoMerge         bool              `json:"no_merge"`
+	Discover        StepConfig        `json:"discover"`
+	Execute         StepConfig        `json:"execute"`
+	Verify          StepConfig        `json:"verify"`
+	Commit          StepConfig        `json:"commit"`
+	BinaryOverrides map[string]string `json:"binary_overrides"`
+	StateDir        string            `json:"state_dir"`
+	// NotesFile is the orchestrator notes file: durable, repo-scoped learnings
+	// that live OUTSIDE the repository so agents read them via the prompt but
+	// can never commit them. Empty means "<state root>/notes.md"; the queue
+	// runner pins it before per-issue StateDir overrides so every issue in a
+	// drain shares one file.
+	NotesFile         string `json:"notes_file"`
+	AgentMemoryFile   string `json:"agent_memory_file"`
+	FixUnrelatedTests bool   `json:"fix_unrelated_tests"`
+	StreamOutput      bool   `json:"stream_output"`
+	BatchSize         int    `json:"batch_size"`
 
 	// Solo is single-agent mode: one agent does discover+execute+verify+tests in
 	// a single step (Steps==1) and emits the VERDICT; mm still commits/PRs
@@ -172,10 +180,45 @@ func (cfg *LoopConfig) StatePath() string {
 	if cfg.StateDir != "" {
 		base = cfg.StateDir
 	} else {
-		base = filepath.Join(cfg.Repo, ".middle-manager")
+		base = DefaultStatePath(cfg.Repo)
 	}
 	_ = os.MkdirAll(base, 0755)
 	return base
+}
+
+// DefaultStatePath returns the out-of-repo state directory for a repo:
+// $XDG_STATE_HOME/middle-manager/<base>-<hash8> (falling back to
+// ~/.local/state). Keeping orchestrator state outside the working tree means
+// mm never pollutes the repo — no .gitignore edits, and no way for an agent's
+// `git add -A` to sweep prompts/logs/worktrees into a commit. The hash of the
+// absolute repo path keeps two repos with the same basename apart.
+func DefaultStatePath(repo string) string {
+	abs, err := filepath.Abs(repo)
+	if err != nil {
+		abs = repo
+	}
+	stateHome := os.Getenv("XDG_STATE_HOME")
+	if stateHome == "" {
+		home, herr := os.UserHomeDir()
+		if herr != nil || home == "" {
+			// No home directory at all — fall back to the legacy in-repo dir
+			// (EnsureStateExcluded keeps it out of git via .git/info/exclude).
+			return filepath.Join(abs, ".middle-manager")
+		}
+		stateHome = filepath.Join(home, ".local", "state")
+	}
+	sum := sha256.Sum256([]byte(abs))
+	slug := filepath.Base(abs) + "-" + hex.EncodeToString(sum[:4])
+	return filepath.Join(stateHome, "middle-manager", slug)
+}
+
+// NotesPath resolves the orchestrator notes file (see NotesFile). Callers that
+// override StateDir per issue must pin NotesFile first so notes stay shared.
+func (cfg *LoopConfig) NotesPath() string {
+	if cfg.NotesFile != "" {
+		return cfg.NotesFile
+	}
+	return filepath.Join(cfg.StatePath(), "notes.md")
 }
 
 func MergeConfig(base, override map[string]interface{}) map[string]interface{} {
@@ -252,6 +295,12 @@ func ConfigFromMap(data map[string]interface{}, repo string) *LoopConfig {
 	}
 	if v, ok := data["agent_memory_file"].(string); ok {
 		cfg.AgentMemoryFile = v
+	}
+	if v, ok := data["notes_file"].(string); ok {
+		cfg.NotesFile = v
+	}
+	if v, ok := data["state_dir"].(string); ok {
+		cfg.StateDir = v
 	}
 	if v, ok := data["stream_output"].(bool); ok {
 		cfg.StreamOutput = v
@@ -541,6 +590,9 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 			i++
 		case arg == "--state-dir" && i+1 < len(restArgs):
 			cfg.StateDir = restArgs[i+1]
+			i++
+		case arg == "--notes-file" && i+1 < len(restArgs):
+			cfg.NotesFile = restArgs[i+1]
 			i++
 		case arg == "--fix-unrelated-tests":
 			cfg.FixUnrelatedTests = true

@@ -1,6 +1,9 @@
 package loop
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -83,6 +86,67 @@ func TestPRNumberFromURL(t *testing.T) {
 		if got := prNumberFromURL(url); got != want {
 			t.Errorf("prNumberFromURL(%q) = %d, want %d", url, got, want)
 		}
+	}
+}
+
+func initTestRepo(t *testing.T) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	repo := t.TempDir()
+	cmd := exec.Command("git", "init")
+	cmd.Dir = repo
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	return repo
+}
+
+// A custom state dir INSIDE the repo must be excluded via .git/info/exclude
+// (local-only), never by editing the repo's tracked .gitignore.
+func TestEnsureStateExcludedInRepoStateDir(t *testing.T) {
+	repo := initTestRepo(t)
+	cfg := config.NewDefaultConfig()
+	cfg.Repo = repo
+	cfg.StateDir = filepath.Join(repo, ".mm-state")
+	l := NewMiddleManagerLoop(cfg)
+
+	l.EnsureStateExcluded()
+
+	b, err := os.ReadFile(filepath.Join(repo, ".git", "info", "exclude"))
+	if err != nil || !strings.Contains(string(b), "/.mm-state/") {
+		t.Fatalf("in-repo state dir not excluded: err=%v content=%q", err, b)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".gitignore")); !os.IsNotExist(err) {
+		t.Fatal("mm must never create or edit the repo's .gitignore")
+	}
+
+	// Idempotent: a second run must not duplicate the entry.
+	l.EnsureStateExcluded()
+	b2, _ := os.ReadFile(filepath.Join(repo, ".git", "info", "exclude"))
+	if strings.Count(string(b2), "/.mm-state/") != 1 {
+		t.Fatalf("exclude entry duplicated: %q", b2)
+	}
+}
+
+// With the default (out-of-repo) state dir there is nothing to exclude and no
+// repo file may be touched.
+func TestEnsureStateExcludedExternalStateDirIsNoop(t *testing.T) {
+	repo := initTestRepo(t)
+	cfg := config.NewDefaultConfig()
+	cfg.Repo = repo
+	cfg.StateDir = t.TempDir()
+	l := NewMiddleManagerLoop(cfg)
+
+	l.EnsureStateExcluded()
+
+	if b, err := os.ReadFile(filepath.Join(repo, ".git", "info", "exclude")); err == nil &&
+		strings.Contains(string(b), "middle-manager") {
+		t.Fatalf("external state dir should not be written to exclude: %q", b)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".gitignore")); !os.IsNotExist(err) {
+		t.Fatal("mm must never create the repo's .gitignore")
 	}
 }
 

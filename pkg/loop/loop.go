@@ -107,19 +107,48 @@ func (l *MiddleManagerLoop) Log(msg string, color string) {
 	}
 }
 
-func (l *MiddleManagerLoop) EnsureGitignore() {
-	gitignore := filepath.Join(l.cfg.Repo, ".gitignore")
-	b, err := os.ReadFile(gitignore)
-	content := ""
-	if err == nil {
-		content = string(b)
+// EnsureStateExcluded keeps orchestrator state invisible to the repo's git
+// without ever editing tracked files. The default state dir lives outside the
+// repo entirely, so there is usually nothing to do; only a custom --state-dir
+// placed inside the working tree needs excluding, and that entry goes to
+// .git/info/exclude (local-only, never committed) — NOT to the repo's
+// .gitignore, which mm used to append to and thereby polluted diffs.
+func (l *MiddleManagerLoop) EnsureStateExcluded() {
+	if !gitops.RepoIsGit(l.cfg.Repo) {
+		return
 	}
-	if !strings.Contains(content, ".middle-manager") {
-		f, err := os.OpenFile(gitignore, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err == nil {
-			defer f.Close()
-			_, _ = f.WriteString("\n# middle-manager state directory\n.middle-manager/\n")
-		}
+	state, err := filepath.Abs(l.cfg.StatePath())
+	if err != nil {
+		return
+	}
+	repo, err := filepath.Abs(l.cfg.Repo)
+	if err != nil {
+		return
+	}
+	rel, err := filepath.Rel(repo, state)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return // state dir is outside the repo — nothing can leak into git
+	}
+	if rel == "." {
+		return // state dir IS the repo root; excluding "/" would hide everything
+	}
+	pattern := "/" + filepath.ToSlash(rel) + "/"
+	// Resolve info/exclude via git so worktrees (where .git is a file) work too.
+	excludePath, _, code, err := gitops.RunGit(l.cfg.Repo, "rev-parse", "--git-path", "info/exclude")
+	if err != nil || code != 0 || excludePath == "" {
+		return
+	}
+	if !filepath.IsAbs(excludePath) {
+		excludePath = filepath.Join(repo, excludePath)
+	}
+	if b, err := os.ReadFile(excludePath); err == nil && strings.Contains(string(b), pattern) {
+		return
+	}
+	_ = os.MkdirAll(filepath.Dir(excludePath), 0755)
+	f, err := os.OpenFile(excludePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err == nil {
+		defer f.Close()
+		_, _ = f.WriteString("\n# middle-manager state directory (local-only exclude)\n" + pattern + "\n")
 	}
 }
 
@@ -186,28 +215,40 @@ func (l *MiddleManagerLoop) PromptForStep(step string, iteration int, issueData 
 		templateName = sc.PromptFile
 	}
 
-	template := prompts.LoadPrompt(l.cfg.Repo, strings.TrimSuffix(templateName, ".md"))
+	// Custom prompt overrides may live in the state root (outside the repo) or,
+	// deliberately committed, in <repo>/.middle-manager/prompts.
+	stateRoot := filepath.Dir(l.cfg.NotesPath())
+	template := prompts.LoadPrompt(l.cfg.Repo, stateRoot, strings.TrimSuffix(templateName, ".md"))
 	if step == "execute" && l.cfg.FixUnrelatedTests {
-		ruleAddition := "\n6. **Fix unrelated test failures:** If the test suite is failing due to unrelated test failures or environment-specific issues that block verification of your changes, you are allowed and encouraged to modify the test files or unrelated files directly to fix the test failures so that they pass.\n"
+		ruleAddition := "\n**Additional rule — fix unrelated test failures:** If the test suite is failing due to unrelated test failures or environment-specific issues that block verification of your changes, you are allowed and encouraged to modify the test files or unrelated files directly to fix the test failures so that they pass.\n"
 		template += ruleAddition
 	}
 
-	discoverOutput := ""
-	discoverOutputFile := filepath.Join(l.state, "discover_output.txt")
-	if fileExists(discoverOutputFile) {
-		discoverOutput = l.ReadText(discoverOutputFile, "")
+	// Cross-step handoffs: the planner's report feeds the programmer, the
+	// programmer's report feeds the verifier, and the verifier/committer also
+	// see the real git change surface instead of trusting agent summaries.
+	discoverOutput := l.ReadText(filepath.Join(l.state, "discover_output.txt"), "")
+	executeOutput := l.ReadText(filepath.Join(l.state, "execute_output.txt"), "")
+	diffSummary := ""
+	if step == "verify" || step == "commit" {
+		diffSummary = gitops.DiffSummary(l.cfg.Repo)
 	}
 
-	ctx := prompts.BuildContext(
-		l.cfg.Repo,
-		l.cfg.Issue,
-		discoverOutput,
-		l.AgentMemory(),
-		l.ReadText(l.verifyLogPath, ""),
-		l.ReadText(l.errorLogPath, ""),
-		iteration,
-		l.cfg.Mission,
-	)
+	ctx := prompts.BuildContext(prompts.Context{
+		Repo:           l.cfg.Repo,
+		Issue:          l.cfg.Issue,
+		DiscoverOutput: discoverOutput,
+		ExecuteOutput:  executeOutput,
+		AgentMemory:    l.AgentMemory(),
+		TestOutput:     l.ReadText(l.verifyLogPath, ""),
+		ErrorLog:       l.ReadText(l.errorLogPath, ""),
+		DiffSummary:    diffSummary,
+		Notes:          l.ReadText(l.cfg.NotesPath(), ""),
+		NotesFile:      l.cfg.NotesPath(),
+		StateDir:       l.state,
+		Iteration:      iteration,
+		Mission:        l.cfg.Mission,
+	})
 
 	ctx["issue_title"] = issueData["title"]
 	ctx["issue_body"] = issueData["body"]
@@ -625,6 +666,13 @@ func (l *MiddleManagerLoop) RunOnce(iteration int, issueData map[string]string) 
 		}
 	}
 
+	// Persist the verifier's report every iteration (pass or fail) so the next
+	// iteration's prompts can reference it as {test_output} — previously this
+	// file was read but never written, so that context was always empty.
+	if strings.TrimSpace(verifierStdout) != "" {
+		l.WriteText(l.verifyLogPath, fmt.Sprintf("=== Verifier report (iteration %d) ===\n%s", iteration, verifierStdout))
+	}
+
 	if (contains(activeSteps, "verify") || contains(activeSteps, "solo")) && verifierPassed {
 		verdict := l.ParseVerifierUpdates(verifierStdout)
 		l.Log(fmt.Sprintf("🔍 Verifier Verdict: %s", verdict), colors.Green)
@@ -782,7 +830,8 @@ func (l *MiddleManagerLoop) RunUntilComplete() (*LoopResult, error) {
 		l.ResetLoopState()
 	}
 
-	l.EnsureGitignore()
+	l.EnsureStateExcluded()
+	l.Log(fmt.Sprintf("State dir: %s", l.state), colors.Dim)
 
 	branch := "non-git"
 	baseBranch := "n/a"
@@ -860,7 +909,13 @@ func (l *MiddleManagerLoop) RunUntilComplete() (*LoopResult, error) {
 
 func (l *MiddleManagerLoop) ResetLoopState() {
 	state := l.cfg.StatePath()
-	names := []string{"fix_plan.md", "iteration.txt", "error_log.txt", "verify_log.txt", "discover_prompt.md", "execute_prompt.md", "verify_prompt.md", "session.log"}
+	// Step outputs must be swept too: a stale discover/execute report from a
+	// previous mission would otherwise be injected into this run's prompts.
+	names := []string{
+		"fix_plan.md", "iteration.txt", "error_log.txt", "verify_log.txt", "session.log",
+		"discover_prompt.md", "execute_prompt.md", "verify_prompt.md", "commit_prompt.md", "solo_prompt.md",
+		"discover_output.txt", "execute_output.txt", "verify_output.txt", "commit_output.txt", "solo_output.txt",
+	}
 	for _, n := range names {
 		_ = os.Remove(filepath.Join(state, n))
 	}
@@ -894,10 +949,15 @@ func (l *MiddleManagerLoop) ResetLoopState() {
 // progress (same diff + same critique twice running).
 func (l *MiddleManagerLoop) iterationSignature(verifierStdout string) string {
 	diff := ""
+	status := ""
 	if gitops.RepoIsGit(l.cfg.Repo) {
 		diff, _, _, _ = gitops.RunGit(l.cfg.Repo, "diff", "HEAD")
+		// `diff HEAD` misses untracked files, so an iteration that only ADDS new
+		// files would look identical to the previous one and trip the stall
+		// detector; porcelain status covers them.
+		status, _, _, _ = gitops.RunGit(l.cfg.Repo, "status", "--porcelain")
 	}
-	combined := diff + "\x00" + strings.TrimSpace(verifierStdout)
+	combined := diff + "\x00" + status + "\x00" + strings.TrimSpace(verifierStdout)
 	if strings.TrimSpace(combined) == "" {
 		return ""
 	}
@@ -952,11 +1012,6 @@ func (l *MiddleManagerLoop) trackResourcesBackground() {
 			time.Sleep(2 * time.Second)
 		}
 	}
-}
-
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
 }
 
 func isDigit(s string) bool {

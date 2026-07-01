@@ -96,7 +96,14 @@ mm
 | Point at another repo | `mm quick "…" --repo ~/other-project` |
 | Pause between steps | `mm quick "…" -i` |
 
-State lives in `<repo>/.middle-manager/`. Issue queue state is per-issue under `.middle-manager/issues/<number>/`.
+State lives **outside your repo** in `~/.local/state/middle-manager/<repo>-<hash>/`
+(respects `$XDG_STATE_HOME`; override with `--state-dir`), so mm never touches your
+`.gitignore` and an agent's `git add -A` can never sweep orchestrator state into a
+commit. Issue queue state is per-issue under `issues/<number>/` inside that dir.
+Cross-run learnings accumulate in `notes.md` there (override with `--notes-file`)
+and are injected into every agent prompt — mm never writes to your `AGENTS.md`.
+Custom prompt overrides are read from `<state-dir>/prompts/*.md` or, if you prefer
+to commit them, `<repo>/.middle-manager/prompts/*.md`.
 
 ---
 
@@ -139,9 +146,8 @@ Filter issues with `--label` / `--author` / `--issue-limit`, then choose a strat
 pile-up" and are mutually exclusive. Solo's wait is bounded by
 `--merge-timeout <minutes>` (default 60) — a PR that never goes green (failed
 required check, branch-protection review, conflict) stops the drain instead of
-hanging forever. Worktree keeps its scratch trees under
-`.middle-manager/worktrees/`; pass `--keep-worktrees` to leave them for
-inspection.
+hanging forever. Worktree keeps its scratch trees under `worktrees/` in the
+out-of-repo state dir; pass `--keep-worktrees` to leave them for inspection.
 
 ---
 
@@ -172,7 +178,7 @@ middle-manager executes steps in the following order:
 1. **Discover**: Scans codebase and active issues, determines the bounds and scope of changes, and writes implementation guidelines.
 2. **Execute**: Implements the changes in the target workspace.
 3. **Verify**: Reviews the changes, runs tests, and applies critical backpressure on failure.
-4. **Commit**: Saves updates, registers context updates in repository memory (`AGENTS.md`), and submits pull requests for review.
+4. **Commit**: Appends durable learnings to the orchestrator notes file (outside your repo — `AGENTS.md` is read-only to mm) and lands one clean commit; middle-manager itself pushes, opens the PR, and links the issue.
 
 A change is only committed on an explicit `VERDICT: PASS` from the verifier — a `FAIL` or a missing/garbled verdict **fails closed** and loops back rather than shipping unverified work. (The verifier agent runs the tests; middle-manager never runs them for you.) The loop also stops itself early if it stalls: if an iteration produces the same diff and the same verifier feedback as the last one, it bails instead of burning iterations.
 

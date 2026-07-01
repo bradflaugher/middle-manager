@@ -73,6 +73,13 @@ func Preflight(cfg *config.LoopConfig) (warnings []string, fatal error) {
 			warnings = append(warnings, "working tree has uncommitted changes — they may be swept into the loop's commit; commit or stash them first")
 		}
 
+		// Solo/serialized runs BLOCK until the PR merges. With auto-merge off
+		// (the default) nothing merges it except a human or `mm merge` — say so
+		// up front instead of letting the run sit silently against the timeout.
+		if cfg.WaitForMerge && cfg.NoMerge && !cfg.NoPR && !cfg.DryRun {
+			warnings = append(warnings, fmt.Sprintf("this run waits for its PR to merge but auto-merge is OFF — merge the PR yourself (or run `mm merge`) within the %d-minute timeout, or enable auto-merge", cfg.MergeTimeoutMinutes))
+		}
+
 		// PR flows need gh, authenticated. Solo additionally BLOCKS on the merge,
 		// so a broken gh would strand it for the full merge timeout.
 		needsPR := !cfg.NoPR && (cfg.IsSolo() || cfg.Steps >= 4 || cfg.Mode == "queue")

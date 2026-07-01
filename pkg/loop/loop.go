@@ -1150,6 +1150,9 @@ func (l *MiddleManagerLoop) RunUntilComplete() (*LoopResult, error) {
 			return finish(&LoopResult{Success: false, Reason: fmt.Sprintf("wall-clock budget exhausted (%d min)", l.cfg.MaxWallMinutes), PRURL: l.lastPRURL, Iterations: ran}), nil
 		}
 
+		// Count the iteration when it STARTS: a run that succeeds on its first
+		// pass has executed 1 iteration, not 0.
+		ran++
 		if !l.RunOnce(iteration, issueData) {
 			if l.success {
 				l.Log("Loop finished successfully.", colors.Green)
@@ -1164,7 +1167,6 @@ func (l *MiddleManagerLoop) RunUntilComplete() (*LoopResult, error) {
 			return finish(&LoopResult{Success: false, Reason: "Stopped by user", PRURL: l.lastPRURL, Iterations: ran}), nil
 		}
 
-		ran++
 		iteration++
 		l.WriteIteration(iteration)
 	}

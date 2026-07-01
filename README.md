@@ -231,8 +231,90 @@ without waiting for an mm release.
 Every step attempt is appended to `<state>/ledger.jsonl` — agent, model, tier,
 attempt, duration, exit code, timeout flag — plus per-iteration verdicts and
 run outcomes. `mm status` aggregates it into a per-agent scoreboard (steps /
-time / retries / timeouts). Headless CLIs don't report token spend uniformly,
-so wall-clock per agent is the cost proxy.
+time / retries / timeouts) **across a whole queue drain** — each issue's
+ledger rolls up into one table, so a 50-issue drain answers "where did my
+time/money go" in one command. Headless CLIs don't report token spend
+uniformly, so wall-clock per agent is the cost proxy.
+
+### Recipe: drain a big queue for cheap
+
+The setup that squeezes a large issue backlog on a budget:
+
+```bash
+mm --label bug --issue-limit 50 --close-issues --merge \
+   --discover-agent claude \
+   --execute-agent opencode --execute-model opencode/deepseek-v4-flash-free \
+   --execute-escalate "claude" --escalate-after 2 \
+   --verify-agent claude --distinct-verifier \
+   --max-wall-minutes 240
+```
+
+Why each seat is where it is:
+
+- **Strong planner** (`discover`): the cheap executor succeeds in proportion
+  to spec quality, not its own reasoning — a big model writing exact file
+  paths, function names, and acceptance criteria is what makes the cheap seat
+  viable at all.
+- **Cheap executor with a ladder**: the cheap model gets `--escalate-after 2`
+  attempts per issue (each retry already carries the verifier's findings);
+  only a *verified* failure promotes the strong model, and each issue starts
+  back at the cheap rung — you pay the big model only for the issues that
+  actually need it.
+- **Strong, distinct verifier**: verification is judgment-heavy and it is the
+  gate everything rides on. Never let the executor grade its own homework.
+- **Budgets on, ledger after**: `--max-wall-minutes` bounds the whole drain;
+  `mm status` afterwards shows exactly how much work each agent absorbed and
+  how often escalation fired — tune `--escalate-after` from that.
+
+One honest caveat from live testing: mm passes each CLI's model flag
+faithfully, **but cannot verify the CLI honored it** — some agents silently
+ignore `--model` in headless mode (opencode hard-errors on an unknown model;
+Antigravity accepts anything). Sanity-check your cheap seat with an invalid
+model name once before trusting it.
+
+### Why this design — the evidence
+
+middle-manager's architecture follows what the multi-agent literature keeps
+converging on, rather than inventing its own:
+
+- **Cascade routing (cheap first, escalate on verified failure).**
+  [RouteLLM](https://arxiv.org/abs/2406.18665) reports ~85% cost reduction
+  while retaining ~95% of GPT-4-level quality by routing easy work to weak
+  models; [FrugalGPT](https://arxiv.org/abs/2305.05176) reports up to ~98%
+  cost reduction with LLM cascades that escalate only when a quality check
+  fails. That is exactly mm's escalation ladder: the trigger is a verified
+  FAIL, never vibes, and every retry adds information (verifier findings, the
+  tree's change surface) or capability (a stronger rung) — never a blind
+  identical retry.
+- **Big model plans, cheap model executes.** Anthropic's own
+  [model configuration](https://code.claude.com/docs/en/model-config) ships
+  this split (`opusplan`: Opus plans, Sonnet executes) because planning and
+  verification are judgment-heavy while well-specified execution is not.
+- **Deterministic orchestration, not an LLM babysitter.**
+  [Building Effective Agents](https://www.anthropic.com/research/building-effective-agents)
+  (Anthropic): prefer simple, explicitly-sequenced workflows with programmatic
+  gates between steps over LLM-driven orchestration. mm's loop shape, git
+  ops, queue lifecycle, budgets, and gates are all plain code.
+- **Coordination failures dominate, not model weakness.** The
+  [MAST taxonomy](https://arxiv.org/abs/2503.13657) attributes the large
+  majority of multi-agent failures to specification and inter-agent
+  coordination — lost context, step repetition, missing termination — which
+  is why mm's handoffs are explicit artifacts (plans, reports, diffs,
+  verdicts), retries carry evidence, and every loop has hard termination
+  bounds.
+- **LLM judges are gameable; code is not.** LLM verifiers can be fooled by
+  confident-sounding output (see
+  [One Token to Fool LLM-as-a-Judge](https://arxiv.org/abs/2507.08794)), so
+  mm treats a PASS as necessary but not sufficient: strict fail-closed
+  verdict parsing, adversarial verifier framing with required CHECKED
+  evidence, an independent (distinct-agent) critic, and deterministic Go
+  gates (secret scan, memory-file guard, diff checks) after every PASS.
+- **Multi-agent costs real money.** Anthropic's
+  [multi-agent research system](https://www.anthropic.com/engineering/multi-agent-research-system)
+  measured multi-agent runs at ~15× the tokens of single-agent chat — worth
+  it only when the task justifies it. mm's answer is to make the spend
+  visible (the ledger) and bounded (iteration, step-timeout, and wall-clock
+  budgets) instead of pretending it isn't happening.
 
 ---
 

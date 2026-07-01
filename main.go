@@ -161,18 +161,23 @@ func cmdStatus(cfg *config.LoopConfig) {
 		fmt.Printf("  %-16s: %s\n", name, status)
 	}
 
-	printLedgerSummary(filepath.Join(state, "ledger.jsonl"))
+	printLedgerSummary(state)
 }
 
-// printLedgerSummary aggregates the run ledger into a per-agent scoreboard —
+// printLedgerSummary aggregates run ledgers into a per-agent scoreboard —
 // wall-clock time is the cost proxy for plain headless CLIs — plus the last
-// run's outcome, so `mm status` answers "where is my time/money going".
-func printLedgerSummary(ledgerPath string) {
-	f, err := os.Open(ledgerPath)
-	if err != nil {
-		return
+// run's outcome, so `mm status` answers "where is my time/money going". A
+// queue drain writes one ledger per issue under issues/<n>/, so the whole
+// drain (and the base dir's single runs) roll up into one table.
+func printLedgerSummary(stateDir string) {
+	ledgers := []string{filepath.Join(stateDir, "ledger.jsonl")}
+	if entries, err := os.ReadDir(filepath.Join(stateDir, "issues")); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				ledgers = append(ledgers, filepath.Join(stateDir, "issues", e.Name(), "ledger.jsonl"))
+			}
+		}
 	}
-	defer f.Close()
 
 	type agg struct {
 		steps    int
@@ -182,38 +187,50 @@ func printLedgerSummary(ledgerPath string) {
 	}
 	perAgent := map[string]*agg{}
 	var lastRun map[string]interface{}
+	var lastRunTS string
 
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-	for sc.Scan() {
-		var rec map[string]interface{}
-		if err := json.Unmarshal(sc.Bytes(), &rec); err != nil {
+	for _, path := range ledgers {
+		f, err := os.Open(path)
+		if err != nil {
 			continue
 		}
-		switch rec["type"] {
-		case "step":
-			agent, _ := rec["agent"].(string)
-			if agent == "" {
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+		for sc.Scan() {
+			var rec map[string]interface{}
+			if err := json.Unmarshal(sc.Bytes(), &rec); err != nil {
 				continue
 			}
-			a := perAgent[agent]
-			if a == nil {
-				a = &agg{}
-				perAgent[agent] = a
+			switch rec["type"] {
+			case "step":
+				agent, _ := rec["agent"].(string)
+				if agent == "" {
+					continue
+				}
+				a := perAgent[agent]
+				if a == nil {
+					a = &agg{}
+					perAgent[agent] = a
+				}
+				a.steps++
+				if d, ok := rec["duration_s"].(float64); ok {
+					a.seconds += d
+				}
+				if att, ok := rec["attempt"].(float64); ok && att > 1 {
+					a.retries++
+				}
+				if to, ok := rec["timed_out"].(bool); ok && to {
+					a.timeouts++
+				}
+			case "run":
+				// "Last run" across many ledger files = latest timestamp wins.
+				if ts, _ := rec["ts"].(string); ts >= lastRunTS {
+					lastRunTS = ts
+					lastRun = rec
+				}
 			}
-			a.steps++
-			if d, ok := rec["duration_s"].(float64); ok {
-				a.seconds += d
-			}
-			if att, ok := rec["attempt"].(float64); ok && att > 1 {
-				a.retries++
-			}
-			if to, ok := rec["timed_out"].(bool); ok && to {
-				a.timeouts++
-			}
-		case "run":
-			lastRun = rec
 		}
+		f.Close()
 	}
 	if len(perAgent) == 0 {
 		return

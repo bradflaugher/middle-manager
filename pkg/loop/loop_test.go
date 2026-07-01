@@ -278,6 +278,33 @@ func TestEnsureStateExcludedExternalStateDirIsNoop(t *testing.T) {
 	}
 }
 
+// A fresh single run must never destroy a queue drain's per-issue history —
+// the ledgers under issues/ are the drain's cost records.
+func TestResetLoopStatePreservesIssueLedgers(t *testing.T) {
+	cfg := config.NewDefaultConfig()
+	cfg.Repo = t.TempDir()
+	cfg.StateDir = t.TempDir()
+	l := NewMiddleManagerLoop(cfg)
+
+	ledger := filepath.Join(cfg.StateDir, "issues", "7", "ledger.jsonl")
+	if err := os.MkdirAll(filepath.Dir(ledger), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ledger, []byte(`{"type":"step"}`+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	l.WriteText(filepath.Join(cfg.StateDir, "error_log.txt"), "stale")
+
+	l.ResetLoopState()
+
+	if _, err := os.Stat(ledger); err != nil {
+		t.Fatal("ResetLoopState destroyed a drain's per-issue ledger")
+	}
+	if _, err := os.Stat(filepath.Join(cfg.StateDir, "error_log.txt")); !os.IsNotExist(err) {
+		t.Error("ResetLoopState should still sweep the run's own state files")
+	}
+}
+
 // TestFailClosedPolicy documents the commit gate: only an explicit PASS ships;
 // FAIL and UNKNOWN both block. (The loop turns "verdict != PASS" into a
 // loop-back; this asserts the decision the loop relies on.)

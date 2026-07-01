@@ -1204,7 +1204,11 @@ func (l *MiddleManagerLoop) ResetLoopState() {
 	for _, n := range names {
 		_ = os.Remove(filepath.Join(state, n))
 	}
-	_ = os.RemoveAll(filepath.Join(state, "issues"))
+	// Deliberately do NOT sweep issues/ — those dirs belong to queue drains,
+	// which reset each issue's own state when they run it (per-issue Fresh).
+	// Nuking them here made any later `mm quick` destroy the whole drain's
+	// ledger history, which is exactly the data `mm status` aggregates to
+	// answer "what did that 50-issue drain cost me per agent".
 
 	if gitops.RepoIsGit(l.cfg.Repo) {
 		gitops.CheckoutDefaultBranch(l.cfg.Repo, l.cfg.BaseBranch)

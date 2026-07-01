@@ -1322,12 +1322,18 @@ func (m *MonitorModel) View() tea.View {
 		inner = 20
 	}
 
+	// Hints must fit one row: a line longer than the terminal wraps, which
+	// breaks the height budget below (lipgloss.Height counts newlines, not
+	// terminal wraps). Keep them short and hard-truncate to width.
 	var footer string
 	if m.state == "completed" || m.state == "failed" {
-		footer = stDim.Render(" pgup/pgdn/home/end scroll · enter: exit")
+		footer = stDim.Render(" scroll: pgup/pgdn/home/end · enter: exit")
 	} else {
 		footer = inputBar.Render(m.textInput.View()) + "\n" +
-			stDim.Render(" pgup/pgdn/home/end scroll · enter: queue note for next step · /pause /resume /skip · /quit aborts now · ^c quit")
+			stDim.Render(" scroll: pgup/pgdn/end · enter: note for next step · /pause /resume /skip /quit · ^c quit")
+	}
+	if m.width > 0 {
+		footer = lipgloss.NewStyle().MaxWidth(m.width).Render(footer)
 	}
 
 	// Build the fixed chrome in priority order (title > pipeline > panels) and
@@ -1517,7 +1523,7 @@ func (m *MonitorModel) panelsRow() string {
 		kv("cpu", m.cpuBar()) +
 		kv("procs", stFg.Render(strconv.Itoa(m.descendants))) +
 		kv("sockets", stFg.Render(strconv.Itoa(m.sockets))) +
-		kv("mode", stFg.Render(m.cfg.Mode))
+		kv("mode", stFg.Render(orDash(m.cfg.Mode)))
 
 	if stacked {
 		return panel.Width(pw).Render(dash) + "\n" + panel.Width(pw).Render(res)

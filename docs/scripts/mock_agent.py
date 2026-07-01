@@ -111,20 +111,17 @@ SUMMARY: Module-level docstring successfully added to main.py.
     stream_print(output)
 
 def run_commit():
+    # Mirrors the real commit contract: learnings go to the orchestrator notes
+    # file OUTSIDE the repo; AGENTS.md is never touched by the loop.
     output = """[INFO] Initializing Grok Ship agent...
-[THINK] The verification passed. We will now prepare the repository memory update and commit.
-[INFO] Updating AGENTS.md with loop memory...
+[THINK] The verification passed. Persist learnings, then land one clean commit.
+[INFO] Appending learnings to orchestrator notes (outside the repo)...
 [INFO] Staging files...
-[INFO] Running: git add main.py AGENTS.md
+[INFO] Running: git add main.py
 [INFO] Running: git commit -m "middle-manager: Add a simple docstring to main.py"
 [INFO] Commit successful.
 """
     stream_print(output)
-    
-    memory_path = "AGENTS.md"
-    if os.path.exists(memory_path):
-        with open(memory_path, "a") as f:
-            f.write("\n- Remember to verify docstrings in python files.\n")
 
 if __name__ == "__main__":
     main()

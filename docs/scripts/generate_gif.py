@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import re
 import sys
 import pty
 import select
@@ -11,6 +12,11 @@ import fcntl
 import termios
 import pyte
 from PIL import Image, ImageDraw, ImageFont
+
+# Bubble Tea v2 probes the terminal with kitty-keyboard-protocol sequences
+# (CSI = / > / ? ... u) that pyte does not parse — their tails would leak into
+# the screen as literal text like "0;1u". Strip them before feeding the stream.
+KITTY_ESCAPES = re.compile(rb"\x1b\[[=>?][0-9;:]*u")
 
 COLOR_MAP = {
     "default": "#11111B",
@@ -169,6 +175,7 @@ def main():
     cmd = [
         "./mm", "--mission", "Add a simple module docstring to main.py",
         "--repo", target_repo,
+        "--mode", "feature",
         "--no-wizard",
         "--no-pr",
         "--binary", f"claude={mock_agent}",
@@ -196,21 +203,28 @@ def main():
     
     while p.poll() is None:
         loop_start = time.time()
-        
+
         r, w, x = select.select([master_fd], [], [], 0.05)
         if master_fd in r:
             try:
                 data = os.read(master_fd, 4096)
                 if data:
-                    stream.feed(data.decode("utf-8", errors="ignore"))
+                    stream.feed(KITTY_ESCAPES.sub(b"", data).decode("utf-8", errors="ignore"))
             except OSError:
                 pass
-        
+
         current_text = "\n".join(screen.display)
         if "Press Enter to exit." in current_text:
+            # End the recording ON the clean COMPLETED dashboard: hold it as the
+            # long final frame, then exit the TUI. Recording the teardown would
+            # capture alt-screen restore garbage and a stray cursor instead.
+            frames.append(render_screen_to_image(screen, font_reg, font_bold))
+            durations.append(4000)
             os.write(master_fd, b"\r")
             time.sleep(0.5)
-        
+            p.terminate()
+            break
+
         if last_text_hash is None or current_text != last_text_hash:
             img = render_screen_to_image(screen, font_reg, font_bold)
             frames.append(img)
@@ -219,30 +233,16 @@ def main():
         else:
             if durations:
                 durations[-1] += int(interval * 1000)
-                
+
         elapsed = time.time() - loop_start
         sleep_time = max(0, interval - elapsed)
         time.sleep(sleep_time)
-        
+
         if time.time() - start_time > 60:
             print("Recording timed out.")
             p.terminate()
             break
-            
-    time.sleep(0.5)
-    r, w, x = select.select([master_fd], [], [], 0.1)
-    if master_fd in r:
-        try:
-            data = os.read(master_fd, 4096)
-            if data:
-                stream.feed(data.decode("utf-8", errors="ignore"))
-        except OSError:
-            pass
-            
-    img = render_screen_to_image(screen, font_reg, font_bold)
-    frames.append(img)
-    durations.append(4000)
-    
+
     os.close(master_fd)
     
     if frames:

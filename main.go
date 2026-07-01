@@ -55,7 +55,7 @@ func main() {
 	case "issues":
 		cmdIssues(cfg)
 	case "run", "quick":
-		cmdRun(cfg)
+		os.Exit(cmdRun(cfg))
 	case "merge":
 		cmdMerge(cfg)
 	default:
@@ -251,7 +251,35 @@ func cmdIssues(cfg *config.LoopConfig) {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-	runQueue(cfg)
+	os.Exit(runQueue(cfg))
+}
+
+// runPreflight surfaces missing dependencies BEFORE any agent burns tokens.
+// Warnings print and the run proceeds; a fatal problem stops it with exit 1.
+func runPreflight(cfg *config.LoopConfig) bool {
+	warnings, fatal := loop.Preflight(cfg)
+	for _, w := range warnings {
+		fmt.Println(colors.Colored("⚠ preflight: "+w, colors.Yellow))
+	}
+	if fatal != nil {
+		fmt.Fprintln(os.Stderr, colors.Colored("✗ preflight: "+fatal.Error(), colors.Red))
+		return false
+	}
+	return true
+}
+
+// lockRepo takes the per-repo run lock (skipped for dry runs, which touch
+// nothing). Returns a no-op release and false when another run holds it.
+func lockRepo(cfg *config.LoopConfig) (func(), bool) {
+	if cfg.DryRun {
+		return func() {}, true
+	}
+	release, err := loop.AcquireRepoLock(cfg.StatePath())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, colors.Colored("✗ "+err.Error(), colors.Red))
+		return func() {}, false
+	}
+	return release, true
 }
 
 // runQueue drains a filtered issue queue. Streaming/dry-run drains print plain
@@ -260,15 +288,24 @@ func cmdIssues(cfg *config.LoopConfig) {
 // queue-position indicator spanning every issue. Mirrors cmdRun's monitor path:
 // the work runs in a goroutine while GlobalProgram.Run() owns the main thread,
 // and operator quit cancels the in-flight issue and stops the drain.
-func runQueue(cfg *config.LoopConfig) {
+func runQueue(cfg *config.LoopConfig) int {
+	if !runPreflight(cfg) {
+		return 1
+	}
+	release, ok := lockRepo(cfg)
+	if !ok {
+		return 1
+	}
+	defer release()
+
 	runner, err := queue.NewIssueQueueRunner(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating issue queue runner: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	if cfg.StreamOutput || cfg.DryRun {
-		os.Exit(runner.Run())
+		return runner.Run()
 	}
 
 	tui.StartMonitorTUI(cfg)
@@ -288,7 +325,9 @@ func runQueue(cfg *config.LoopConfig) {
 
 	if _, err := tui.GlobalProgram.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error running monitor TUI: %v\n", err)
-		os.Exit(1)
+		runner.Cancel()
+		wg.Wait()
+		return 1
 	}
 
 	// TUI exited (drain finished, or operator hit /quit). Cancel any in-flight
@@ -296,7 +335,7 @@ func runQueue(cfg *config.LoopConfig) {
 	runner.Cancel()
 	wg.Wait()
 
-	os.Exit(code)
+	return code
 }
 
 func shouldWizard(cfg *config.LoopConfig) bool {
@@ -323,35 +362,44 @@ func shouldWizard(cfg *config.LoopConfig) bool {
 	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
-func cmdRun(cfg *config.LoopConfig) {
+func cmdRun(cfg *config.LoopConfig) int {
 	if shouldWizard(cfg) {
 		wizardCfg, err := tui.RunWizardTUI(cfg)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Wizard error: %v\n", err)
-			os.Exit(1)
+			return 1
 		}
 		if wizardCfg == nil {
 			fmt.Println("Aborted.")
-			os.Exit(0)
+			return 0
 		}
 		cfg = wizardCfg
 	}
 
 	if err := cfg.Validate(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	if cfg.Mode == "queue" && cfg.IssueQueue != nil {
-		runQueue(cfg)
+		return runQueue(cfg)
 	}
 
 	if cfg.Mode == "feature" && cfg.Mission == "" {
 		fmt.Println("Quick/feature mode needs a mission. Examples:")
 		fmt.Println("  mm quick \"add feature XYZ\"")
 		fmt.Println("  mm \"add dark mode toggle\"")
-		os.Exit(1)
+		return 1
 	}
+
+	if !runPreflight(cfg) {
+		return 1
+	}
+	release, ok := lockRepo(cfg)
+	if !ok {
+		return 1
+	}
+	defer release()
 
 	// Execute loop
 	l := loop.NewMiddleManagerLoop(cfg)
@@ -361,62 +409,58 @@ func cmdRun(cfg *config.LoopConfig) {
 		result, err := l.RunUntilComplete()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Loop error: %v\n", err)
-			os.Exit(1)
+			return 1
 		}
 		printSummaryPanel(cfg, l, result)
 		if result.Success {
-			os.Exit(0)
-		} else {
-			os.Exit(1)
+			return 0
 		}
-	} else {
-		// Run loop in background goroutine and start Bubble Tea Monitor Dashboard
-		tui.StartMonitorTUI(cfg)
+		return 1
+	}
 
-		var result *loop.LoopResult
-		var loopErr error
-		var wg sync.WaitGroup
+	// Run loop in background goroutine and start Bubble Tea Monitor Dashboard
+	tui.StartMonitorTUI(cfg)
 
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			result, loopErr = l.RunUntilComplete()
-			if tui.GlobalProgram != nil {
-				state := "completed"
-				if loopErr != nil || (result != nil && !result.Success) {
-					state = "failed"
-				}
-				l.NotifyStatus(state)
+	var result *loop.LoopResult
+	var loopErr error
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		result, loopErr = l.RunUntilComplete()
+		if tui.GlobalProgram != nil {
+			state := "completed"
+			if loopErr != nil || (result != nil && !result.Success) {
+				state = "failed"
 			}
-		}()
-
-		// Start Bubble Tea Program
-		if _, err := tui.GlobalProgram.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "Error running monitor TUI: %v\n", err)
-			os.Exit(1)
+			l.NotifyStatus(state)
 		}
+	}()
 
-		// The TUI has exited (normal completion or operator quit). Cancel the
-		// loop so any in-flight agent process group is terminated and control
-		// returns immediately rather than blocking on a long agent step.
+	// Start Bubble Tea Program
+	if _, err := tui.GlobalProgram.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error running monitor TUI: %v\n", err)
 		l.Cancel()
 		wg.Wait()
-
-		if loopErr != nil {
-			fmt.Fprintf(os.Stderr, "Loop error: %v\n", loopErr)
-			os.Exit(1)
-		}
-
-		success := false
-		if result != nil {
-			success = result.Success
-		}
-		if success {
-			os.Exit(0)
-		} else {
-			os.Exit(1)
-		}
+		return 1
 	}
+
+	// The TUI has exited (normal completion or operator quit). Cancel the
+	// loop so any in-flight agent process group is terminated and control
+	// returns immediately rather than blocking on a long agent step.
+	l.Cancel()
+	wg.Wait()
+
+	if loopErr != nil {
+		fmt.Fprintf(os.Stderr, "Loop error: %v\n", loopErr)
+		return 1
+	}
+
+	if result != nil && result.Success {
+		return 0
+	}
+	return 1
 }
 
 func printSummaryPanel(cfg *config.LoopConfig, l *loop.MiddleManagerLoop, result *loop.LoopResult) {

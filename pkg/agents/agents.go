@@ -730,24 +730,10 @@ func GetChangedFilesWithStatus(repo string) []string {
 	if !gitops.RepoIsGit(repo) {
 		return nil
 	}
-	stdout, _, code, err := gitops.RunGit(repo, "status", "--porcelain")
-	if err != nil || code != 0 || stdout == "" {
-		return nil
-	}
-
 	var files []string
-	for _, line := range strings.Split(stdout, "\n") {
-		if len(line) <= 3 {
-			continue
-		}
-		status := strings.TrimSpace(line[:2])
-		filename := strings.TrimSpace(line[3:])
-		if strings.Contains(filename, " -> ") {
-			parts := strings.Split(filename, " -> ")
-			filename = strings.TrimSpace(parts[len(parts)-1])
-		}
+	for _, entry := range gitops.StatusEntries(repo) {
 		statusDesc := "changed"
-		switch status {
+		switch entry.Status {
 		case "M":
 			statusDesc = "modified"
 		case "A", "??":
@@ -757,7 +743,7 @@ func GetChangedFilesWithStatus(repo string) []string {
 		case "R":
 			statusDesc = "renamed"
 		}
-		files = append(files, fmt.Sprintf("%s (%s)", filename, statusDesc))
+		files = append(files, fmt.Sprintf("%s (%s)", entry.Path, statusDesc))
 	}
 	return files
 }

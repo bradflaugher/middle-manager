@@ -90,6 +90,45 @@ func HasChanges(repo string) bool {
 	return len(stdout) > 0
 }
 
+// StatusEntry is one `git status --porcelain` line, parsed. Status is the
+// two-column XY code with spaces trimmed ("M", "??", "A", …); Path is the
+// (rename-resolved, unquoted) file path relative to the repo root.
+type StatusEntry struct {
+	Status string
+	Path   string
+}
+
+// StatusEntries parses `git status --porcelain` WITHOUT going through
+// RunGit's whole-output TrimSpace, which silently eats the leading space of a
+// first-line " M file" entry and shifts every field offset — a trap every
+// hand-rolled parser of RunGit's status output has fallen into.
+func StatusEntries(repo string) []StatusEntry {
+	cmd := exec.Command("git", "status", "--porcelain")
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	var entries []StatusEntry
+	for _, line := range strings.Split(string(out), "\n") {
+		if len(line) <= 3 {
+			continue
+		}
+		status := strings.TrimSpace(line[:2])
+		path := strings.TrimSpace(line[3:])
+		if idx := strings.LastIndex(path, " -> "); idx >= 0 {
+			path = strings.TrimSpace(path[idx+4:])
+		}
+		path = strings.Trim(path, `"`)
+		if status == "" || path == "" {
+			continue
+		}
+		entries = append(entries, StatusEntry{Status: status, Path: path})
+	}
+	return entries
+}
+
 func DetectBaseBranch(repo string) string {
 	for _, candidate := range []string{"dev", "main", "master"} {
 		if RefExists(repo, candidate) {

@@ -918,6 +918,12 @@ func (l *MiddleManagerLoop) RunOnce(iteration int, issueData map[string]string) 
 		}
 	}
 
+	// Deterministic pre-commit gates — a verifier PASS is necessary, not
+	// sufficient. Placed before the ledger record so `passed` reflects them.
+	if verifierPassed && !l.enforcePreCommitGates() {
+		verifierPassed = false
+	}
+
 	l.appendLedger(map[string]interface{}{
 		"type": "iteration", "iteration": iteration,
 		"verdict": verdict, "passed": verifierPassed,

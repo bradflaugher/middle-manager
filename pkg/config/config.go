@@ -154,6 +154,10 @@ type LoopConfig struct {
 	// distinct-verifier pick; unlisted agents fall back to the built-in order.
 	// The wizard edits it and persists it to the operator config file.
 	StrengthOrder []string `json:"strength_order"`
+	// NoSecretScan disables the deterministic pre-commit secret scan (the
+	// escape hatch for repos whose fixtures trip the patterns). The scan is on
+	// by default: an agent hardcoding a live credential must fail closed.
+	NoSecretScan bool `json:"no_secret_scan"`
 
 	// Interactive Wizard overrides
 	Wizard   bool
@@ -425,6 +429,9 @@ func ConfigFromMap(data map[string]interface{}, repo string) *LoopConfig {
 	}
 	if v, ok := data["strength_order"]; ok {
 		cfg.StrengthOrder = parseStringList(v)
+	}
+	if v, ok := data["no_secret_scan"].(bool); ok {
+		cfg.NoSecretScan = v
 	}
 
 	for _, step := range []string{"discover", "execute", "verify", "commit"} {
@@ -845,6 +852,10 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 		case arg == "--strength-order" && i+1 < len(restArgs):
 			cfg.StrengthOrder = parseStringList(restArgs[i+1])
 			i++
+		case arg == "--no-secret-scan":
+			cfg.NoSecretScan = true
+		case arg == "--secret-scan":
+			cfg.NoSecretScan = false
 		case arg == "--state-dir" && i+1 < len(restArgs):
 			cfg.StateDir = restArgs[i+1]
 			i++

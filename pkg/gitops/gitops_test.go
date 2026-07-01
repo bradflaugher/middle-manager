@@ -350,3 +350,36 @@ func TestDiffSummaryIncludesUntracked(t *testing.T) {
 		t.Fatalf("untracked file missing from diff summary: %q", sum)
 	}
 }
+
+// Regression: the FIRST porcelain line of an " M file" entry must keep its
+// path intact. Parsers that fed RunGit's TrimSpace'd output through fixed
+// offsets read "GENTS.md" out of " M AGENTS.md" whenever it came first.
+func TestStatusEntriesFirstLineNotMangled(t *testing.T) {
+	repo := initGitRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "AGENTS.md"), []byte("v1"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGitRaw(t, repo, "add", "-A")
+	runGitRaw(t, repo, "commit", "-m", "init")
+	if err := os.WriteFile(filepath.Join(repo, "AGENTS.md"), []byte("v2"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "new.txt"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	entries := gitops.StatusEntries(repo)
+	if len(entries) != 2 {
+		t.Fatalf("entries = %+v, want 2", entries)
+	}
+	got := map[string]string{}
+	for _, e := range entries {
+		got[e.Path] = e.Status
+	}
+	if got["AGENTS.md"] != "M" {
+		t.Errorf("modified first entry mangled: %+v", entries)
+	}
+	if got["new.txt"] != "??" {
+		t.Errorf("untracked entry wrong: %+v", entries)
+	}
+}

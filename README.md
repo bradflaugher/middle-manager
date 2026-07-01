@@ -16,7 +16,7 @@ Each agent runs as its own CLI in plain headless mode, so it uses whatever login
 
 - A **cheap or local model executes**, and a **stronger frontier model verifies** its work.
 - A **big model plans**, while cheaper agents do the grunt work.
-- Or rank your agents by strength once and let the **escalation ladder** start cheap and climb only when the cheap agent *verifiably* fails — the cascade pattern the multi-agent literature credits with 45–85% cost savings at ~95% retained quality.
+- Or rank your agents by strength once and let the **escalation ladder** start cheap and climb only when the cheap agent *verifiably* fails — so the expensive model is billed only for the work that actually needed it.
 
 **The orchestration itself is deterministic code, not another LLM.** Branching, committing, opening/merging PRs, closing issues, draining queues, enforcing budgets — all fixed logic. You're not paying an agent to babysit a queue, and an agent can't talk its way past a gate.
 
@@ -153,9 +153,10 @@ Two screens are worth knowing about:
 
 ### Escalation ladders — mix big and small agents
 
-Give any step an ordered ladder of `agent[:model]` rungs. The step starts on
-its base agent; after every `--escalate-after N` failed iterations (default 1)
-it climbs one rung:
+The core bet: try the cheap configuration first, escalate only when a quality
+check fails. Give any step an ordered ladder of `agent[:model]` rungs. The
+step starts on its base agent; after every `--escalate-after N` failed
+iterations (default 1) it climbs one rung:
 
 ```bash
 # opencode tries first; claude-on-opus takes over if it verifiably fails; codex is the last resort
@@ -236,85 +237,88 @@ ledger rolls up into one table, so a 50-issue drain answers "where did my
 time/money go" in one command. Headless CLIs don't report token spend
 uniformly, so wall-clock per agent is the cost proxy.
 
-### Recipe: drain a big queue for cheap
+### The playbook: where the strong models go (and where they don't)
 
-The setup that squeezes a large issue backlog on a budget:
+Spend by **asymmetry of consequences**, not by vibes about which step feels
+important:
 
-```bash
-mm --label bug --issue-limit 50 --close-issues --merge \
-   --discover-agent claude \
-   --execute-agent opencode --execute-model opencode/deepseek-v4-flash-free \
-   --execute-escalate "claude" --escalate-after 2 \
-   --verify-agent claude --distinct-verifier \
-   --max-wall-minutes 240
+| Seat | Deploy | Why |
+|------|--------|-----|
+| **verify** | Your strongest model. Always. | This is the gate everything rides on. A wrong FAIL costs you one retry (cheap). A wrong PASS ships broken code to a PR (expensive). When consequences are that lopsided, pay up. |
+| **discover** | Strong. | The plan is the cheap executor's ceiling. A spec with exact file paths, function names, and acceptance criteria turns "needs a frontier model" into "any model can follow instructions." Skimp here and you'll pay for it in the execute seat instead, at a worse exchange rate. |
+| **execute** | The cheapest thing that clears your verifier — with a ladder to your strongest. | This is where the volume is, so this is where the savings are. The ladder means being wrong about a model costs you one failed iteration, not a failed backlog. |
+| **commit** | Anything fast. | It stages files and writes a commit message. Judgment-free. |
+| **solo** | Strong only. | Solo collapses planner, executor, and verifier into one context — every argument above for splitting seats is an argument against putting a weak model here. Solo is a convenience mode, not a savings mode. |
+
+**The strong default.** Drop this in `~/.config/middle-manager/config.json`
+once and every run inherits it:
+
+```json
+{
+  "discover": { "agent": "claude" },
+  "execute":  { "agent": "opencode", "model": "<your-cheap-model>",
+                "escalate": ["claude"] },
+  "verify":   { "agent": "claude" },
+  "distinct_verifier": true,
+  "escalate_after": 2,
+  "step_timeout_minutes": 60
+}
 ```
 
-Why each seat is where it is:
+Then drain the backlog with budgets on and read the bill after:
 
-- **Strong planner** (`discover`): the cheap executor succeeds in proportion
-  to spec quality, not its own reasoning — a big model writing exact file
-  paths, function names, and acceptance criteria is what makes the cheap seat
-  viable at all.
-- **Cheap executor with a ladder**: the cheap model gets `--escalate-after 2`
-  attempts per issue (each retry already carries the verifier's findings);
-  only a *verified* failure promotes the strong model, and each issue starts
-  back at the cheap rung — you pay the big model only for the issues that
-  actually need it.
-- **Strong, distinct verifier**: verification is judgment-heavy and it is the
-  gate everything rides on. Never let the executor grade its own homework.
-- **Budgets on, ledger after**: `--max-wall-minutes` bounds the whole drain;
-  `mm status` afterwards shows exactly how much work each agent absorbed and
-  how often escalation fired — tune `--escalate-after` from that.
+```bash
+mm --label bug --issue-limit 50 --close-issues --merge --max-wall-minutes 240
+mm status   # per-agent scoreboard for the whole drain: time, retries, escalations
+```
 
-One honest caveat from live testing: mm passes each CLI's model flag
-faithfully, **but cannot verify the CLI honored it** — some agents silently
-ignore `--model` in headless mode (opencode hard-errors on an unknown model;
-Antigravity accepts anything). Sanity-check your cheap seat with an invalid
-model name once before trusting it.
+Two habits that keep it honest:
 
-### Why this design — the evidence
+- **Sanity-check your cheap seat once.** mm passes each CLI's model flag
+  faithfully but cannot verify the CLI honored it — some agents silently
+  ignore `--model` in headless mode. Run the CLI by hand with a deliberately
+  invalid model name: if it doesn't error, its model flag is decorative and
+  your "cheap" seat may be billing you for the default model.
+- **Let issues carry their own acceptance criteria.** The verifier checks the
+  mission; a mission that says "make X better" gets you an unfalsifiable PASS.
+  Issues that state what must be true when done are what make the cheap
+  executor's PASSes trustworthy.
 
-middle-manager's architecture follows what the multi-agent literature keeps
-converging on, rather than inventing its own:
+### Our assumptions — and what would change our mind
 
-- **Cascade routing (cheap first, escalate on verified failure).**
-  [RouteLLM](https://arxiv.org/abs/2406.18665) reports ~85% cost reduction
-  while retaining ~95% of GPT-4-level quality by routing easy work to weak
-  models; [FrugalGPT](https://arxiv.org/abs/2305.05176) reports up to ~98%
-  cost reduction with LLM cascades that escalate only when a quality check
-  fails. That is exactly mm's escalation ladder: the trigger is a verified
-  FAIL, never vibes, and every retry adds information (verifier findings, the
-  tree's change surface) or capability (a stronger rung) — never a blind
-  identical retry.
-- **Big model plans, cheap model executes.** Anthropic's own
-  [model configuration](https://code.claude.com/docs/en/model-config) ships
-  this split (`opusplan`: Opus plans, Sonnet executes) because planning and
-  verification are judgment-heavy while well-specified execution is not.
-- **Deterministic orchestration, not an LLM babysitter.**
-  [Building Effective Agents](https://www.anthropic.com/research/building-effective-agents)
-  (Anthropic): prefer simple, explicitly-sequenced workflows with programmatic
-  gates between steps over LLM-driven orchestration. mm's loop shape, git
-  ops, queue lifecycle, budgets, and gates are all plain code.
-- **Coordination failures dominate, not model weakness.** The
-  [MAST taxonomy](https://arxiv.org/abs/2503.13657) attributes the large
-  majority of multi-agent failures to specification and inter-agent
-  coordination — lost context, step repetition, missing termination — which
-  is why mm's handoffs are explicit artifacts (plans, reports, diffs,
-  verdicts), retries carry evidence, and every loop has hard termination
-  bounds.
-- **LLM judges are gameable; code is not.** LLM verifiers can be fooled by
-  confident-sounding output (see
-  [One Token to Fool LLM-as-a-Judge](https://arxiv.org/abs/2507.08794)), so
-  mm treats a PASS as necessary but not sufficient: strict fail-closed
-  verdict parsing, adversarial verifier framing with required CHECKED
-  evidence, an independent (distinct-agent) critic, and deterministic Go
-  gates (secret scan, memory-file guard, diff checks) after every PASS.
-- **Multi-agent costs real money.** Anthropic's
-  [multi-agent research system](https://www.anthropic.com/engineering/multi-agent-research-system)
-  measured multi-agent runs at ~15× the tokens of single-agent chat — worth
-  it only when the task justifies it. mm's answer is to make the spend
-  visible (the ledger) and bounded (iteration, step-timeout, and wall-clock
-  budgets) instead of pretending it isn't happening.
+The playbook above is not eternal truth; it rests on four assumptions. Each
+one comes with the signal — visible in **your own ledger** (`mm status`) —
+that it has stopped holding for *your* repo, which matters more than what was
+true for anyone else's:
+
+1. **Most backlog issues are routine, and cheap models clear routine work.**
+   *Watch:* the escalation rate. If the strong rung is taking over on more
+   than roughly a third of your issues, the cheap tier is adding a failed
+   iteration of cost in front of most work instead of absorbing it — promote
+   your base executor (or make the planner stronger) and re-measure.
+2. **Frontier models cost enough more that routing matters at all.** *Watch:*
+   your providers' pricing. The playbook assumes an order-of-magnitude gap
+   between your cheap and strong seats. If that gap collapses — cheap models
+   get priced up, strong ones get priced down, or your subscription makes the
+   strong model effectively flat-rate — skip the ladder and put the strong
+   model in every seat; simplicity beats routing when routing saves nothing.
+3. **Plan quality substitutes for executor strength.** We validated this the
+   fun way: on our test repo, a bottom-tier free model solved tasks it
+   provably could not solve unaided whenever the plan came from a strong
+   model — and failed the moment the planner was weak too. *Watch:* if
+   escalation keeps firing even with a strong planner, your tasks aren't
+   spec-limited, they're reasoning-limited — this playbook's savings don't
+   apply to that backlog.
+4. **Verification is cheaper than execution.** The verifier reads and runs;
+   the executor writes. *Watch:* if verify time rivals execute time in your
+   scoreboard, your missions are too vague to check cheaply — fix the issue
+   descriptions before touching the model assignments.
+
+**When to re-evaluate:** whenever a provider changes prices, whenever a new
+model tier ships, and any time the scoreboard surprises you. The re-evaluation
+is cheap: re-run a slice of the same backlog with a different seating and
+compare `mm status` tables. The ledger exists precisely so this is a
+five-minute decision based on your data instead of a debate.
 
 ---
 

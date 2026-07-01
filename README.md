@@ -1,26 +1,57 @@
-![middle-manager logo](./docs/interface_demo.gif)
+![middle-manager demo](./docs/interface_demo.gif)
 
 # middle-manager
 
 Micromanaged multi-agent coding loop that orchestrates your favorite coding CLIs.
 
-**Bring your own agents.** middle-manager dynamically chains **Grok**, **Claude Code**, **OpenCode**, **OpenAI Codex**, **Google Antigravity (agy)**, **Charm Crush** — plus **any headless CLI you declare in config** — into a tight 4-step software factory. It reads your codebase, scopes out requirements, executes fixes, critiques its own work, runs tests, commits, and opens PRs—completely on autopilot. *(Agents are auto-detected and configured automatically).*
+**Bring your own agents.** middle-manager chains **Claude Code**, **OpenAI Codex**, **Grok**, **OpenCode**, **Google Antigravity (agy)**, **Charm Crush** — plus **any headless CLI you declare in config** — into a tight 4-step software factory: it scopes the work, implements it, critiques and tests it, and lands one clean commit with a PR. Completely on autopilot, and watchable/steerable live from the built-in dashboard.
 
-Each agent runs as its own CLI in plain headless mode, so it uses whatever login that tool already has—OAuth session or API key—with **no extra keys or adapters to configure**. And because it's *micromanaged*, you can watch every step live and steer it mid-run.
+Each agent runs as its own CLI in plain headless mode, so it uses whatever login that tool already has — OAuth session or API key — with **no extra keys or adapters to configure**.
 
 ---
 
-## But Why?
+## Why
 
-**Get the most out of every model — the ones you pay for and the ones you run for free.** Got a subscription you want to burn down, or a local model sitting idle? Put it on the grunt work in a loop and have a *better* model check it. middle-manager lets you assign a different model to each step and run them in the order that fits your budget and trust:
+**Get the most out of every model — the ones you pay for and the ones you run for free.** Each step of the loop is just a coding CLI pointed at a model, so you can put the right model in the right seat:
 
-- A **local or open-source model executes** for free, and a **stronger frontier model verifies** its work.
-- A **big, expensive model does only the planning and execution**, while cheaper agents handle the rest.
-- Whatever split you want — each step is just a coding CLI pointed at a model, dropped into the **discover → execute → verify → commit** order. The right model in the right seat.
+- A **cheap or local model executes**, and a **stronger frontier model verifies** its work.
+- A **big model plans**, while cheaper agents do the grunt work.
+- Or rank your agents by strength once and let the **escalation ladder** start cheap and climb only when the cheap agent *verifiably* fails — the cascade pattern the multi-agent literature credits with 45–85% cost savings at ~95% retained quality.
 
-You set it up by configuring each coding agent to use the model you want, then assigning those agents to steps — or just rank your agents by strength once and let the **escalation ladder** start cheap and climb only when the cheap agent verifiably fails.
+**The orchestration itself is deterministic code, not another LLM.** Branching, committing, opening/merging PRs, closing issues, draining queues, enforcing budgets — all fixed logic. You're not paying an agent to babysit a queue, and an agent can't talk its way past a gate.
 
-**Closing issues is deterministic, not babysat.** Draining a queue, opening PRs, and closing issues runs as fixed, scripted logic — you're not paying an agent to sit and watch a queue. That's faster and cheaper than asking an LLM to mind the lifecycle.
+---
+
+## How it works
+
+```text
+  ┌──────────────┐
+  │   DISCOVER   │  Scope requirements & write implementation guidelines
+  └──────────────┘
+         │
+         ▼
+  ┌──────────────┐
+  │   EXECUTE    │  Implement the changes
+  └──────────────┘
+         │
+         ▼
+  ┌──────────────┐
+  │    VERIFY    │  Run tests & critique (a different agent, if you want)
+  └──────────────┘
+         │
+         ├─ (Pass) ─► [ COMMIT ]  mm lands the commit, opens & links the PR
+         │
+         └─ (Fail) ─► Loop back with the verifier's findings — or escalate
+```
+
+Every handoff between steps is explicit: the planner's report feeds the programmer, the programmer's report and the **actual git change surface** feed the verifier, and a failed iteration feeds the verifier's concrete findings (plus the tree's uncommitted work) to the next attempt — never a blind retry.
+
+**Nothing ships un-verified, and a verifier's word alone isn't enough:**
+
+- A change is only committed on an explicit `VERDICT: PASS` — a FAIL or a missing/garbled verdict **fails closed** and loops back. (The verifier agent runs your tests; mm itself never does.)
+- After a PASS, **deterministic gates** run in Go: a secret scan blocks credential-shaped strings from ever being committed (`--no-secret-scan` to opt out), and unauthorized edits to `AGENTS.md`/`CLAUDE.md`/`.cursorrules` are auto-reverted unless your mission asked for them.
+- The loop can't spin: an iteration that leaves the tree byte-identical **escalates the agent ladder** or stops; `--max-iterations`, per-step timeouts, and `--max-wall-minutes` are the hard outer bounds.
+- Preflight checks (agents installed, `gh` authenticated when PRs are needed, writable state) run **before** any agent burns a token, and a per-repo lock stops two mm runs from fighting over one working tree.
 
 ---
 
@@ -35,8 +66,8 @@ The installer downloads a **prebuilt binary** for your platform from the latest
 If no prebuilt binary is available it falls back to building from source (which
 *does* need Go 1.25+). It installs `mm` to `~/.local/bin/mm`.
 
-`mm` shells out to whichever agent CLIs you have installed (`grok`, `claude`,
-`opencode`, `codex`, `agy`, `crush`) and to `git`/`gh` — install the ones you want.
+`mm` shells out to whichever agent CLIs you have installed (`claude`, `codex`,
+`grok`, `opencode`, `agy`, `crush`, or your own) and to `git`/`gh` — install the ones you want.
 
 <details>
 <summary><b>Other ways to install</b></summary>
@@ -70,69 +101,60 @@ export PATH="$HOME/.local/bin:$PATH"   # add to ~/.bashrc or ~/.zshrc
 ```
 </details>
 
-### Quick Start (Wizard)
+## Quick Start (Wizard)
 
-To run the interactive wizard and configure your loop step-by-step:
 ```bash
 mm
 ```
 
-The wizard walks you through, in order: **repo → base branch → what to do →
-mission/issue/queue → loop shape → agents → options → agent strength order →
-iteration budget → review & launch**. Every screen has a sensible default, so
-mashing Enter gives you a working 4-step loop on `random` agents with the
-factory quality levers (distinct verifier + escalation) already on. The
-strength screen appears when escalation is on: rank your agents strongest-first
-(shift+↑/↓ to drag) and the ranking is remembered in
-`~/.config/middle-manager/config.json` for every future run.
+The wizard (shown in the GIF above) walks you through: **repo → base branch →
+what to do → mission/issue/queue → loop shape → agents → options → agent
+strength order → iteration budget → review & launch**. Every screen has a
+sensible default, so mashing Enter gives you a working 4-step loop on `random`
+agents with the quality levers (distinct verifier + escalation) already on.
 
+Two screens are worth knowing about:
 
-## Advanced CLI Usage (Quick Reference)
+- **Agents** — the default for every seat is `random` (rainbow shimmer): each
+  iteration rolls one installed agent and uses it for the whole iteration,
+  spreading work across every CLI you're logged into. Press `c` to hand-pick
+  agents per step instead.
+- **Agent strength order** — appears when escalation is on. Rank your agents
+  strongest-first (shift+↑/↓ to drag); escalation climbs your ranking, and the
+  ranking is saved to `~/.config/middle-manager/config.json` so you only ever
+  set it once.
+
+## CLI Reference
 
 | I want to… | Command |
 |------------|---------|
-| Add a feature | `mm quick "add feature XYZ"` |
-| Shorthand feature | `mm "add feature XYZ"` |
-| One GitHub issue | `mm --issue 42` |
-| All issues by user | `mm --author @someuser --close-issues` |
-| All bugs by user | `mm --label bug --author @someuser --close-issues` |
+| Add a feature | `mm quick "add feature XYZ"` (or just `mm "add feature XYZ"`) |
+| Work one GitHub issue | `mm --issue 42` |
+| Drain all bugs by a user | `mm --label bug --author @someuser --close-issues` |
 | Good-first-issues sprint | `mm --label "good first issue" --issue-limit 10 --close-issues` |
 | Fix the codebase generally | `mm --mode repair` |
 | **Solo:** one agent does it all, wait for the PR to merge | `mm --issue 42 --solo` |
 | **Solo queue:** drain issues one merged PR at a time | `mm --label bug --solo --close-issues` |
 | **Worktree:** drain a queue into ONE mega PR | `mm --label bug --worktree --close-issues` |
 | Roll a **random** installed agent each iteration | `mm "…" --execute-agent random` |
-| **Cheap agent first, escalate on failure** | `mm --issue 42 --execute-agent opencode --execute-escalate "claude:opus"` |
+| **Cheap agent first, escalate on failure** | `mm --issue 42 --execute-agent opencode --execute-escalate "claude:opus,codex"` |
 | Different agent audits the work | `mm --issue 42 --distinct-verifier` |
-| Declare your own strength ranking | `mm "…" --strength-order "claude,codex,opencode"` (wizard saves it) |
-| Bound one agent invocation (minutes) | `mm "…" --step-timeout 30` (per-step: `--execute-timeout 90`) |
-| Bound the whole run (minutes) | `mm --label bug --max-wall-minutes 120` |
+| Declare your strength ranking | `mm "…" --strength-order "claude,codex,opencode"` |
+| Bound one agent invocation | `mm "…" --step-timeout 30` (per-step: `--execute-timeout 90`) |
+| Bound the whole run / drain | `mm --label bug --max-wall-minutes 120` |
 | Point at another repo | `mm quick "…" --repo ~/other-project` |
 | Pause between steps | `mm quick "…" -i` |
-
-State lives **outside your repo** in `~/.local/state/middle-manager/<repo>-<hash>/`
-(respects `$XDG_STATE_HOME`; override with `--state-dir`), so mm never touches your
-`.gitignore` and an agent's `git add -A` can never sweep orchestrator state into a
-commit. Issue queue state is per-issue under `issues/<number>/` inside that dir.
-Cross-run learnings accumulate in `notes.md` there (override with `--notes-file`)
-and are injected into every agent prompt — mm never writes to your `AGENTS.md`.
-Custom prompt overrides are read from `<state-dir>/prompts/*.md` or, if you prefer
-to commit them, `<repo>/.middle-manager/prompts/*.md`.
+| See agents, state & the run ledger | `mm agents` · `mm status` |
 
 ---
 
-## The Software Factory: mixing big and small agents
+## The Software Factory
 
-middle-manager is built around the routing pattern the multi-agent literature
-keeps converging on: **try the cheap configuration first, escalate only when a
-quality check fails** (reported 45–85% cost savings at ~95% retained quality).
-
-### Escalation ladders
+### Escalation ladders — mix big and small agents
 
 Give any step an ordered ladder of `agent[:model]` rungs. The step starts on
-its base agent; after every `--escalate-after N` failed iterations (default 1
-— a *failed iteration* means the verifier said FAIL, or failed closed) it
-climbs one rung:
+its base agent; after every `--escalate-after N` failed iterations (default 1)
+it climbs one rung:
 
 ```bash
 # opencode tries first; claude-on-opus takes over if it verifiably fails; codex is the last resort
@@ -140,14 +162,10 @@ mm --issue 42 --execute-agent opencode --execute-escalate "claude:opus,codex"
 ```
 
 Ladders work on every step (`--discover-escalate`, `--verify-escalate`, …) and
-on the solo agent (solo shares the execute slot). Escalation is keyed on
-**verified failure, not vibes**, and the handoff is real: the escalated agent's
-prompt carries the verifier's concrete findings, the working tree's uncommitted
-change summary from the failed attempt, and an explicit banner naming its
-predecessor with instructions to review/keep/revert that work — never redo it
-blind. The stall detector (an iteration that leaves the tree byte-identical)
-**forces the next rung instead of giving up** while ladder headroom remains —
-retrying identically is the one guaranteed waste of tokens.
+on the solo agent. The escalated agent gets a real **handoff**, not a cold
+start: the verifier's findings, the tree's uncommitted change summary from the
+failed attempt, and a banner naming its predecessor with instructions to
+review/keep/revert that work rather than redo it blind.
 
 In JSON config, ladders take strings or objects:
 
@@ -156,28 +174,24 @@ In JSON config, ladders take strings or objects:
                "escalate": ["claude:opus", {"agent": "codex", "model": "gpt-5"}] } }
 ```
 
-**You define what "stronger" means.** The wizard's strength screen (and
-`"strength_order"` in config, or `--strength-order "claude,codex,opencode"`)
-records *your* ranking of *your* agents, strongest first — mm's built-in
-ordering is only the fallback. The wizard builds its ladder by climbing your
-ranking from the base agent toward #1, and the distinct verifier prefers your
-strongest remaining agent. Set it once in the wizard; it persists to
-`~/.config/middle-manager/config.json`.
+**You define what "stronger" means.** Your ranking — set on the wizard's
+strength screen, via `"strength_order"` in config, or `--strength-order` —
+drives both the wizard's ladder preset and the distinct-verifier pick. mm's
+built-in ordering is only the fallback.
 
 ### Independent verifier
 
 `--distinct-verifier` guarantees the verify step runs on a **different agent**
-than the one that wrote the code (with `random` steps the verifier gets its own
-roll). A fresh process on a different model is the cheapest known defense
-against self-review rubber-stamping. The verifier is also prompted
-adversarially and must list what it actually checked — a bare "PASS" with no
-evidence reads as suspicious.
+than the one that wrote the code (with `random` seats the verifier gets its
+own roll). The verifier is prompted adversarially — *try to refute that this
+change satisfies the mission* — and must list what it actually checked, so a
+lazy PASS is visible. It's the cheapest known defense against self-review
+rubber-stamping.
 
-### Bring ANY agent (custom agent definitions)
+### Bring ANY agent
 
-The built-in roster is just a starting point. Declare any headless coding CLI
-in your persistent config at `~/.config/middle-manager/config.json` (loaded on
-every run, then overlaid by `--config` and CLI flags):
+Declare any headless coding CLI in `~/.config/middle-manager/config.json`
+(loaded on every run, then overlaid by `--config` and CLI flags):
 
 ```json
 {
@@ -186,8 +200,7 @@ every run, then overlaid by `--config` and CLI flags):
       "binary": "aider",
       "print_flag": "--message",
       "yolo_flags": ["--yes-always"],
-      "model_flag": "--model",
-      "notes": "aider --message PROMPT --yes-always"
+      "model_flag": "--model"
     }
   }
 }
@@ -195,120 +208,78 @@ every run, then overlaid by `--config` and CLI flags):
 
 Custom agents appear in `mm agents`, the wizard's pickers, `random` rolls, and
 escalation ladders exactly like built-ins. Redefining a built-in name is
-allowed on purpose — it lets you fix a flag mismatch the day an upstream CLI
-changes, without waiting for an mm release.
+allowed on purpose — fix a flag mismatch the day an upstream CLI changes,
+without waiting for an mm release.
 
-### Robustness: timeouts, retries, budgets
+### Robustness: timeouts, retries, budgets, gates
 
-- **Per-step timeout** (`--step-timeout <min>`, default 60; per-step
-  `--execute-timeout <min>`; `0` disables) — a hung CLI can never stall the
-  factory. Timeouts count as failed attempts and feed the escalation ladder.
+- **Per-step timeout** (`--step-timeout <min>`, default 60; `0` disables) — a
+  hung CLI can never stall the factory; timeouts count as failed attempts.
 - **Infrastructure vs task failures** — an agent CLI that exits nonzero
-  (crash, rate limit, auth blip) gets one same-tier retry before anything
-  else; escalation budget is reserved for *verified task failures*.
-- **Run budget** (`--max-wall-minutes <min>`) — hard wall-clock ceiling for a
-  whole run, with a structured stop reason instead of an open-ended burn.
-- **Cheap mechanical gates** — an execute step that crashed leaving no
-  working-tree changes skips the verifier entirely (nothing to audit, no
-  tokens spent) and loops back with the error output in context.
+  (crash, rate limit, auth blip) gets one same-tier retry; escalation budget
+  is reserved for *verified task failures*.
+- **Budgets** — `--max-iterations` per task, `--max-wall-minutes` for the
+  whole run **and** for a whole queue drain.
+- **Deterministic gates** — preflight before the first token, the pre-commit
+  secret scan and memory-file guard after every PASS, and a per-repo run lock.
+- **Mechanical shortcuts** — an execute step that crashed leaving no changes
+  skips the verifier entirely (nothing to audit, no tokens spent).
 
 ### The ledger: know where your time goes
 
 Every step attempt is appended to `<state>/ledger.jsonl` — agent, model, tier,
 attempt, duration, exit code, timeout flag — plus per-iteration verdicts and
-the run outcome. `mm status` aggregates it into a per-agent scoreboard
-(steps / time / retries / timeouts). Plain headless CLIs don't report token
-spend uniformly, so wall-clock per agent is the cost proxy.
+run outcomes. `mm status` aggregates it into a per-agent scoreboard (steps /
+time / retries / timeouts). Headless CLIs don't report token spend uniformly,
+so wall-clock per agent is the cost proxy.
 
 ---
 
 ## Modes & Queue Strategies
 
-middle-manager has three ways to shape a run. Pick by what you're optimizing for.
-
-### 🎲 Random agent (the new default)
-
-In the wizard the default agent for every step is **`random`** (shown with a
-rainbow shimmer). At the start of **each iteration** it rolls one installed agent
-and uses it for that whole iteration — so the agent varies issue-to-issue and
-retry-to-retry, spreading work across every CLI you have logged in. Set it
-per-step on the CLI too: `--execute-agent random`. With nothing installed it
-fails closed with a clear message instead of guessing.
-
-The wizard's options screen also carries the two factory quality levers —
-**distinct verifier** and **escalate to a stronger agent on repeated failure**
-— both defaulting ON when you have two or more agents installed. Turning
-escalation on adds a **strength-ordering screen**: you rank your installed
-agents strongest-first (shift+↑/↓ to drag), the escalation ladder is built by
-climbing your ranking, and the ordering is saved to
-`~/.config/middle-manager/config.json` so you only set it once. The review
-screen shows the resulting ladder before launch.
-
 ### Loop shape: 4-step · 3-step · solo
 
 - **4 steps** (default) — `discover → execute → verify → commit`, opens a PR.
 - **3 steps** — `discover → execute → verify`, local commit, no PR agent.
-- **1 step — solo** (`--solo`) — **one agent does everything**: it scopes,
-  implements, runs the tests, self-reviews, and emits the `VERDICT`. mm still
-  owns git deterministically (commit, one PR, `Closes #N`, auto-merge) and then
-  **waits for that PR to actually merge** before returning. On its own it's a
-  hands-off "ship this issue" button; across a queue it **serializes** work so
-  each issue branches off a base that already contains the previous PR — no pile
-  of conflicting PRs.
+- **1 step — solo** (`--solo`) — **one agent does everything**: scopes,
+  implements, tests, self-reviews, and emits the `VERDICT`. mm still owns git
+  deterministically (commit, one PR, `Closes #N`, auto-merge) and **waits for
+  that PR to actually merge** before returning.
 
 ### Draining a GitHub issue queue
 
-Filter issues with `--label` / `--author` / `--issue-limit`, then choose a strategy:
+Filter issues with `--label` / `--author` / `--issue-limit`, then pick a strategy:
 
 | Strategy | Flag | What you get |
 |----------|------|--------------|
 | Per-issue PRs (default) | _(none)_ | One PR per issue, opened back-to-back. Fast, but PRs can conflict. |
 | Solo serialized | `--solo` | One agent per issue; mm waits for each PR to merge before the next issue. No conflicts, slower (you wait on CI per issue). |
-| Worktree collapse | `--worktree` | Each issue is developed in its **own git worktree** off a frozen base, then mm merges the successful branches into one integration branch and opens a **single "mega" PR** that `Closes` every included issue. An agent resolves any merge conflicts (mm validates and commits; a branch it can't cleanly merge is dropped, not force-shipped). |
+| Worktree collapse | `--worktree` | Each issue is developed in its **own git worktree** off a frozen base, then mm merges the successful branches into one integration branch and opens a **single "mega" PR** that `Closes` every included issue. An agent resolves merge conflicts; mm validates and commits — a branch it can't cleanly merge is dropped, not force-shipped. |
 
 `--solo` and `--worktree` are competing answers to "stop the conflicting-PR
 pile-up" and are mutually exclusive. Solo's wait is bounded by
-`--merge-timeout <minutes>` (default 60) — a PR that never goes green (failed
-required check, branch-protection review, conflict) stops the drain instead of
-hanging forever. Worktree keeps its scratch trees under `worktrees/` in the
-out-of-repo state dir; pass `--keep-worktrees` to leave them for inspection.
+`--merge-timeout <minutes>` (default 60) — a PR that never goes green stops
+the drain instead of hanging forever. Pass `--keep-worktrees` to keep the
+scratch trees for inspection.
 
 ---
 
-## The Loop
+## Where things live
 
-```text
-  ┌──────────────┐
-  │   DISCOVER   │  Scope requirements & compile guidelines
-  └──────────────┘
-         │
-         ▼
-  ┌──────────────┐
-  │   EXECUTE    │  Implement the changes
-  └──────────────┘
-         │
-         ▼
-  ┌──────────────┐
-  │    VERIFY    │  Test & critique
-  └──────────────┘
-         │
-         ├─ (Pass) ─► [ COMMIT ] (PR + Memory)
-         │
-         └─ (Fail) ─► Loop back & retry
-```
+Everything mm writes stays **outside your repository**:
 
-middle-manager executes steps in the following order:
+| What | Where |
+|------|-------|
+| Run state, prompts, outputs, ledger | `~/.local/state/middle-manager/<repo>-<hash>/` (respects `$XDG_STATE_HOME`; override with `--state-dir`) |
+| Cross-run learnings (injected into every prompt) | `notes.md` in that state dir (override with `--notes-file`) |
+| Your persistent config: custom agents, strength order, defaults | `~/.config/middle-manager/config.json` (respects `$XDG_CONFIG_HOME`) |
+| Custom prompt overrides | `<state-dir>/prompts/*.md`, or committed in `<repo>/.middle-manager/prompts/*.md` |
 
-1. **Discover**: Scans codebase and active issues, determines the bounds and scope of changes, and writes implementation guidelines.
-2. **Execute**: Implements the changes in the target workspace.
-3. **Verify**: Reviews the changes, runs tests, and applies critical backpressure on failure.
-4. **Commit**: Appends durable learnings to the orchestrator notes file (outside your repo — `AGENTS.md` is read-only to mm) and lands one clean commit; middle-manager itself pushes, opens the PR, and links the issue.
-
-A change is only committed on an explicit `VERDICT: PASS` from the verifier — a `FAIL` or a missing/garbled verdict **fails closed** and loops back rather than shipping unverified work. (The verifier agent runs the tests; middle-manager never runs them for you.) Every loop-back is a real handoff, not a blind retry: the next attempt sees the verifier's findings and the working tree's current change surface. And the loop never spins: an iteration that leaves the tree byte-identical to the last failed one **escalates the agent ladder** if one is configured, and stops otherwise — with `--max-iterations`, per-step timeouts, and `--max-wall-minutes` as the hard outer bounds.
+mm never touches your `.gitignore` or `AGENTS.md`, and an agent's `git add -A`
+can never sweep orchestrator state into a commit.
 
 ---
 
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
-

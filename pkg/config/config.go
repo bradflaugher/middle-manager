@@ -149,6 +149,11 @@ type LoopConfig struct {
 	// MaxWallMinutes bounds a whole run's wall clock (0 = unbounded); the loop
 	// stops before starting an iteration that would exceed it.
 	MaxWallMinutes int `json:"max_wall_minutes"`
+	// StrengthOrder is the operator's own ranking of their agents, strongest
+	// first. It drives the wizard's escalation ladder preset and the
+	// distinct-verifier pick; unlisted agents fall back to the built-in order.
+	// The wizard edits it and persists it to the operator config file.
+	StrengthOrder []string `json:"strength_order"`
 
 	// Interactive Wizard overrides
 	Wizard   bool
@@ -418,6 +423,9 @@ func ConfigFromMap(data map[string]interface{}, repo string) *LoopConfig {
 	if defs, ok := data["agents"].(map[string]interface{}); ok {
 		cfg.CustomAgents = parseAgentDefs(defs)
 	}
+	if v, ok := data["strength_order"]; ok {
+		cfg.StrengthOrder = parseStringList(v)
+	}
 
 	for _, step := range []string{"discover", "execute", "verify", "commit"} {
 		if sVal, ok := data[step].(map[string]interface{}); ok {
@@ -495,6 +503,56 @@ func parseEscalateValue(v interface{}) []AgentRef {
 		return refs
 	}
 	return nil
+}
+
+// parseStringList accepts a JSON list of strings or one comma-separated
+// string, trimming blanks either way.
+func parseStringList(v interface{}) []string {
+	var out []string
+	appendClean := func(s string) {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	switch val := v.(type) {
+	case string:
+		for _, part := range strings.Split(val, ",") {
+			appendClean(part)
+		}
+	case []interface{}:
+		for _, item := range val {
+			if s, ok := item.(string); ok {
+				appendClean(s)
+			}
+		}
+	}
+	return out
+}
+
+// SaveStrengthOrder persists the operator's agent strength ranking into the
+// persistent config file, preserving every other key already there. Called by
+// the wizard so the ordering only needs setting once.
+func SaveStrengthOrder(order []string) error {
+	path := DefaultConfigPath()
+	if path == "" {
+		return fmt.Errorf("no home directory to store config in")
+	}
+	data, err := LoadJSONConfig(path)
+	if err != nil {
+		return err
+	}
+	if data == nil {
+		data = map[string]interface{}{}
+	}
+	data["strength_order"] = order
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(b, '\n'), 0644)
 }
 
 // parseAgentDefs decodes the "agents" config map into AgentDefs via a JSON
@@ -783,6 +841,9 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 			if mw > 0 {
 				cfg.MaxWallMinutes = mw
 			}
+			i++
+		case arg == "--strength-order" && i+1 < len(restArgs):
+			cfg.StrengthOrder = parseStringList(restArgs[i+1])
 			i++
 		case arg == "--state-dir" && i+1 < len(restArgs):
 			cfg.StateDir = restArgs[i+1]

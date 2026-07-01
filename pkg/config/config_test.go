@@ -301,6 +301,67 @@ func TestDefaultConfigFileAutoLoads(t *testing.T) {
 	}
 }
 
+// strength_order parses from JSON (list or comma string) and the CLI, and
+// SaveStrengthOrder persists it without clobbering other config keys.
+func TestStrengthOrder(t *testing.T) {
+	cfg := ConfigFromMap(map[string]interface{}{
+		"strength_order": []interface{}{"codex", " claude "},
+	}, "")
+	if len(cfg.StrengthOrder) != 2 || cfg.StrengthOrder[0] != "codex" || cfg.StrengthOrder[1] != "claude" {
+		t.Errorf("JSON list strength order = %v", cfg.StrengthOrder)
+	}
+	cfg = ConfigFromMap(map[string]interface{}{"strength_order": "grok, opencode"}, "")
+	if len(cfg.StrengthOrder) != 2 || cfg.StrengthOrder[1] != "opencode" {
+		t.Errorf("JSON string strength order = %v", cfg.StrengthOrder)
+	}
+
+	_, cfg2, err := ParseArgs([]string{"--strength-order", "claude,codex"})
+	if err != nil {
+		t.Fatalf("ParseArgs: %v", err)
+	}
+	if len(cfg2.StrengthOrder) != 2 || cfg2.StrengthOrder[0] != "claude" {
+		t.Errorf("--strength-order = %v", cfg2.StrengthOrder)
+	}
+}
+
+func TestSaveStrengthOrderPreservesConfig(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	dir := filepath.Join(configHome, "middle-manager")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	existing := `{"escalate_after": 3, "agents": {"aider": {"binary": "aider"}}}`
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(existing), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SaveStrengthOrder([]string{"codex", "claude"}); err != nil {
+		t.Fatalf("SaveStrengthOrder: %v", err)
+	}
+
+	_, cfg, err := ParseArgs(nil)
+	if err != nil {
+		t.Fatalf("ParseArgs: %v", err)
+	}
+	if len(cfg.StrengthOrder) != 2 || cfg.StrengthOrder[0] != "codex" {
+		t.Errorf("saved strength order not loaded: %v", cfg.StrengthOrder)
+	}
+	if cfg.EscalateAfter != 3 || cfg.CustomAgents["aider"].Binary != "aider" {
+		t.Errorf("pre-existing config keys clobbered: after=%d agents=%+v", cfg.EscalateAfter, cfg.CustomAgents)
+	}
+
+	// Saving with no pre-existing file creates it.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := SaveStrengthOrder([]string{"claude"}); err != nil {
+		t.Fatalf("SaveStrengthOrder (fresh): %v", err)
+	}
+	_, cfg3, _ := ParseArgs(nil)
+	if len(cfg3.StrengthOrder) != 1 || cfg3.StrengthOrder[0] != "claude" {
+		t.Errorf("fresh save not loaded: %v", cfg3.StrengthOrder)
+	}
+}
+
 // NotesPath must stay stable once pinned, even when the queue overrides
 // StateDir per issue — otherwise cross-issue learnings fragment.
 func TestNotesPathPinnedAcrossStateDirOverride(t *testing.T) {

@@ -538,77 +538,124 @@ func TestWizardPerIssueKeepsSolo(t *testing.T) {
 
 // rainbowText must produce visible, styled output (one ANSI-wrapped run per
 // rune) and stay rune-safe for multibyte input.
-// The options screen owns the two new factory toggles. Committing it must map
-// checkbox #5 to DistinctVerifier and checkbox #6 to an escalation ladder
-// preset on the execute slot (a stronger installed agent, or none available).
+// fakeInstalled pins EVERY builtin to a nonexistent binary (overrides never
+// fall back to PATH) and marks just the listed agents as installed, so wizard
+// tests don't depend on which CLIs the host machine happens to have.
+func fakeInstalled(installed ...string) map[string]string {
+	m := map[string]string{}
+	for _, name := range agents.AgentNames {
+		m[name] = "/nonexistent/mm-test-binary"
+	}
+	for _, name := range installed {
+		m[name] = "/bin/sh"
+	}
+	return m
+}
+
+// The options screen owns the two new factory toggles. Escalation ON routes
+// through the strength screen, whose user-defined ranking builds the ladder;
+// OFF clears the ladder; a config-shaped ladder skips the screen untouched.
 func TestWizardFactoryOptions(t *testing.T) {
-	m := newTestWizard()
+	cfg := config.NewDefaultConfig()
+	cfg.BinaryOverrides = fakeInstalled("claude", "codex", "opencode")
+	cfg.Execute.Agent = "opencode"
+	m := NewWizardModel(cfg)
 	m.state = stateOptions
 	if len(m.optionsList) != 7 || len(m.optionsValues) != 7 {
 		t.Fatalf("options screen has %d/%d entries, want 7", len(m.optionsList), len(m.optionsValues))
 	}
 
-	m.cfg.Execute.Agent = "opencode"
 	m.optionsValues[5] = true // distinct verifier
-	m.optionsValues[6] = true // escalation preset
-	m = sendW(m, keyEnter())  // commit options → maxIters
+	m.optionsValues[6] = true // escalation
+	m = sendW(m, keyEnter())  // commit options → strength screen
 
 	if !m.cfg.DistinctVerifier {
 		t.Error("distinct-verifier checkbox not applied")
 	}
-	// The preset picks the strongest INSTALLED agent, so on a machine with no
-	// agent CLIs the ladder is legitimately empty; when set it must be a single
-	// non-executor rung.
-	if len(m.cfg.Execute.Escalate) > 1 {
-		t.Errorf("preset ladder should be one rung, got %+v", m.cfg.Execute.Escalate)
+	if m.state != stateStrength {
+		t.Fatalf("escalation ON should route to the strength screen, got state %d", m.state)
 	}
-	if len(m.cfg.Execute.Escalate) == 1 && m.cfg.Execute.Escalate[0].Agent == "opencode" {
-		t.Error("preset escalated to the executor itself")
+	// Installed agents seeded strongest-first per the default ordering.
+	want := []string{"claude", "codex", "opencode"}
+	if len(m.strengthOrder) != 3 || m.strengthOrder[0] != want[0] || m.strengthOrder[1] != want[1] || m.strengthOrder[2] != want[2] {
+		t.Fatalf("seeded strength order = %v, want %v", m.strengthOrder, want)
 	}
 
-	// Toggling escalation OFF must clear the ladder ("never escalate").
-	m2 := newTestWizard()
+	// The user promotes codex to strongest: cursor starts at 0... move to row 1
+	// then drag it up one (shift+up).
+	m = sendW(m, keyDown())
+	m = sendW(m, tea.KeyPressMsg{Code: tea.KeyUp, Mod: tea.ModShift})
+	if m.strengthOrder[0] != "codex" || m.strengthIndex != 0 {
+		t.Fatalf("shift+up did not promote codex: %v (cursor %d)", m.strengthOrder, m.strengthIndex)
+	}
+
+	m = sendW(m, keyEnter()) // commit strength → maxIters
+	if m.state != stateMaxIters {
+		t.Fatalf("strength commit should land on maxIters, got %d", m.state)
+	}
+	if len(m.cfg.StrengthOrder) != 3 || m.cfg.StrengthOrder[0] != "codex" {
+		t.Errorf("StrengthOrder not committed: %v", m.cfg.StrengthOrder)
+	}
+	// Base opencode is ranked #3 → ladder climbs claude (nearer) then codex (top).
+	if len(m.cfg.Execute.Escalate) != 2 || m.cfg.Execute.Escalate[0].Agent != "claude" || m.cfg.Execute.Escalate[1].Agent != "codex" {
+		t.Errorf("ladder = %+v, want [claude codex]", m.cfg.Execute.Escalate)
+	}
+
+	// Toggling escalation OFF must clear the ladder and skip the strength screen.
+	cfg2 := config.NewDefaultConfig()
+	cfg2.BinaryOverrides = fakeInstalled("claude", "codex")
+	m2 := NewWizardModel(cfg2)
 	m2.state = stateOptions
 	m2.cfg.Execute.Escalate = []config.AgentRef{{Agent: "claude"}}
 	m2.optionsValues[6] = false
 	m2 = sendW(m2, keyEnter())
-	if len(m2.cfg.Execute.Escalate) != 0 {
-		t.Errorf("escalation OFF left a ladder: %+v", m2.cfg.Execute.Escalate)
+	if m2.state != stateMaxIters || len(m2.cfg.Execute.Escalate) != 0 {
+		t.Errorf("escalation OFF: state=%d ladder=%+v", m2.state, m2.cfg.Execute.Escalate)
 	}
 
-	// A config-shaped ladder survives when the toggle stays ON.
-	m3 := newTestWizard()
+	// A config-shaped ladder survives when the toggle stays ON, no screen shown.
+	cfg3 := config.NewDefaultConfig()
+	cfg3.BinaryOverrides = fakeInstalled("claude", "codex")
+	cfg3.Execute.Escalate = []config.AgentRef{{Agent: "claude", Model: "opus"}, {Agent: "codex"}}
+	m3 := NewWizardModel(cfg3)
 	m3.state = stateOptions
-	ladder := []config.AgentRef{{Agent: "claude", Model: "opus"}, {Agent: "codex"}}
-	m3.cfg.Execute.Escalate = ladder
 	m3.optionsValues[6] = true
 	m3 = sendW(m3, keyEnter())
+	if m3.state != stateMaxIters {
+		t.Errorf("config-ladder path should skip the strength screen, got state %d", m3.state)
+	}
 	if len(m3.cfg.Execute.Escalate) != 2 {
-		t.Errorf("config ladder clobbered by preset: %+v", m3.cfg.Execute.Escalate)
+		t.Errorf("config ladder clobbered: %+v", m3.cfg.Execute.Escalate)
 	}
 }
 
-// escalationPreset must pick a strong installed agent that differs from the
-// base executor, and return nil when nothing else is installed.
-func TestEscalationPreset(t *testing.T) {
-	// Hermetic: overrides never fall back to PATH.
-	overrides := map[string]string{}
-	for _, name := range agents.AgentNames {
-		overrides[name] = "/nonexistent/mm-test-binary"
-	}
-	if got := escalationPreset("opencode", overrides); got != nil {
+// escalationLadder must climb the ranking gradually: every installed agent
+// stronger than the base, nearest first; unranked bases jump to the strongest;
+// a base already at the top gets no ladder.
+func TestEscalationLadder(t *testing.T) {
+	overrides := fakeInstalled() // nothing installed
+	if got := escalationLadder("opencode", overrides, nil); got != nil {
 		t.Errorf("no installed agents should yield no ladder, got %+v", got)
 	}
 
-	overrides["claude"] = "/bin/sh"
-	got := escalationPreset("opencode", overrides)
-	if len(got) != 1 || got[0].Agent != "claude" {
-		t.Errorf("preset = %+v, want [claude]", got)
+	overrides = fakeInstalled("claude", "codex", "opencode")
+	got := escalationLadder("opencode", overrides, nil) // default order: claude > codex > opencode
+	if len(got) != 2 || got[0].Agent != "codex" || got[1].Agent != "claude" {
+		t.Errorf("ladder = %+v, want [codex claude]", got)
 	}
-	// The executor itself is never its own escalation.
-	overrides["codex"] = "/bin/sh"
-	if got := escalationPreset("claude", overrides); len(got) != 1 || got[0].Agent != "codex" {
-		t.Errorf("preset for claude base = %+v, want [codex]", got)
+	// User ranking flips claude and codex.
+	got = escalationLadder("opencode", overrides, []string{"codex", "claude", "opencode"})
+	if len(got) != 2 || got[0].Agent != "claude" || got[1].Agent != "codex" {
+		t.Errorf("user-ranked ladder = %+v, want [claude codex]", got)
+	}
+	// The strongest agent has nowhere to climb.
+	if got := escalationLadder("claude", overrides, nil); got != nil {
+		t.Errorf("strongest base should have no ladder, got %+v", got)
+	}
+	// Random (unranked) base escalates straight to the user's strongest.
+	got = escalationLadder(agents.RandomAgent, overrides, []string{"codex", "claude"})
+	if len(got) != 1 || got[0].Agent != "codex" {
+		t.Errorf("random base ladder = %+v, want [codex]", got)
 	}
 }
 
@@ -657,7 +704,11 @@ func TestGradientTextWidth(t *testing.T) {
 // The wizard breadcrumb adapts its length to the selected mode's flow and
 // reports a sane position counter.
 func TestWizardBreadcrumbAdaptsToMode(t *testing.T) {
-	m := newTestWizard()
+	// One installed agent: both factory toggles default OFF, so the flow has no
+	// strength screen — the original 9-screen feature / 10-screen queue shape.
+	cfg := config.NewDefaultConfig()
+	cfg.BinaryOverrides = fakeInstalled("claude")
+	m := NewWizardModel(cfg)
 	if !strings.Contains(stripANSITest(m.breadcrumb()), "1/9") {
 		t.Fatalf("feature flow should start at 1/9: %q", stripANSITest(m.breadcrumb()))
 	}
@@ -672,6 +723,14 @@ func TestWizardBreadcrumbAdaptsToMode(t *testing.T) {
 	}
 	if got, want := len(m.flow()), 10; got != want {
 		t.Fatalf("queue flow length = %d, want %d", got, want)
+	}
+
+	// Two+ installed agents: escalation defaults ON, adding the strength screen.
+	cfg2 := config.NewDefaultConfig()
+	cfg2.BinaryOverrides = fakeInstalled("claude", "codex")
+	m2 := NewWizardModel(cfg2)
+	if got, want := len(m2.flow()), 10; got != want {
+		t.Fatalf("feature flow with strength screen = %d, want %d", got, want)
 	}
 }
 

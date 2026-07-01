@@ -227,6 +227,7 @@ const (
 	stateSteps    // loop shape (asked before agents so agents can adapt)
 	stateAgents
 	stateOptions
+	stateStrength // rank YOUR agents strongest-first; feeds the escalation ladder
 	stateMaxIters
 	stateConfirm
 )
@@ -250,6 +251,13 @@ type WizardModel struct {
 	optionsIndex  int
 	optionsList   []string
 	optionsValues []bool
+	// strengthOrder is the user's live ranking of installed agents (strongest
+	// first) on the strength screen; strengthIndex is its cursor.
+	strengthOrder []string
+	strengthIndex int
+	// hasConfigLadder notes an escalation ladder shaped explicitly in config —
+	// the wizard respects it and skips the strength-preset screen.
+	hasConfigLadder bool
 	queueLabel    string
 	queueAuthor   string
 	queueLimit    string
@@ -326,20 +334,84 @@ func NewWizardModel(initialCfg *config.LoopConfig) *WizardModel {
 			initialCfg.DistinctVerifier || len(agents.AvailableAgents(initialCfg.BinaryOverrides)) >= 2,
 			len(initialCfg.Execute.Escalate) > 0 || len(agents.AvailableAgents(initialCfg.BinaryOverrides)) >= 2,
 		},
+		hasConfigLadder: len(initialCfg.Execute.Escalate) > 0,
 	}
 }
 
-// escalationPreset builds the wizard's one-rung ladder: the strongest
-// installed agent that isn't already the base executor. Power users can shape
-// full multi-rung ladders (with models) via config or --execute-escalate.
-func escalationPreset(baseAgent string, overrides map[string]string) []config.AgentRef {
-	priority := []string{"claude", "codex", "grok", "opencode", "crush", "agy"}
-	for _, name := range priority {
-		if name != baseAgent && agents.AgentAvailable(name, overrides[name]) {
-			return []config.AgentRef{{Agent: name}}
+// escalationLadder builds the executor's escalation ladder from a strength
+// ranking (strongest first): every installed agent STRONGER than the base, as
+// rungs of increasing strength, so failures climb gradually toward the top of
+// the ranking. A base that isn't ranked (e.g. "random") escalates straight to
+// the strongest; a base already at the top gets no ladder. Power users can
+// still shape explicit ladders (with models) via config or --execute-escalate.
+func escalationLadder(baseAgent string, overrides map[string]string, order []string) []config.AgentRef {
+	if len(order) == 0 {
+		order = agents.DefaultStrengthOrder
+	}
+	installed := make([]string, 0, len(order))
+	for _, name := range order {
+		if agents.AgentAvailable(name, overrides[name]) {
+			installed = append(installed, name)
 		}
 	}
-	return nil
+	if len(installed) == 0 {
+		return nil
+	}
+	basePos := -1
+	for i, name := range installed {
+		if name == baseAgent {
+			basePos = i
+			break
+		}
+	}
+	if basePos == -1 {
+		return []config.AgentRef{{Agent: installed[0]}}
+	}
+	var ladder []config.AgentRef
+	for i := basePos - 1; i >= 0; i-- {
+		ladder = append(ladder, config.AgentRef{Agent: installed[i]})
+	}
+	return ladder
+}
+
+// seedStrengthOrder fills the strength screen with the installed agents,
+// ranked by the operator's saved ordering first, the built-in ordering next,
+// and any remaining (custom) agents last. A ranking already edited this
+// session is kept as-is when the user navigates back and forth.
+func (m *WizardModel) seedStrengthOrder() {
+	if len(m.strengthOrder) > 0 {
+		return
+	}
+	seen := map[string]bool{}
+	var out []string
+	pool := append(append([]string{}, m.cfg.StrengthOrder...), agents.DefaultStrengthOrder...)
+	pool = append(pool, agents.AvailableAgents(m.cfg.BinaryOverrides)...)
+	for _, name := range pool {
+		if seen[name] || !agents.AgentAvailable(name, m.cfg.BinaryOverrides[name]) {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	m.strengthOrder = out
+	m.strengthIndex = 0
+}
+
+// moveStrengthItem swaps the agent under the cursor with its neighbor,
+// carrying the cursor along so repeated presses keep dragging the same agent.
+func (m *WizardModel) moveStrengthItem(dir int) {
+	i, j := m.strengthIndex, m.strengthIndex+dir
+	if i < 0 || j < 0 || i >= len(m.strengthOrder) || j >= len(m.strengthOrder) {
+		return
+	}
+	m.strengthOrder[i], m.strengthOrder[j] = m.strengthOrder[j], m.strengthOrder[i]
+	m.strengthIndex = j
+}
+
+// strengthScreenInPlay reports whether the flow includes the strength screen:
+// only when escalation is toggled on and config didn't already shape a ladder.
+func (m *WizardModel) strengthScreenInPlay() bool {
+	return m.optionsValues[6] && !m.hasConfigLadder
 }
 
 func boolToIndex(b bool) int {
@@ -458,6 +530,14 @@ func (m *WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.state == stateOptions {
 				m.optionsValues[m.optionsIndex] = !m.optionsValues[m.optionsIndex]
 			}
+		case "K", "shift+up":
+			if m.state == stateStrength {
+				m.moveStrengthItem(-1)
+			}
+		case "J", "shift+down":
+			if m.state == stateStrength {
+				m.moveStrengthItem(1)
+			}
 		}
 	}
 
@@ -485,6 +565,8 @@ func (m *WizardModel) moveCursor(dir int) {
 		m.stepsIndex = wrap(m.stepsIndex+dir, len(m.stepsChoices()))
 	case stateOptions:
 		m.optionsIndex = wrap(m.optionsIndex+dir, len(m.optionsList))
+	case stateStrength:
+		m.strengthIndex = wrap(m.strengthIndex+dir, len(m.strengthOrder))
 	case stateAgents:
 		if m.customAgents {
 			m.agentIndex = wrap(m.agentIndex+dir, len(m.agentStepKeys()))
@@ -630,16 +712,24 @@ func (m *WizardModel) nextStep() (tea.Model, tea.Cmd) {
 		m.cfg.Fresh = m.optionsValues[3]
 		m.cfg.NoMerge = !m.optionsValues[4]
 		m.cfg.DistinctVerifier = m.optionsValues[5]
-		// Escalation: ON pins a stronger installed agent as the executor's ladder
-		// (the execute slot also powers solo) unless config already shaped one;
-		// OFF means "never escalate" and clears any ladder.
-		if m.optionsValues[6] {
-			if len(m.cfg.Execute.Escalate) == 0 {
-				m.cfg.Execute.Escalate = escalationPreset(m.cfg.Execute.Agent, m.cfg.BinaryOverrides)
-			}
-		} else {
+		// Escalation OFF means "never escalate" and clears any ladder; ON with a
+		// config-shaped ladder keeps it verbatim; otherwise the strength screen
+		// is next and builds the ladder from the user's own ranking.
+		if !m.optionsValues[6] {
 			m.cfg.Execute.Escalate = nil
 		}
+		if m.strengthScreenInPlay() {
+			m.seedStrengthOrder()
+			m.state = stateStrength
+		} else {
+			m.state = stateMaxIters
+			cmd = m.resetInput("Max iterations per task (default 10)")
+			m.textInput.SetValue("10")
+		}
+
+	case stateStrength:
+		m.cfg.StrengthOrder = append([]string{}, m.strengthOrder...)
+		m.cfg.Execute.Escalate = escalationLadder(m.cfg.Execute.Agent, m.cfg.BinaryOverrides, m.strengthOrder)
 		m.state = stateMaxIters
 		cmd = m.resetInput("Max iterations per task (default 10)")
 		m.textInput.SetValue("10")
@@ -654,6 +744,11 @@ func (m *WizardModel) nextStep() (tea.Model, tea.Cmd) {
 		m.state = stateConfirm
 
 	case stateConfirm:
+		// Persist the strength ranking so it seeds every future run — best
+		// effort: a read-only config dir must not block the launch.
+		if len(m.strengthOrder) > 0 {
+			_ = config.SaveStrengthOrder(m.strengthOrder)
+		}
 		m.confirmed = true
 		m.done = true
 		return m, tea.Quit
@@ -720,8 +815,14 @@ func (m *WizardModel) prevStep() (tea.Model, tea.Cmd) {
 		m.state = stateSteps
 	case stateOptions:
 		m.state = stateAgents
-	case stateMaxIters:
+	case stateStrength:
 		m.state = stateOptions
+	case stateMaxIters:
+		if m.strengthScreenInPlay() {
+			m.state = stateStrength
+		} else {
+			m.state = stateOptions
+		}
 	case stateConfirm:
 		m.state = stateMaxIters
 		cmd = m.textInput.Focus()
@@ -839,6 +940,30 @@ func (m *WizardModel) View() tea.View {
 		for i, name := range m.optionsList {
 			s.WriteString(checkbox(i == m.optionsIndex, m.optionsValues[i], name))
 		}
+	case stateStrength:
+		s.WriteString(stepHeader("Agent strength order"))
+		if len(m.strengthOrder) == 0 {
+			s.WriteString(stDim.Render("  No installed agents to rank — escalation will be skipped.") + "\n")
+		} else {
+			s.WriteString("  Rank YOUR agents, strongest at the top — escalation climbs toward #1:\n\n")
+			for i, name := range m.strengthOrder {
+				cursor := "  "
+				st := stFg
+				if i == m.strengthIndex {
+					cursor = stMag.Render("❯ ")
+					st = stMag
+				}
+				tag := ""
+				if i == 0 {
+					tag = stDim.Render("  ← strongest (escalation target)")
+				} else if i == len(m.strengthOrder)-1 {
+					tag = stDim.Render("  ← cheapest / first pick")
+				}
+				s.WriteString(fmt.Sprintf("  %s%d. %s%s\n", cursor, i+1, st.Render(name), tag))
+			}
+			s.WriteString("\n" + stDim.Render("  ↑/↓: select · shift+↑/↓ (or K/J): move agent · saved to ~/.config/middle-manager/config.json"))
+		}
+		s.WriteString("\n")
 	case stateMaxIters:
 		s.WriteString(stepHeader("Iteration budget"))
 		s.WriteString("  Max loop iterations per task:\n\n  " + m.textInput.View() + "\n")
@@ -956,7 +1081,11 @@ func (m *WizardModel) flow() []wizardState {
 	default:
 		seq = append(seq, stateMission)
 	}
-	return append(seq, stateSteps, stateAgents, stateOptions, stateMaxIters, stateConfirm)
+	seq = append(seq, stateSteps, stateAgents, stateOptions)
+	if m.strengthScreenInPlay() {
+		seq = append(seq, stateStrength)
+	}
+	return append(seq, stateMaxIters, stateConfirm)
 }
 
 // breadcrumb renders the gradient dot trail across the wizard flow: filled

@@ -95,6 +95,7 @@ mm
 | Roll a **random** installed agent each iteration | `mm "…" --execute-agent random` |
 | **Cheap agent first, escalate on failure** | `mm --issue 42 --execute-agent opencode --execute-escalate "claude:opus"` |
 | Different agent audits the work | `mm --issue 42 --distinct-verifier` |
+| Declare your own strength ranking | `mm "…" --strength-order "claude,codex,opencode"` (wizard saves it) |
 | Bound one agent invocation (minutes) | `mm "…" --step-timeout 30` (per-step: `--execute-timeout 90`) |
 | Bound the whole run (minutes) | `mm --label bug --max-wall-minutes 120` |
 | Point at another repo | `mm quick "…" --repo ~/other-project` |
@@ -142,6 +143,14 @@ In JSON config, ladders take strings or objects:
 { "execute": { "agent": "opencode",
                "escalate": ["claude:opus", {"agent": "codex", "model": "gpt-5"}] } }
 ```
+
+**You define what "stronger" means.** The wizard's strength screen (and
+`"strength_order"` in config, or `--strength-order "claude,codex,opencode"`)
+records *your* ranking of *your* agents, strongest first — mm's built-in
+ordering is only the fallback. The wizard builds its ladder by climbing your
+ranking from the base agent toward #1, and the distinct verifier prefers your
+strongest remaining agent. Set it once in the wizard; it persists to
+`~/.config/middle-manager/config.json`.
 
 ### Independent verifier
 
@@ -216,9 +225,12 @@ fails closed with a clear message instead of guessing.
 
 The wizard's options screen also carries the two factory quality levers —
 **distinct verifier** and **escalate to a stronger agent on repeated failure**
-(a one-rung ladder to the strongest installed agent) — both defaulting ON when
-you have two or more agents installed. The review screen shows the resulting
-ladder before launch.
+— both defaulting ON when you have two or more agents installed. Turning
+escalation on adds a **strength-ordering screen**: you rank your installed
+agents strongest-first (shift+↑/↓ to drag), the escalation ladder is built by
+climbing your ranking, and the ordering is saved to
+`~/.config/middle-manager/config.json` so you only set it once. The review
+screen shows the resulting ladder before launch.
 
 ### Loop shape: 4-step · 3-step · solo
 

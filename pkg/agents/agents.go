@@ -21,6 +21,13 @@ import (
 // AgentNames is the ordered roster of coding-agent CLIs middle-manager can stack.
 var AgentNames = []string{"grok", "claude", "codex", "opencode", "agy", "crush"}
 
+// DefaultStrengthOrder is the built-in agent ranking, strongest first — used
+// for escalation presets and verifier picks whenever the operator has not
+// declared their own ranking (config "strength_order", wizard, or
+// --strength-order). It is an opinion, not a benchmark: overriding it is the
+// point of the setting.
+var DefaultStrengthOrder = []string{"claude", "codex", "grok", "opencode", "crush", "agy"}
+
 // RandomAgent is the sentinel a step's Agent can hold to mean "pick a random
 // installed agent at runtime" (resolved per loop iteration, never per build).
 // It is intentionally NOT in AgentNames or AgentSpecs — it is never a real

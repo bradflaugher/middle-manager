@@ -349,9 +349,10 @@ func (l *MiddleManagerLoop) distinctVerifier(verifyAgent string) (string, bool) 
 	if l.verifierAgent != "" && l.verifierAgent != execAgent {
 		return l.verifierAgent, true
 	}
-	// Prefer the verify-step priority order, then any other installed agent
-	// (covers custom agents outside the built-in priority list).
-	for _, name := range agents.StepAgentPriority["verify"] {
+	// Prefer the operator's own strength ranking, then the verify-step priority
+	// order, then any other installed agent (covers custom agents in neither).
+	candidates := append(append([]string{}, l.cfg.StrengthOrder...), agents.StepAgentPriority["verify"]...)
+	for _, name := range candidates {
 		if name != execAgent && agents.AgentAvailable(name, l.cfg.BinaryOverrides[name]) {
 			l.verifierAgent = name
 			return name, true

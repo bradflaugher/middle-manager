@@ -4,7 +4,7 @@
 
 Micromanaged multi-agent coding loop that orchestrates your favorite coding CLIs.
 
-**Bring your own agents.** middle-manager dynamically chains **Grok**, **Claude Code**, **OpenCode**, **OpenAI Codex**, **Google Antigravity (agy)**, and **Charm Crush** into a tight 4-step software factory. It reads your codebase, scopes out requirements, executes fixes, critiques its own work, runs tests, commits, and opens PRs—completely on autopilot. *(Agents are auto-detected and configured automatically).*
+**Bring your own agents.** middle-manager dynamically chains **Grok**, **Claude Code**, **OpenCode**, **OpenAI Codex**, **Google Antigravity (agy)**, **Charm Crush** — plus **any headless CLI you declare in config** — into a tight 4-step software factory. It reads your codebase, scopes out requirements, executes fixes, critiques its own work, runs tests, commits, and opens PRs—completely on autopilot. *(Agents are auto-detected and configured automatically).*
 
 Each agent runs as its own CLI in plain headless mode, so it uses whatever login that tool already has—OAuth session or API key—with **no extra keys or adapters to configure**. And because it's *micromanaged*, you can watch every step live and steer it mid-run.
 
@@ -18,7 +18,7 @@ Each agent runs as its own CLI in plain headless mode, so it uses whatever login
 - A **big, expensive model does only the planning and execution**, while cheaper agents handle the rest.
 - Whatever split you want — each step is just a coding CLI pointed at a model, dropped into the **discover → execute → verify → commit** order. The right model in the right seat.
 
-You set it up by configuring each coding agent to use the model you want, then assigning those agents to steps.
+You set it up by configuring each coding agent to use the model you want, then assigning those agents to steps — or just rank your agents by strength once and let the **escalation ladder** start cheap and climb only when the cheap agent verifiably fails.
 
 **Closing issues is deterministic, not babysat.** Draining a queue, opening PRs, and closing issues runs as fixed, scripted logic — you're not paying an agent to sit and watch a queue. That's faster and cheaper than asking an LLM to mind the lifecycle.
 
@@ -77,6 +77,15 @@ To run the interactive wizard and configure your loop step-by-step:
 mm
 ```
 
+The wizard walks you through, in order: **repo → base branch → what to do →
+mission/issue/queue → loop shape → agents → options → agent strength order →
+iteration budget → review & launch**. Every screen has a sensible default, so
+mashing Enter gives you a working 4-step loop on `random` agents with the
+factory quality levers (distinct verifier + escalation) already on. The
+strength screen appears when escalation is on: rank your agents strongest-first
+(shift+↑/↓ to drag) and the ranking is remembered in
+`~/.config/middle-manager/config.json` for every future run.
+
 
 ## Advanced CLI Usage (Quick Reference)
 
@@ -132,10 +141,13 @@ mm --issue 42 --execute-agent opencode --execute-escalate "claude:opus,codex"
 
 Ladders work on every step (`--discover-escalate`, `--verify-escalate`, …) and
 on the solo agent (solo shares the execute slot). Escalation is keyed on
-**verified failure, not vibes**: every retry ships the verifier's concrete
-findings to the next attempt, and the stall detector (identical diff + identical
-feedback) now **forces the next rung instead of giving up** while ladder
-headroom remains — retrying identically is the one guaranteed waste of tokens.
+**verified failure, not vibes**, and the handoff is real: the escalated agent's
+prompt carries the verifier's concrete findings, the working tree's uncommitted
+change summary from the failed attempt, and an explicit banner naming its
+predecessor with instructions to review/keep/revert that work — never redo it
+blind. The stall detector (an iteration that leaves the tree byte-identical)
+**forces the next rung instead of giving up** while ladder headroom remains —
+retrying identically is the one guaranteed waste of tokens.
 
 In JSON config, ladders take strings or objects:
 
@@ -292,7 +304,7 @@ middle-manager executes steps in the following order:
 3. **Verify**: Reviews the changes, runs tests, and applies critical backpressure on failure.
 4. **Commit**: Appends durable learnings to the orchestrator notes file (outside your repo — `AGENTS.md` is read-only to mm) and lands one clean commit; middle-manager itself pushes, opens the PR, and links the issue.
 
-A change is only committed on an explicit `VERDICT: PASS` from the verifier — a `FAIL` or a missing/garbled verdict **fails closed** and loops back rather than shipping unverified work. (The verifier agent runs the tests; middle-manager never runs them for you.) The loop also stops itself early if it stalls: if an iteration produces the same diff and the same verifier feedback as the last one, it bails instead of burning iterations.
+A change is only committed on an explicit `VERDICT: PASS` from the verifier — a `FAIL` or a missing/garbled verdict **fails closed** and loops back rather than shipping unverified work. (The verifier agent runs the tests; middle-manager never runs them for you.) Every loop-back is a real handoff, not a blind retry: the next attempt sees the verifier's findings and the working tree's current change surface. And the loop never spins: an iteration that leaves the tree byte-identical to the last failed one **escalates the agent ladder** if one is configured, and stops otherwise — with `--max-iterations`, per-step timeouts, and `--max-wall-minutes` as the hard outer bounds.
 
 ---
 

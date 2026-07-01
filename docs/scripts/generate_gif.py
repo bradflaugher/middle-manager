@@ -6,6 +6,7 @@ import pty
 import select
 import shutil
 import subprocess
+import tempfile
 import time
 import struct
 import fcntl
@@ -172,37 +173,76 @@ def main():
     if font_reg is None:
         raise RuntimeError("No usable monospace font found for GIF rendering")
     
+    # The demo walks the REAL wizard (repo → … → options → strength ordering →
+    # review) and then lets the launched loop run against the mock agents, so
+    # the GIF shows the actual first-run experience end to end.
+    # Mock EVERY builtin agent: random rolls and the distinct-verifier swap can
+    # land on any of them, and a demo must never invoke a real (token-burning,
+    # nondeterministic) CLI that happens to be installed on the host.
     cmd = [
-        "./mm", "--mission", "Add a simple module docstring to main.py",
+        "./mm", "--wizard",
         "--repo", target_repo,
-        "--mode", "feature",
-        "--no-wizard",
         "--no-pr",
-        "--binary", f"claude={mock_agent}",
-        "--binary", f"opencode={mock_agent}",
-        "--binary", f"grok={mock_agent}"
     ]
-    
+    for agent in ["claude", "grok", "codex", "opencode", "agy", "crush"]:
+        cmd += ["--binary", f"{agent}={mock_agent}"]
+
+    # Scripted keystrokes (seconds-from-start, bytes). Pauses are long enough
+    # for a viewer to read each screen before it advances.
+    mission_text = "Add a module docstring to main.py"
+    events = [
+        (1.6, b"\r"),  # repository (prefilled with --repo)
+        (2.6, b"\r"),  # base branch (auto-detected)
+        (3.6, b"\r"),  # mode: build something new
+    ]
+    t = 4.4
+    for ch in mission_text:  # type the mission like a human
+        events.append((t, ch.encode()))
+        t += 0.035
+    t += 0.9
+    events += [
+        (t, b"\r"),               # mission entered
+        (t + 1.4, b"\r"),         # loop shape: 4 steps
+        (t + 3.2, b"\r"),         # agents: random (rainbow) defaults
+        (t + 5.4, b"\r"),         # options: factory toggles shown, defaults on
+        (t + 6.6, b"j"),          # strength screen: cursor down…
+        (t + 7.2, b"j"),          #   …to the bottom agent
+        (t + 8.0, b"\x1b[1;2A"),  # shift+up: drag it one rung stronger
+        (t + 9.4, b"\r"),         # commit the ordering
+        (t + 10.4, b"\r"),        # max iterations (default)
+        (t + 13.0, b"\r"),        # review & launch (pause on the summary)
+    ]
+
     master_fd, slave_fd = pty.openpty()
     size = struct.pack("HHHH", rows, cols, 0, 0)
     fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, size)
-    
+
     env = os.environ.copy()
     env["TERM"] = "xterm-256color"
     env["COLORTERM"] = "truecolor"
-    
+    # Isolate the demo from (and never pollute) the host's real mm config and
+    # state — the wizard persists the strength ordering on launch. Kept OUTSIDE
+    # the demo repo so an agent's `git add -A` can never sweep it into a commit.
+    demo_home = tempfile.mkdtemp(prefix="mm-gif-demo-")
+    env["XDG_CONFIG_HOME"] = os.path.join(demo_home, "config")
+    env["XDG_STATE_HOME"] = os.path.join(demo_home, "state")
+
     p = subprocess.Popen(cmd, stdin=slave_fd, stdout=slave_fd, stderr=slave_fd, close_fds=True, cwd=repo_root, env=env)
     os.close(slave_fd)
-    
+
     frames = []
     durations = []
-    
+
     last_text_hash = None
     interval = 0.1
     start_time = time.time()
-    
+
     while p.poll() is None:
         loop_start = time.time()
+
+        now = time.time() - start_time
+        while events and now >= events[0][0]:
+            os.write(master_fd, events.pop(0)[1])
 
         r, w, x = select.select([master_fd], [], [], 0.05)
         if master_fd in r:
@@ -238,7 +278,7 @@ def main():
         sleep_time = max(0, interval - elapsed)
         time.sleep(sleep_time)
 
-        if time.time() - start_time > 60:
+        if time.time() - start_time > 150:
             print("Recording timed out.")
             p.terminate()
             break

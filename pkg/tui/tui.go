@@ -940,6 +940,7 @@ func (m *WizardModel) View() tea.View {
 		for i, name := range m.optionsList {
 			s.WriteString(checkbox(i == m.optionsIndex, m.optionsValues[i], name))
 		}
+		s.WriteString("\n" + stDim.Render("  space: toggle") + "\n")
 	case stateStrength:
 		s.WriteString(stepHeader("Agent strength order"))
 		if len(m.strengthOrder) == 0 {

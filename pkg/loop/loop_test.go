@@ -158,6 +158,29 @@ func TestDistinctVerifier(t *testing.T) {
 	}
 }
 
+// The escalation handoff banner fires only for the working agents (execute /
+// solo) at tier > 0, and names the predecessor when it differs.
+func TestEscalationNotice(t *testing.T) {
+	if got := escalationNotice("execute", 0, 2, "claude", ""); got != "" {
+		t.Errorf("tier 0 must have no notice, got %q", got)
+	}
+	if got := escalationNotice("verify", 1, 2, "claude", "opencode"); got != "" {
+		t.Errorf("verify must not get the notice (unbiased auditor), got %q", got)
+	}
+	got := escalationNotice("execute", 1, 2, "claude", "opencode")
+	if !strings.Contains(got, "tier-1") || !strings.Contains(got, "CLAUDE") || !strings.Contains(got, "OPENCODE") {
+		t.Errorf("notice missing tier/agent/predecessor: %q", got)
+	}
+	if !strings.Contains(got, "revert") {
+		t.Errorf("notice must tell the agent it may revert prior work: %q", got)
+	}
+	// Unknown predecessor degrades to generic wording, never an empty name.
+	got = escalationNotice("solo", 2, 3, "codex", "")
+	if !strings.Contains(got, "a previous agent") {
+		t.Errorf("missing generic predecessor wording: %q", got)
+	}
+}
+
 // bumpTier (used when the stall detector finds headroom) must jump to the next
 // escalation boundary so every ladder advances exactly one rung.
 func TestBumpTierAndHeadroom(t *testing.T) {

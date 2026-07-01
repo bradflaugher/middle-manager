@@ -67,6 +67,10 @@ type MiddleManagerLoop struct {
 	// DistinctVerifier is on — the critic must not grade its own homework.
 	verifierAgent string
 
+	// lastStepAgent remembers which agent last ran each step, so an escalated
+	// agent's prompt can name its predecessor in the handoff notice.
+	lastStepAgent map[string]string
+
 	// failedIters counts iterations whose verdict failed; it drives each step's
 	// escalation ladder (tier = failedIters / EscalateAfter, capped per step).
 	failedIters int
@@ -92,6 +96,7 @@ func NewMiddleManagerLoop(cfg *config.LoopConfig) *MiddleManagerLoop {
 		startTime:     time.Now(),
 		ctx:           ctx,
 		cancel:        cancel,
+		lastStepAgent: make(map[string]string),
 	}
 }
 
@@ -108,8 +113,10 @@ func (l *MiddleManagerLoop) Log(msg string, color string) {
 	if color != "" {
 		msg = colors.Colored(msg, color)
 	}
-	// If TUI is active, notify log update. Otherwise print directly.
-	if l.cfg.StreamOutput {
+	// Route to the TUI only when one actually owns the terminal; otherwise
+	// (stream mode, --dry-run, tests) print to stdout — a dry run that shows
+	// nothing is worse than no dry run at all.
+	if l.cfg.StreamOutput || tui.GlobalProgram == nil {
 		fmt.Println(msg)
 	} else {
 		tui.NotifyTUIUpdate(msg+"\n", false)
@@ -234,14 +241,14 @@ func (l *MiddleManagerLoop) PromptForStep(step string, iteration int, issueData 
 	}
 
 	// Cross-step handoffs: the planner's report feeds the programmer, the
-	// programmer's report feeds the verifier, and the verifier/committer also
-	// see the real git change surface instead of trusting agent summaries.
+	// programmer's report feeds the verifier, and every step sees the real git
+	// change surface instead of trusting agent summaries. The programmer/solo
+	// agent needs it too: on retries (and especially escalations) the tree
+	// still holds the previous attempt's uncommitted work, and an agent that
+	// can't see it will duplicate or fight it.
 	discoverOutput := l.ReadText(filepath.Join(l.state, "discover_output.txt"), "")
 	executeOutput := l.ReadText(filepath.Join(l.state, "execute_output.txt"), "")
-	diffSummary := ""
-	if step == "verify" || step == "commit" {
-		diffSummary = gitops.DiffSummary(l.cfg.Repo)
-	}
+	diffSummary := gitops.DiffSummary(l.cfg.Repo)
 
 	ctx := prompts.BuildContext(prompts.Context{
 		Repo:           l.cfg.Repo,
@@ -398,6 +405,7 @@ func (l *MiddleManagerLoop) RunStep(step string, iteration int, issueData map[st
 	}
 
 	prompt := l.PromptForStep(step, iteration, issueData)
+	prompt += escalationNotice(step, tier, len(sc.Escalate), agent, l.lastStepAgent[step])
 	interjection := tui.GetTUIInterjection()
 	if interjection != "" {
 		prompt += fmt.Sprintf("\n\n## Custom User Interjection / Direction\n%s\n", interjection)
@@ -488,6 +496,7 @@ func (l *MiddleManagerLoop) RunStep(step string, iteration int, issueData map[st
 
 	outputFile := filepath.Join(l.state, fmt.Sprintf("%s_output.txt", step))
 	l.WriteText(outputFile, stdout)
+	l.lastStepAgent[step] = agent
 
 	if exitCode == 0 {
 		l.Log(fmt.Sprintf("✅ Step %s (%s) finished successfully (exit code 0).", strings.ToUpper(step), strings.ToUpper(agent)), colors.Green)
@@ -507,6 +516,33 @@ func (l *MiddleManagerLoop) RunStep(step string, iteration int, issueData map[st
 
 func round1(f float64) float64 {
 	return float64(int(f*10+0.5)) / 10
+}
+
+// escalationNotice is the handoff banner appended to an escalated
+// executor/solo prompt. The escalated agent inherits its predecessor's
+// uncommitted work in the tree, so it must be told explicitly that it IS an
+// escalation, who failed before it, and that reviewing (not redoing) that
+// work is the job. Other steps don't get the banner — the verifier must stay
+// an unbiased auditor and the planner reads the tree fresh anyway.
+func escalationNotice(step string, tier, ladderLen int, agent, prevAgent string) string {
+	if tier <= 0 || (step != "execute" && step != "solo") {
+		return ""
+	}
+	prev := "a previous agent"
+	if prevAgent != "" && prevAgent != agent {
+		prev = strings.ToUpper(prevAgent)
+	}
+	return fmt.Sprintf(`
+
+## Escalation notice — you were brought in because earlier attempts failed
+You are the tier-%d escalation agent (%s, rung %d of %d) on this task. %s
+already attempted it and failed verification; their UNCOMMITTED work may still
+be in the working tree (see the change summary above and `+"`git status`"+`).
+Review that work critically before writing anything: keep what is correct,
+rewrite or revert what is not, and address the verifier feedback directly —
+do not repeat the failed approach, and do not duplicate changes that already
+exist in the tree.`,
+		tier, strings.ToUpper(agent), tier, ladderLen, prev)
 }
 
 // appendLedger writes one JSONL record to the run ledger (<state>/ledger.jsonl):
@@ -1167,10 +1203,14 @@ func (l *MiddleManagerLoop) ResetLoopState() {
 	}
 }
 
-// iterationSignature fingerprints the current working tree diff plus the
-// verifier's feedback, so the loop can detect when it is no longer making
-// progress (same diff + same critique twice running).
+// iterationSignature fingerprints the current working tree, so the loop can
+// detect when it is no longer making progress. Deliberately NOT the verifier's
+// prose: two verifier runs never repeat byte-for-byte, so including their text
+// meant the detector almost never fired and stalls burned the full iteration
+// budget. If a whole failed iteration leaves the tree byte-identical, the
+// executor made no progress — escalate or stop.
 func (l *MiddleManagerLoop) iterationSignature(verifierStdout string) string {
+	_ = verifierStdout // kept in the signature's call contract for custom-prompt debugging
 	diff := ""
 	status := ""
 	if gitops.RepoIsGit(l.cfg.Repo) {
@@ -1180,7 +1220,7 @@ func (l *MiddleManagerLoop) iterationSignature(verifierStdout string) string {
 		// detector; porcelain status covers them.
 		status, _, _, _ = gitops.RunGit(l.cfg.Repo, "status", "--porcelain")
 	}
-	combined := diff + "\x00" + status + "\x00" + strings.TrimSpace(verifierStdout)
+	combined := diff + "\x00" + status
 	if strings.TrimSpace(combined) == "" {
 		return ""
 	}

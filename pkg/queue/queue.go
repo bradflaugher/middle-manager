@@ -105,6 +105,21 @@ func (r *IssueQueueRunner) Log(msg string, colorCode string) {
 	}
 }
 
+// overWallBudget reports (and logs, once per call) whether the drain has used
+// up --max-wall-minutes. The per-issue loop enforces the same cap on its own
+// clock; this drain-level check is what stops a 50-issue queue from running
+// all night after the operator asked for two hours.
+func (r *IssueQueueRunner) overWallBudget(drainStart time.Time) bool {
+	if r.cfg.MaxWallMinutes <= 0 {
+		return false
+	}
+	if time.Since(drainStart) <= time.Duration(r.cfg.MaxWallMinutes)*time.Minute {
+		return false
+	}
+	r.Log(fmt.Sprintf("⏱ Wall-clock budget exhausted (%d min) — stopping the drain before the next issue.", r.cfg.MaxWallMinutes), colors.Yellow)
+	return true
+}
+
 func (r *IssueQueueRunner) ResetIssueState(issue map[string]string) {
 	number := issue["number"]
 	issueDir := filepath.Join(r.baseStateDir, "issues", number)
@@ -147,6 +162,7 @@ func (r *IssueQueueRunner) Run() int {
 
 	succeeded := 0
 	failed := 0
+	drainStart := time.Now()
 
 	for idx, issue := range issues {
 		// Bail before starting another issue if the operator quit the monitor
@@ -155,6 +171,12 @@ func (r *IssueQueueRunner) Run() int {
 		canceled := r.canceled
 		r.mu.Unlock()
 		if canceled {
+			break
+		}
+
+		// The wall budget bounds the WHOLE drain, not just one issue: stop
+		// cleanly between issues instead of starting work there's no time for.
+		if r.overWallBudget(drainStart) {
 			break
 		}
 
@@ -308,6 +330,7 @@ func (r *IssueQueueRunner) drainWorktree(issues []map[string]string) int {
 
 	r.Log(fmt.Sprintf("🌳 Worktree mode: %d issue(s); base %q frozen at %s; batch %s", len(issues), baseBranch, shortSHA(baseSHA), ts), colors.Cyan+colors.Bold)
 
+	drainStart := time.Now()
 	var built []builtIssue
 	for idx, issue := range issues {
 		r.mu.Lock()
@@ -315,6 +338,9 @@ func (r *IssueQueueRunner) drainWorktree(issues []map[string]string) int {
 		r.mu.Unlock()
 		if canceled {
 			break
+		}
+		if r.overWallBudget(drainStart) {
+			break // already-built issues still collapse into the mega PR below
 		}
 
 		number := issue["number"]

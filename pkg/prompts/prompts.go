@@ -79,6 +79,9 @@ You are the **Programmer** agent. Implement the feature or fix described in the 
 ## Discovery Scoping Summary (if any)
 {discover_output}
 
+## Current working-tree changes (uncommitted work from previous attempts, if any)
+{diff_summary}
+
 ## Repository memory
 {agent_memory}
 
@@ -91,9 +94,10 @@ You are the **Programmer** agent. Implement the feature or fix described in the 
 ## Rules
 
 1. **Minimal correct change.** Match existing code style.
-2. Run relevant tests/build commands yourself before finishing.
-3. Do not commit, push, open PRs, or merge — the loop handles all git.
-4. **Never create or modify agent-memory or orchestrator files** (AGENTS.md, CLAUDE.md, .middle-manager/, .cursorrules, and the like) unless the mission explicitly asks for it.
+2. If the working tree already holds changes from a previous attempt (see above), review them FIRST: keep what is correct, fix or revert what is not — do not duplicate work that already exists in the tree.
+3. Run relevant tests/build commands yourself before finishing.
+4. Do not commit, push, open PRs, or merge — the loop handles all git.
+5. **Never create or modify agent-memory or orchestrator files** (AGENTS.md, CLAUDE.md, .middle-manager/, .cursorrules, and the like) unless the mission explicitly asks for it.
 
 Ship the requested mission. Nothing else.`
 
@@ -153,7 +157,7 @@ ISSUES:
 - ...
 ` + "```" + `
 
-List what you actually verified under CHECKED (test commands, builds, files read) — a PASS with an empty CHECKED list is not credible and wastes an iteration. If FAIL, make ISSUES concrete and actionable (file, symptom, suggested fix) — middle-manager feeds your full report to the next iteration's programmer automatically. Do not write any files.`
+List what you actually verified under CHECKED (test commands, builds, files read) — a PASS with an empty CHECKED list is not credible and wastes an iteration. If FAIL, make ISSUES concrete and actionable (file, symptom, suggested fix). Write each issue so that a **different agent with no memory of this session** can act on it: exact file paths, function names, and the failing command — middle-manager may hand your report to a stronger agent than the one that wrote the code. Do not write any files.`
 
 const CommitTemplate = `# Loop Back & Commit — Iteration {iteration}
 
@@ -216,12 +220,17 @@ committer — you do everything end to end in this one step.
 ## Orchestrator notes (learnings from previous runs)
 {notes}
 
+## Current working-tree changes (uncommitted work from previous attempts, if any)
+{diff_summary}
+
 ## Previous errors (if any)
 {error_log}
 
 ## Your job
 
 1. **Scope** the change against the mission and the codebase (read before you edit).
+   If the tree already holds a previous attempt's changes (see above), review them
+   first — keep what is correct, fix or revert what is not; never duplicate them.
 2. **Implement** the minimal correct change. Match existing style.
 3. **Run the tests / build yourself** and make them pass. Do NOT skip this — you are
    your own verifier, so the project's correctness rests entirely on this step.

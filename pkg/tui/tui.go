@@ -911,9 +911,13 @@ func (m *WizardModel) View() tea.View {
 		for i, steps := range m.stepsChoices() {
 			s.WriteString(radio(i == m.stepsIndex, stepLabelFor(steps)))
 		}
+		s.WriteString("\n" + stDim.Render("  Tip: 4 steps lets you seat cheap and strong models separately;") + "\n" +
+			stDim.Render("  solo puts ONE model in every seat — convenience, not savings.") + "\n")
 	case stateAgents:
 		s.WriteString(stepHeader("Agents"))
 		keys := m.agentStepKeys()
+		playbookHint := stDim.Render("  Playbook: strongest model → verify & discover · cheapest → execute") + "\n" +
+			stDim.Render("  (escalation has your back) · anything fast → commit")
 		if m.customAgents {
 			s.WriteString("  Pick an agent (←/→ to change · " + rainbowText("random", m.frame) + " rolls a fresh one each iteration):\n\n")
 			for i, step := range keys {
@@ -926,12 +930,14 @@ func (m *WizardModel) View() tea.View {
 				value := st.Render("◄ ") + m.renderAgent(m.stepToAgent[step], st) + st.Render(" ►")
 				s.WriteString(fmt.Sprintf("  %s%-12s %s\n", cursor, m.agentRowLabel(step)+":", value))
 			}
+			s.WriteString("\n" + playbookHint)
 			s.WriteString("\n" + stDim.Render("  c: done customizing"))
 		} else {
 			s.WriteString("  Default is " + rainbowText("random", m.frame) + " — a fresh installed agent per iteration:\n\n")
 			for _, step := range keys {
 				s.WriteString(fmt.Sprintf("  %-12s %s\n", m.agentRowLabel(step)+":", m.renderAgent(m.stepToAgent[step], stGreen)))
 			}
+			s.WriteString("\n" + playbookHint)
 			s.WriteString("\n" + stDim.Render("  c: customize"))
 		}
 		s.WriteString("\n")

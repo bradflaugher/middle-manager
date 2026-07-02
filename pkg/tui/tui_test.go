@@ -659,6 +659,29 @@ func TestEscalationLadder(t *testing.T) {
 	}
 }
 
+// The wizard must carry the seat playbook: agents screen shows where strong
+// and weak models go; the loop-shape screen warns solo isn't a savings mode.
+func TestWizardPlaybookGuidance(t *testing.T) {
+	m := newTestWizard()
+	m.state = stateAgents
+	view := stripANSITest(m.View().Content)
+	if !strings.Contains(view, "Playbook: strongest model") || !strings.Contains(view, "cheapest") {
+		t.Errorf("agents screen missing playbook hint: %q", view)
+	}
+	m.customAgents = true
+	view = stripANSITest(m.View().Content)
+	if !strings.Contains(view, "Playbook: strongest model") {
+		t.Error("customize view must keep the playbook hint")
+	}
+
+	m2 := newTestWizard()
+	m2.state = stateSteps
+	view = stripANSITest(m2.View().Content)
+	if !strings.Contains(view, "convenience, not savings") {
+		t.Errorf("loop-shape screen missing the solo tip: %q", view)
+	}
+}
+
 func TestRainbowTextRenders(t *testing.T) {
 	out := rainbowText("random", 0)
 	if stripANSITest(out) != "random" {

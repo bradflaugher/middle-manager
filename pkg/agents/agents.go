@@ -97,7 +97,10 @@ type AgentSpec struct {
 	ModelsArgs []string
 	// ModelsHint is shown by `mm models` for agents with no headless listing.
 	ModelsHint string
-	Notes      string
+	// SuggestedModels are curated, stable-ish model names offered by the
+	// wizard's model carousel before (or instead of) a live listing.
+	SuggestedModels []string
+	Notes           string
 }
 
 var AgentSpecs = map[string]AgentSpec{
@@ -115,10 +118,11 @@ var AgentSpecs = map[string]AgentSpec{
 		Name:       "claude",
 		Binary:     "claude",
 		PrintFlag:  "-p",
-		YoloFlags:  []string{"--dangerously-skip-permissions"},
-		ModelFlag:  "--model",
-		ModelsHint: "aliases: sonnet | opus | haiku, or a full model name (see Anthropic docs)",
-		Notes:      "Claude Code (headless, OAuth login) — claude -p PROMPT --dangerously-skip-permissions",
+		YoloFlags:       []string{"--dangerously-skip-permissions"},
+		ModelFlag:       "--model",
+		ModelsHint:      "aliases: fable | opus | sonnet | haiku, or a full model name (see Anthropic docs)",
+		SuggestedModels: []string{"fable", "opus", "sonnet", "haiku"},
+		Notes:           "Claude Code (headless, OAuth login) — claude -p PROMPT --dangerously-skip-permissions",
 	},
 	"opencode": {
 		Name:       "opencode",
@@ -216,6 +220,42 @@ func ListModels(name string, binaryOverride string) (string, error) {
 		return "", fmt.Errorf("%s (%v)", text, err)
 	}
 	return text, nil
+}
+
+// ParseModelList extracts model IDs from a CLI's free-text model listing.
+// Heuristic on purpose: a model id is a spaceless, colon-free token with at
+// least one letter (grok's "* name (default)" bullets and prose headers like
+// "Available models:" both wash out). Wrong-but-safe: a missed model can
+// still be typed by hand; an invented one cannot be run.
+func ParseModelList(output string) []string {
+	var models []string
+	seen := map[string]bool{}
+	for _, line := range strings.Split(output, "\n") {
+		s := strings.TrimSpace(line)
+		s = strings.TrimPrefix(s, "- ")
+		s = strings.TrimPrefix(s, "* ")
+		s = strings.TrimSuffix(s, " (default)")
+		s = strings.TrimSpace(s)
+		if s == "" || strings.ContainsAny(s, " \t:") || len(s) < 3 || len(s) > 80 {
+			continue
+		}
+		hasLetter := false
+		for _, r := range s {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+				hasLetter = true
+				break
+			}
+		}
+		if !hasLetter || seen[s] {
+			continue
+		}
+		seen[s] = true
+		models = append(models, s)
+		if len(models) >= 40 {
+			break
+		}
+	}
+	return models
 }
 
 // CheckModelFlag probes whether an agent CLI actually VALIDATES its model

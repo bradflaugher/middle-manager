@@ -209,3 +209,29 @@ func TestWithRootSandbox(t *testing.T) {
 		t.Error("explicit IS_SANDBOX must be respected")
 	}
 }
+
+// ParseModelList must extract ids from heterogeneous CLI listings: opencode's
+// bare lines, grok's bulleted "(default)" entries — and wash out prose,
+// headers, and display names with spaces (agy) rather than guess.
+func TestParseModelList(t *testing.T) {
+	out := `
+You are logged in with grok.com.
+
+Default model: grok-composer-2.5-fast
+
+Available models:
+  - grok-build
+  * grok-composer-2.5-fast (default)
+opencode/big-pickle
+openrouter/~anthropic/claude-fable-latest
+Gemini 3.5 Flash (Low)
+`
+	got := ParseModelList(out)
+	want := []string{"grok-build", "grok-composer-2.5-fast", "opencode/big-pickle", "openrouter/~anthropic/claude-fable-latest"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ParseModelList = %v, want %v", got, want)
+	}
+	if ParseModelList("no models here, just words") != nil {
+		t.Error("prose must not produce models")
+	}
+}

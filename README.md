@@ -108,12 +108,24 @@ mm
 ```
 
 The wizard (shown in the GIF above) walks you through: **repo → base branch →
-what to do → mission/issue/queue → loop shape → agents → options → agent
-strength order → iteration budget → review & launch**. Every screen has a
-sensible default, so mashing Enter gives you a working 4-step loop on `random`
-agents with the quality levers (distinct verifier + escalation) already on.
+what to do → mission/issue/queue → loop shape → agents → models → options →
+agent strength order → spend rates → iteration budget → review & launch**
+(the models, strength, and spend screens appear only when relevant). Every
+screen has a sensible default, so mashing Enter gives you a working 4-step
+loop on `random` agents with the quality levers (distinct verifier +
+escalation) already on.
 
-Two screens are worth knowing about:
+Screens worth knowing about:
+
+- **Models** — appears when a seat has a concrete, model-capable agent: pin a
+  model per seat from a carousel of the CLI's own default, curated aliases
+  (e.g. claude's `fable`/`opus`/`sonnet`/`haiku`), and the CLI's **live model
+  listing**. Playbook hint included: pin a cheap model on execute, leave
+  verify/discover on the default.
+- **Spend rates** — toggle "Track estimated spend" on the options screen to
+  set `$/min` per agent (seeded with rough defaults; `$0.00` is first-class
+  for free tiers, flat-rate subscriptions, and local models). Saved to your
+  config so `mm status` prices every future run.
 
 - **Agents** — the default for every seat is `random` (rainbow shimmer): each
   iteration rolls one installed agent and uses it for the whole iteration,

@@ -559,7 +559,23 @@ func parseStringList(v interface{}) []string {
 // SaveStrengthOrder persists the operator's agent strength ranking into the
 // persistent config file, preserving every other key already there. Called by
 // the wizard so the ordering only needs setting once.
-func SaveStrengthOrder(order []string) error {
+// DefaultSpendRates are rough order-of-magnitude $/minute starting points for
+// the wizard's spend screen — placeholders to edit, not billing facts. Zero
+// is deliberate and common: free tiers, flat-rate subscriptions, and local
+// models all cost $0.00/min at the margin.
+var DefaultSpendRates = map[string]float64{
+	"claude":   0.40,
+	"codex":    0.30,
+	"grok":     0.15,
+	"agy":      0.10,
+	"crush":    0.05,
+	"opencode": 0.00,
+}
+
+// SaveConfigValues merges the given top-level keys into the persistent config
+// file, preserving everything else already there. Called by the wizard so
+// settings like the strength ranking and spend rates only need setting once.
+func SaveConfigValues(values map[string]interface{}) error {
 	path := DefaultConfigPath()
 	if path == "" {
 		return fmt.Errorf("no home directory to store config in")
@@ -571,7 +587,9 @@ func SaveStrengthOrder(order []string) error {
 	if data == nil {
 		data = map[string]interface{}{}
 	}
-	data["strength_order"] = order
+	for k, v := range values {
+		data[k] = v
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
@@ -580,6 +598,12 @@ func SaveStrengthOrder(order []string) error {
 		return err
 	}
 	return os.WriteFile(path, append(b, '\n'), 0644)
+}
+
+// SaveStrengthOrder persists the operator's agent strength ranking (kept as a
+// named helper for its call sites and tests).
+func SaveStrengthOrder(order []string) error {
+	return SaveConfigValues(map[string]interface{}{"strength_order": order})
 }
 
 // parseAgentDefs decodes the "agents" config map into AgentDefs via a JSON

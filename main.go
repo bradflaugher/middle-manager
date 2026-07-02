@@ -56,8 +56,6 @@ func main() {
 		cmdIssues(cfg)
 	case "run", "quick":
 		os.Exit(cmdRun(cfg))
-	case "seed":
-		os.Exit(loop.RunSeed(cfg))
 	case "merge":
 		cmdMerge(cfg)
 	default:
@@ -166,7 +164,7 @@ labels: mm-todo
 		fmt.Println(colors.Colored(fmt.Sprintf("created: %s", tmpl), colors.Green))
 	}
 	fmt.Printf("State dir: %s\n", cfg.StatePath())
-	fmt.Println(colors.Colored("Tip: no backlog yet? `mm seed --count 5` proposes verifiable issues from the codebase.", colors.Cyan))
+	fmt.Println(colors.Colored("Tip: no backlog yet? `mm --mode repair` finds and fixes one concrete defect per run.", colors.Cyan))
 }
 
 func cmdStatus(cfg *config.LoopConfig) {

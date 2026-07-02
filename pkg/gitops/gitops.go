@@ -486,36 +486,6 @@ func ListIssues(repo string, label, author string, limit int, state string) ([]m
 	return res, nil
 }
 
-// EnsureLabel creates a label if it doesn't exist (best effort — gh errors on
-// duplicates and on missing repos alike, and neither should block seeding).
-func EnsureLabel(repo string, label string, color string) {
-	if label == "" {
-		return
-	}
-	if color == "" {
-		color = "8B5CF6"
-	}
-	_, _, _ = runGH(repo, "label", "create", label, "--color", color)
-}
-
-// CreateIssue files one GitHub issue and returns its URL.
-func CreateIssue(repo string, title, body string, labels []string, dryRun bool) (string, error) {
-	if dryRun {
-		return "", nil
-	}
-	args := []string{"issue", "create", "--title", title, "--body", body}
-	for _, l := range labels {
-		if l != "" {
-			args = append(args, "--label", l)
-		}
-	}
-	stdout, stderr, err := runGH(repo, args...)
-	if err != nil {
-		return "", fmt.Errorf("gh issue create: %s", stderr)
-	}
-	return strings.TrimSpace(stdout), nil
-}
-
 func CloseIssue(repo string, number string, comment string, dryRun bool) bool {
 	if dryRun {
 		fmt.Printf("[dry-run] gh issue close %s", number)

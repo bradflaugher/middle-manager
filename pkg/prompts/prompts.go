@@ -287,95 +287,6 @@ Emit ` + "`" + `VERDICT: PASS` + "`" + ` only if you implemented the mission AND
 Otherwise emit ` + "`" + `VERDICT: FAIL` + "`" + ` followed by what is still broken. A missing or
 ambiguous verdict is treated as FAIL — the work will not ship.`
 
-const SeedTemplate = `# Backlog Seeder / Repository Audit
-
-Your job is to deeply audit this repository and PROPOSE prioritized issues
-that downstream autonomous agents will later fix one by one. You are NOT
-fixing anything now — you are finding and triaging. You change no files, and
-you do NOT create the issues yourself — middle-manager files them
-deterministically from your output.
-
-## Repository
-` + "`" + `{repo}` + "`" + `
-
-## Operator focus (optional — empty means "your judgment")
-{mission}
-
-## Repository memory (AGENTS.md / CLAUDE.md)
-{agent_memory}
-
-## Orchestrator notes (learnings from previous runs)
-{notes}
-
-## First, ground yourself in THIS repo (don't assume any stack or layout)
-
-- Detect the languages, frameworks, and project layout.
-- Read the README and any CONTRIBUTING / AGENTS.md / docs that state
-  conventions, architecture, or invariants. Treat stated invariants as hard
-  limits on what you propose — never propose an issue whose fix would violate
-  them; if the code currently violates one, that itself is a high-priority
-  issue.
-- Identify how the project builds, tests, and lints (Makefile, package.json
-  scripts, CI config, …) and note the EXACT commands — you will reference
-  them in acceptance criteria.
-- Run ` + "`" + `gh issue list --state open --limit 200` + "`" + ` and skim existing issues.
-  Do NOT propose duplicates or things already tracked; note overlaps instead.
-
-## Then scan deeply and systematically (adapt emphasis to what this repo is)
-
-- Correctness bugs & logic errors: concurrency, error handling, resource
-  leaks, unchecked errors, nil derefs, off-by-ones, incorrect edge cases.
-- Security: secrets handling, injection, unsafe deserialization, authz gaps,
-  path traversal, dependency CVEs, unsafe defaults.
-- Reliability: missing timeouts/retries, unhandled failures, unbounded
-  growth, race conditions, flaky paths.
-- Tests: uncovered critical paths, missing integration coverage, weak asserts.
-- Performance: hot-path inefficiencies, N+1s, needless allocations/queries.
-- Maintainability: dead code, duplicated logic, leaky abstractions.
-- Docs honesty: docs/comments/READMEs that misstate actual behavior.
-
-## Quality bar
-
-Real, actionable issues only. No nitpicks, no "consider maybe" noise, no
-stylistic churn a linter would catch. Propose UP TO {seed_count} issues —
-fewer is fine; if unsure whether something is worth filing, err toward NOT
-filing. One focused problem per issue; split anything compound. Issues must
-be independent (workable in any order) and small enough for one agent, one
-sitting, one clean PR.
-
-## Output format (STRICT — middle-manager parses this mechanically)
-
-For each issue emit exactly this block:
-
-===ISSUE===
-TITLE: <concise, scoped to ONE problem, max 70 chars>
-PRIORITY: <P0|P1|P2|P3>  (P0 security/data-loss/invariant-violation/broken CI ·
-                          P1 real bugs users will hit · P2 meaningful
-                          improvements & coverage gaps · P3 nice-to-haves)
-SIZE: <XS|S|M|L|XL>  (perceived difficulty for one agent: XS trivial tweak ·
-                      S small localized change · M multi-file change ·
-                      L needs design judgment · XL should probably be split —
-                      prefer splitting over filing an XL)
-BODY:
-**Context:** what's wrong and why it matters.
-
-**Location:** exact file:line references and function/symbol names.
-
-**Evidence:** the offending snippet or a reproduction, and how you found it.
-
-**Proposed direction:** enough to start, without over-prescribing the fix.
-
-**Acceptance criteria:**
-- [ ] <concrete, testable "done" condition>
-- [ ] <which build/test/lint commands must pass — use the ones you detected>
-
-**Invariant note:** confirm the fix respects the repo's stated constraints.
-===END===
-
-After the last block, write a short summary OUTSIDE any block: totals by
-priority, overlaps with existing issues, and anything you deliberately chose
-NOT to propose (with the reason). middle-manager ignores it, humans read it.`
-
 const CollapseTemplate = `# Collapse / Merge-Conflict Resolution
 
 You are resolving a Git **merge conflict** while middle-manager consolidates several
@@ -430,8 +341,6 @@ func LoadPrompt(repoPath, stateRoot, name string) string {
 		return DiscoverFeatureTemplate
 	case "discover_repair":
 		return DiscoverRepairTemplate
-	case "seed":
-		return SeedTemplate
 	case "execute":
 		return ExecuteTemplate
 	case "verify":

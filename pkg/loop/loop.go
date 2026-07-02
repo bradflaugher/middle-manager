@@ -641,9 +641,14 @@ func (l *MiddleManagerLoop) MaybeCommitAndPR(iteration int, issueData map[string
 	// 4-step: the commit agent updates repo memory and commits. It is explicitly
 	// told NOT to push or open a PR — the orchestrator does that deterministically
 	// below so there's exactly one PR creator (no agent/orchestrator collision).
-	_, exitCode, err := l.RunStep("commit", iteration, issueData)
-	if err != nil || exitCode != 0 {
-		return fmt.Errorf("commit step failed (exit %d): %v", exitCode, err)
+	//
+	// A commit-agent failure (crash, rate-limit hang hitting the step timeout)
+	// must NOT discard the verified work — everything of substance already
+	// happened; this seat only adds notes-keeping. Log it and fall through to
+	// the deterministic fallback commit below. (Found live: a wedged grok CLI
+	// would have thrown away a verifier-PASSed fix.)
+	if _, exitCode, err := l.RunStep("commit", iteration, issueData); err != nil || exitCode != 0 {
+		l.Log(fmt.Sprintf("⚠️ Commit agent failed (exit %d: %v) — committing the verified work deterministically instead.", exitCode, err), colors.Yellow)
 	}
 
 	if !gitops.RepoIsGit(l.cfg.Repo) {

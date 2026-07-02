@@ -158,6 +158,8 @@ type LoopConfig struct {
 	// escape hatch for repos whose fixtures trip the patterns). The scan is on
 	// by default: an agent hardcoding a live credential must fail closed.
 	NoSecretScan bool `json:"no_secret_scan"`
+	// SeedCount is how many issues `mm seed` asks the auditor to propose.
+	SeedCount int `json:"seed_count"`
 
 	// Interactive Wizard overrides
 	Wizard   bool
@@ -623,7 +625,7 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 	var restArgs []string
 
 	cliCommands := map[string]bool{
-		"run": true, "quick": true, "agents": true, "init": true, "status": true, "issues": true, "install-path": true, "merge": true,
+		"run": true, "quick": true, "agents": true, "init": true, "status": true, "issues": true, "install-path": true, "merge": true, "seed": true,
 	}
 
 	if len(args) > 0 {
@@ -856,6 +858,11 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 			cfg.NoSecretScan = true
 		case arg == "--secret-scan":
 			cfg.NoSecretScan = false
+		case arg == "--count" && i+1 < len(restArgs):
+			if n, err := strconv.Atoi(restArgs[i+1]); err == nil && n > 0 {
+				cfg.SeedCount = n
+			}
+			i++
 		case arg == "--merge":
 			cfg.NoMerge = false
 		case arg == "--no-merge":

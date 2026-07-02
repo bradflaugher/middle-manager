@@ -132,7 +132,8 @@ Two screens are worth knowing about:
 | Work one GitHub issue | `mm --issue 42` |
 | Drain all bugs by a user | `mm --label bug --author @someuser --close-issues` |
 | Good-first-issues sprint | `mm --label "good first issue" --issue-limit 10 --close-issues` |
-| Fix the codebase generally | `mm --mode repair` |
+| **No backlog? Audit the repo and file one** | `mm seed --count 10` (then drain `--label mm-todo`) |
+| Fix the codebase generally (no issue needed) | `mm --mode repair` |
 | **Solo:** one agent does it all, wait for the PR to merge | `mm --issue 42 --solo` |
 | Solo, fully hands-off (mm merges the PR when green) | `mm --issue 42 --solo --merge` |
 | **Solo queue:** drain issues one merged PR at a time | `mm --label bug --solo --close-issues` |
@@ -337,6 +338,52 @@ With `--merge`, mm arms GitHub auto-merge — and on repos where GitHub refuses
 (no branch protection), **mm merges the PR itself** the moment it's green:
 required checks passing, or no checks at all. It will never merge over red CI,
 required or not. Without `--merge`, PRs wait for a human (or `mm merge`).
+
+### No backlog? Seed one
+
+The factory needs issues to drain — `mm seed` writes them for you:
+
+```bash
+mm seed --count 10                      # audit the repo, file up to 10 issues
+mm seed "focus on test coverage" --count 5
+mm seed --dry-run                       # preview without filing anything
+mm --label mm-todo --close-issues --merge   # then drain what it filed
+```
+
+The strongest available agent deeply audits the repository — grounding itself
+in your stack, stated invariants, and build/test commands, and skimming
+existing issues to avoid duplicates — then proposes real, actionable issues
+(no nitpicks; it errs toward *not* filing). **The agent proposes; mm files
+deterministically**, labeling each issue with your drain label plus a
+**priority** (`P0`–`P3`) and a **t-shirt size** (`XS`–`XL`, perceived
+difficulty for one agent). That makes budget-shaped drains trivial:
+
+```bash
+mm --label P1 --close-issues --merge          # bugs first
+mm --label XS --solo --close-issues --merge   # knock out the trivial tail cheaply
+```
+
+Every filed issue is self-contained — context, exact file:line locations,
+evidence, a proposed direction, and mechanically checkable acceptance
+criteria referencing the repo's real build/test commands — because the agent
+that fixes it will arrive with no memory of the audit.
+
+**Writing issues by hand?** `mm init` installs
+`.github/ISSUE_TEMPLATE/mm-task.md` with the same structure. The one rule
+that matters: acceptance criteria must be *mechanically checkable* (a command
+to run, a fact about a file, a count). "Make X better" gets you an
+unfalsifiable PASS; the verifier is only as strong as the criteria you give
+it.
+
+### No issues at all? Repair mode
+
+`mm --mode repair` skips the backlog entirely: the discover step runs as an
+**auditor** that hunts for the single highest-value, smallest-scope concrete
+defect (failing tests, real bugs, docs that lie about the code) and scopes it
+with acceptance criteria — then the normal execute → verify → commit pipeline
+ships the fix. Give it a focus with `--mission "…"` or let it use its
+judgment. Repair is "fix one thing well," seed-then-drain is "work through
+many things" — use repair for a quick win, seed for a campaign.
 
 ### Draining a GitHub issue queue
 

@@ -56,6 +56,8 @@ func main() {
 		cmdIssues(cfg)
 	case "run", "quick":
 		os.Exit(cmdRun(cfg))
+	case "seed":
+		os.Exit(loop.RunSeed(cfg))
 	case "merge":
 		cmdMerge(cfg)
 	default:
@@ -129,15 +131,42 @@ func cmdAgents(cfg *config.LoopConfig) {
 
 func cmdInit(cfg *config.LoopConfig) {
 	dest := filepath.Join(cfg.Repo, "AGENTS.md")
-
 	if _, err := os.Stat(dest); err == nil {
 		fmt.Printf("exists: %s\n", dest)
-		return
+	} else {
+		_ = os.WriteFile(dest, []byte("# AGENTS.md\n\nRepository memory for middle-manager loops.\nAdd build commands, conventions, and things agents keep forgetting.\n"), 0644)
+		fmt.Println(colors.Colored(fmt.Sprintf("created: %s", dest), colors.Green))
 	}
 
-	_ = os.WriteFile(dest, []byte("# AGENTS.md\n\nRepository memory for middle-manager loops.\nAdd build commands, conventions, and things agents keep forgetting.\n"), 0644)
-	fmt.Println(colors.Colored(fmt.Sprintf("created: %s", dest), colors.Green))
+	// A GitHub issue template that produces issues agents can actually verify:
+	// context with exact files, mechanically checkable acceptance criteria, and
+	// explicit verifier instructions. Operator-invoked, skipped if present.
+	tmpl := filepath.Join(cfg.Repo, ".github", "ISSUE_TEMPLATE", "mm-task.md")
+	if _, err := os.Stat(tmpl); err == nil {
+		fmt.Printf("exists: %s\n", tmpl)
+	} else if err := os.MkdirAll(filepath.Dir(tmpl), 0755); err == nil {
+		_ = os.WriteFile(tmpl, []byte(`---
+name: mm task
+about: A task scoped for autonomous agents (middle-manager)
+labels: mm-todo
+---
+
+## What & why
+<!-- 2-6 sentences. Name the exact files/modules involved if you know them.
+     Keep it small: one agent, one sitting, one clean PR. -->
+
+## Acceptance criteria
+<!-- Each criterion should be mechanically checkable — a command to run,
+     a fact about a file, a count. "Make X better" is unverifiable. -->
+- [ ] ...
+
+## Verifier notes
+<!-- The exact check(s) the verifier must run; it FAILS the change otherwise. -->
+`), 0644)
+		fmt.Println(colors.Colored(fmt.Sprintf("created: %s", tmpl), colors.Green))
+	}
 	fmt.Printf("State dir: %s\n", cfg.StatePath())
+	fmt.Println(colors.Colored("Tip: no backlog yet? `mm seed --count 5` proposes verifiable issues from the codebase.", colors.Cyan))
 }
 
 func cmdStatus(cfg *config.LoopConfig) {

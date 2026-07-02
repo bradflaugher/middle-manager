@@ -227,6 +227,10 @@ func (l *MiddleManagerLoop) PromptForStep(step string, iteration int, issueData 
 	templateName := step
 	if step == "discover" && l.cfg.Mode == "feature" {
 		templateName = "discover_feature"
+	} else if step == "discover" && l.cfg.Mode == "repair" {
+		// Repair has no issue to analyze — the auditor prompt hunts for the
+		// highest-value defect itself instead of staring at empty issue fields.
+		templateName = "discover_repair"
 	} else if sc.PromptFile != "" {
 		templateName = sc.PromptFile
 	}

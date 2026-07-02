@@ -83,46 +83,38 @@ type AgentSpec struct {
 	// When empty, the prompt is appended as the trailing positional argument
 	// (opencode, codex).
 	PrintFlag string
-	// YoloFlags are appended when auto-approve / unattended execution is on.
+	// YoloFlags enable auto-approve / unattended execution. They are always
+	// appended: headless orchestration cannot answer permission prompts, so a
+	// run without them would simply hang.
 	YoloFlags []string
-	// ModelFlag selects a model when one is configured.
+	// ModelFlag selects a model when one is configured. The model string is
+	// passed through verbatim and unvalidated — support depends on the CLI.
 	ModelFlag string
 	// CwdFlag passes the working directory as a flag. cmd.Dir is set regardless,
 	// so this is only for agents that also want it spelled out explicitly.
 	CwdFlag string
 	// ExtraArgs are always-on flags for this agent.
 	ExtraArgs []string
-	// ModelsArgs, when set, is the subcommand that lists the agent's available
-	// models (e.g. {"models"}); used by `mm models`.
-	ModelsArgs []string
-	// ModelsHint is shown by `mm models` for agents with no headless listing.
-	ModelsHint string
-	// SuggestedModels are curated, stable-ish model names offered by the
-	// wizard's model carousel before (or instead of) a live listing.
-	SuggestedModels []string
-	Notes           string
+	Notes     string
 }
 
 var AgentSpecs = map[string]AgentSpec{
 	"grok": {
-		Name:       "grok",
-		Binary:     "grok",
-		PrintFlag:  "-p",
-		YoloFlags:  []string{"--always-approve"},
-		ModelFlag:  "-m",
-		CwdFlag:    "--cwd",
-		ModelsArgs: []string{"models"},
-		Notes:      "xAI Grok — grok -p PROMPT --cwd DIR --always-approve",
+		Name:      "grok",
+		Binary:    "grok",
+		PrintFlag: "-p",
+		YoloFlags: []string{"--always-approve"},
+		ModelFlag: "-m",
+		CwdFlag:   "--cwd",
+		Notes:     "xAI Grok — grok -p PROMPT --cwd DIR --always-approve",
 	},
 	"claude": {
-		Name:       "claude",
-		Binary:     "claude",
-		PrintFlag:  "-p",
-		YoloFlags:       []string{"--dangerously-skip-permissions"},
-		ModelFlag:       "--model",
-		ModelsHint:      "aliases: fable | opus | sonnet | haiku, or a full model name (see Anthropic docs)",
-		SuggestedModels: []string{"fable", "opus", "sonnet", "haiku"},
-		Notes:           "Claude Code (headless, OAuth login) — claude -p PROMPT --dangerously-skip-permissions",
+		Name:      "claude",
+		Binary:    "claude",
+		PrintFlag: "-p",
+		YoloFlags: []string{"--dangerously-skip-permissions"},
+		ModelFlag: "--model",
+		Notes:     "Claude Code (headless, OAuth login) — claude -p PROMPT --dangerously-skip-permissions",
 	},
 	"opencode": {
 		Name:       "opencode",
@@ -131,7 +123,6 @@ var AgentSpecs = map[string]AgentSpec{
 		YoloFlags:  []string{"--dangerously-skip-permissions"},
 		ModelFlag:  "-m",
 		CwdFlag:    "--dir",
-		ModelsArgs: []string{"models"},
 		Notes:      "opencode run PROMPT --dir DIR --dangerously-skip-permissions",
 	},
 	"codex": {
@@ -141,28 +132,25 @@ var AgentSpecs = map[string]AgentSpec{
 		YoloFlags:  []string{"--dangerously-bypass-approvals-and-sandbox"},
 		ModelFlag:  "-m",
 		CwdFlag:    "-C",
-		ModelsHint: "run `codex models` in an interactive terminal (listing requires a TTY)",
 		Notes:      "OpenAI Codex — codex exec PROMPT -C DIR --dangerously-bypass-approvals-and-sandbox",
 	},
 	"agy": {
-		Name:       "agy",
-		Binary:     "agy",
-		PrintFlag:  "-p",
-		YoloFlags:  []string{"--dangerously-skip-permissions"},
-		ModelFlag:  "--model",
-		ModelsArgs: []string{"models"},
-		Notes:      "Google Antigravity (agy) — agy -p PROMPT --dangerously-skip-permissions",
+		Name:      "agy",
+		Binary:    "agy",
+		PrintFlag: "-p",
+		YoloFlags: []string{"--dangerously-skip-permissions"},
+		ModelFlag: "--model",
+		Notes:     "Google Antigravity (agy) — agy -p PROMPT --dangerously-skip-permissions",
 	},
 	"crush": {
 		Name:       "crush",
 		Binary:     "crush",
 		Subcommand: []string{"run"},
 		// `crush run` is non-interactive and auto-applies tool calls — there is
-		// no permission prompt to bypass (and --yolo is rejected on `run`).
-		ModelFlag:  "-m",
-		CwdFlag:    "-c",
-		ModelsArgs: []string{"models"},
-		Notes:      "Charmbracelet Crush — crush run PROMPT -c DIR",
+		// no permission prompt to bypass, so it has no YoloFlags.
+		ModelFlag: "-m",
+		CwdFlag:   "-c",
+		Notes:     "Charmbracelet Crush — crush run PROMPT -c DIR",
 	},
 }
 
@@ -189,115 +177,12 @@ func RegisterAgent(name string, spec AgentSpec) error {
 	return nil
 }
 
-// ListModels runs the agent CLI's own model-listing subcommand and returns its
-// output. Agents without a headless listing return their ModelsHint instead
-// (hint, nil) so callers can print something useful either way.
-func ListModels(name string, binaryOverride string) (string, error) {
-	spec, ok := AgentSpecs[name]
-	if !ok {
-		return "", fmt.Errorf("unknown agent %q", name)
-	}
-	if len(spec.ModelsArgs) == 0 {
-		if spec.ModelsHint != "" {
-			return spec.ModelsHint, nil
-		}
-		return "", fmt.Errorf("agent %q has no model-listing command (set models_args for custom agents)", name)
-	}
-	binary := ResolveBinary(name, binaryOverride)
-	if binary == "" {
-		return "", fmt.Errorf("agent %q is not installed", name)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, binary, spec.ModelsArgs...)
-	cmd.Env = cleanAgentEnv(os.Environ())
-	out, err := cmd.CombinedOutput()
-	text := strings.TrimSpace(StripAnsi(string(out)))
-	if err != nil {
-		if text == "" {
-			return "", err
-		}
-		return "", fmt.Errorf("%s (%v)", text, err)
-	}
-	return text, nil
-}
-
-// ParseModelList extracts model IDs from a CLI's free-text model listing.
-// Heuristic on purpose: a model id is a spaceless, colon-free token with at
-// least one letter (grok's "* name (default)" bullets and prose headers like
-// "Available models:" both wash out). Wrong-but-safe: a missed model can
-// still be typed by hand; an invented one cannot be run.
-func ParseModelList(output string) []string {
-	var models []string
-	seen := map[string]bool{}
-	for _, line := range strings.Split(output, "\n") {
-		s := strings.TrimSpace(line)
-		s = strings.TrimPrefix(s, "- ")
-		s = strings.TrimPrefix(s, "* ")
-		s = strings.TrimSuffix(s, " (default)")
-		s = strings.TrimSpace(s)
-		if s == "" || strings.ContainsAny(s, " \t:") || len(s) < 3 || len(s) > 80 {
-			continue
-		}
-		hasLetter := false
-		for _, r := range s {
-			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
-				hasLetter = true
-				break
-			}
-		}
-		if !hasLetter || seen[s] {
-			continue
-		}
-		seen[s] = true
-		models = append(models, s)
-		if len(models) >= 40 {
-			break
-		}
-	}
-	return models
-}
-
-// CheckModelFlag probes whether an agent CLI actually VALIDATES its model
-// flag, by asking it to run a trivial prompt on a model that cannot exist.
-// A CLI that errors is honest; one that answers anyway silently ignored the
-// flag — meaning a "cheap" seat configured on it may bill the default model.
-// The dishonest case costs one trivial prompt; the honest case costs nothing.
-func CheckModelFlag(name string, binaryOverride string, cwd string) string {
-	spec, ok := AgentSpecs[name]
-	if !ok {
-		return "unknown agent"
-	}
-	if spec.ModelFlag == "" {
-		return "no model flag"
-	}
-	if !AgentAvailable(name, binaryOverride) {
-		return "not installed"
-	}
-	run, err := BuildCommand(name, "Reply with exactly: OK", cwd, "mm-nonexistent-model-probe", true, nil, binaryOverride)
-	if err != nil {
-		return "probe failed"
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
-	_, exitCode, _ := RunAgentCLI(ctx, run, nil)
-	switch {
-	case ctx.Err() != nil:
-		return "probe timed out"
-	case exitCode != 0:
-		return "validates --model ✓"
-	default:
-		return "IGNORES its model flag — ran the default model anyway"
-	}
-}
-
 type AgentRun struct {
 	Agent     string
 	Command   []string
 	Prompt    string
 	Cwd       string
 	Model     string
-	Yolo      bool
 	ExtraArgs []string
 	Env       []string
 }
@@ -330,12 +215,12 @@ func AgentAvailable(name string, binaryOverride string) bool {
 // BuildCommand assembles the argv for a single headless agent invocation.
 // It never builds a shell string — every element is a discrete argv entry, so a
 // prompt containing shell metacharacters cannot escape into the shell.
+// YoloFlags are always included: an unattended run cannot answer prompts.
 func BuildCommand(
 	agent string,
 	prompt string,
 	cwd string,
 	model string,
-	yolo bool,
 	extraArgs []string,
 	binaryOverride string,
 ) (*AgentRun, error) {
@@ -358,9 +243,7 @@ func BuildCommand(
 		promptPlaced = true
 	}
 
-	if yolo {
-		cmd = append(cmd, spec.YoloFlags...)
-	}
+	cmd = append(cmd, spec.YoloFlags...)
 	if model != "" && spec.ModelFlag != "" {
 		cmd = append(cmd, spec.ModelFlag, model)
 	}
@@ -380,7 +263,6 @@ func BuildCommand(
 		Prompt:    prompt,
 		Cwd:       cwd,
 		Model:     model,
-		Yolo:      yolo,
 		ExtraArgs: extraArgs,
 		Env:       os.Environ(),
 	}, nil

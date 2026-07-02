@@ -61,7 +61,6 @@ type AgentDef struct {
 	ModelFlag  string   `json:"model_flag"`
 	CwdFlag    string   `json:"cwd_flag"`
 	ExtraArgs  []string `json:"extra_args"`
-	ModelsArgs []string `json:"models_args"`
 	Notes      string   `json:"notes"`
 }
 
@@ -82,16 +81,18 @@ type StepConfig struct {
 }
 
 type LoopConfig struct {
-	Repo            string            `json:"repo"`
-	Steps           int               `json:"steps"`
-	MaxIterations   int               `json:"max_iterations"`
-	Yolo            bool              `json:"yolo"`
-	DryRun          bool              `json:"dry_run"`
-	Interactive     bool              `json:"interactive"`
-	Issue           string            `json:"issue"`
-	Mode            string            `json:"mode"` // repair | issue | queue | feature
-	Mission         string            `json:"mission"`
-	Fresh           bool              `json:"fresh"`
+	Repo          string `json:"repo"`
+	Steps         int    `json:"steps"`
+	MaxIterations int    `json:"max_iterations"`
+	DryRun        bool   `json:"dry_run"`
+	Issue         string `json:"issue"`
+	Mode          string `json:"mode"` // repair | issue | queue | feature
+	Mission       string `json:"mission"`
+	// Fresh resets per-run loop state before starting. Always true for
+	// operator-launched runs (a stale plan from a previous mission is never
+	// what you want); the worktree-collapse queue path clears it internally so
+	// per-issue state survives into the collapse step.
+	Fresh           bool              `json:"-"`
 	IssueQueue      *IssueQueueConfig `json:"issue_queue"`
 	BranchPrefix    string            `json:"branch_prefix"`
 	BaseBranch      string            `json:"base_branch"`
@@ -112,7 +113,6 @@ type LoopConfig struct {
 	AgentMemoryFile   string `json:"agent_memory_file"`
 	FixUnrelatedTests bool   `json:"fix_unrelated_tests"`
 	StreamOutput      bool   `json:"stream_output"`
-	BatchSize         int    `json:"batch_size"`
 
 	// Solo is single-agent mode: one agent does discover+execute+verify+tests in
 	// a single step (Steps==1) and emits the VERDICT; mm still commits/PRs
@@ -161,15 +161,6 @@ type LoopConfig struct {
 	NoSecretScan bool `json:"no_secret_scan"`
 	// SeedCount is how many issues `mm seed` asks the auditor to propose.
 	SeedCount int `json:"seed_count"`
-	// SpendRates maps agent name → operator-calibrated $ per MINUTE of agent
-	// wall-clock. mm never parses CLI billing output (formats churn, half
-	// report nothing); you calibrate once against your provider dashboard and
-	// `mm status` multiplies by the ledger's recorded durations. Estimates,
-	// labeled as such.
-	SpendRates map[string]float64 `json:"spend_rates"`
-	// CheckModels makes `mm models` also probe whether each CLI honors its
-	// model flag (costs one trivial prompt per dishonest CLI).
-	CheckModels bool
 
 	// Interactive Wizard overrides
 	Wizard   bool
@@ -180,12 +171,10 @@ func NewDefaultConfig() *LoopConfig {
 	return &LoopConfig{
 		Steps:               4,
 		MaxIterations:       10,
-		Yolo:                true,
 		BranchPrefix:        "mm",
 		NoMerge:             true,
 		AgentMemoryFile:     "AGENTS.md",
 		StreamOutput:        false,
-		BatchSize:           1,
 		Fresh:               true,
 		MergeTimeoutMinutes: 60,
 		StepTimeoutMinutes:  60,
@@ -374,9 +363,6 @@ func ConfigFromMap(data map[string]interface{}, repo string) *LoopConfig {
 	if v, ok := data["max_iterations"].(float64); ok {
 		cfg.MaxIterations = int(v)
 	}
-	if v, ok := data["yolo"].(bool); ok {
-		cfg.Yolo = v
-	}
 	if v, ok := data["branch_prefix"].(string); ok {
 		cfg.BranchPrefix = v
 	}
@@ -397,9 +383,6 @@ func ConfigFromMap(data map[string]interface{}, repo string) *LoopConfig {
 	}
 	if v, ok := data["stream_output"].(bool); ok {
 		cfg.StreamOutput = v
-	}
-	if v, ok := data["batch_size"].(float64); ok {
-		cfg.BatchSize = int(v)
 	}
 	if v, ok := data["fix_unrelated_tests"].(bool); ok {
 		cfg.FixUnrelatedTests = v
@@ -438,14 +421,6 @@ func ConfigFromMap(data map[string]interface{}, repo string) *LoopConfig {
 	}
 	if defs, ok := data["agents"].(map[string]interface{}); ok {
 		cfg.CustomAgents = parseAgentDefs(defs)
-	}
-	if rates, ok := data["spend_rates"].(map[string]interface{}); ok {
-		cfg.SpendRates = map[string]float64{}
-		for k, v := range rates {
-			if f, ok := v.(float64); ok && f >= 0 {
-				cfg.SpendRates[k] = f
-			}
-		}
 	}
 	if v, ok := data["strength_order"]; ok {
 		cfg.StrengthOrder = parseStringList(v)
@@ -556,25 +531,9 @@ func parseStringList(v interface{}) []string {
 	return out
 }
 
-// SaveStrengthOrder persists the operator's agent strength ranking into the
-// persistent config file, preserving every other key already there. Called by
-// the wizard so the ordering only needs setting once.
-// DefaultSpendRates are rough order-of-magnitude $/minute starting points for
-// the wizard's spend screen — placeholders to edit, not billing facts. Zero
-// is deliberate and common: free tiers, flat-rate subscriptions, and local
-// models all cost $0.00/min at the margin.
-var DefaultSpendRates = map[string]float64{
-	"claude":   0.40,
-	"codex":    0.30,
-	"grok":     0.15,
-	"agy":      0.10,
-	"crush":    0.05,
-	"opencode": 0.00,
-}
-
 // SaveConfigValues merges the given top-level keys into the persistent config
 // file, preserving everything else already there. Called by the wizard so
-// settings like the strength ranking and spend rates only need setting once.
+// settings like the strength ranking only need setting once.
 func SaveConfigValues(values map[string]interface{}) error {
 	path := DefaultConfigPath()
 	if path == "" {
@@ -667,7 +626,7 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 	var restArgs []string
 
 	cliCommands := map[string]bool{
-		"run": true, "quick": true, "agents": true, "init": true, "status": true, "issues": true, "install-path": true, "merge": true, "seed": true, "models": true,
+		"run": true, "quick": true, "agents": true, "init": true, "status": true, "issues": true, "install-path": true, "merge": true, "seed": true,
 	}
 
 	if len(args) > 0 {
@@ -790,14 +749,9 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 			cfg.Steps = 3
 			cfg.Commit.Enabled = false
 			cfg.Mode = "feature"
-			cfg.Fresh = true
 			if cfg.MaxIterations == 10 {
 				cfg.MaxIterations = 5
 			}
-		case arg == "--fresh":
-			cfg.Fresh = true
-		case arg == "--no-fresh" || arg == "--resume":
-			cfg.Fresh = false
 		case arg == "--label" && i+1 < len(restArgs):
 			if cfg.IssueQueue == nil {
 				cfg.IssueQueue = &IssueQueueConfig{State: "open", Limit: 20, CloseOnSuccess: true}
@@ -833,14 +787,8 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 			cfg.Wizard = true
 		case arg == "--no-wizard":
 			cfg.NoWizard = true
-		case arg == "--yolo":
-			cfg.Yolo = true
-		case arg == "--no-yolo":
-			cfg.Yolo = false
 		case arg == "--dry-run":
 			cfg.DryRun = true
-		case arg == "--interactive" || arg == "-i":
-			cfg.Interactive = true
 		case arg == "--branch-prefix" && i+1 < len(restArgs):
 			cfg.BranchPrefix = restArgs[i+1]
 			i++
@@ -900,8 +848,6 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 			cfg.NoSecretScan = true
 		case arg == "--secret-scan":
 			cfg.NoSecretScan = false
-		case arg == "--check":
-			cfg.CheckModels = true
 		case arg == "--count" && i+1 < len(restArgs):
 			if n, err := strconv.Atoi(restArgs[i+1]); err == nil && n > 0 {
 				cfg.SeedCount = n
@@ -921,10 +867,6 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 			cfg.FixUnrelatedTests = true
 		case arg == "--stream-output":
 			cfg.StreamOutput = true
-		case arg == "--batch-size" && i+1 < len(restArgs):
-			bs, _ := strconv.Atoi(restArgs[i+1])
-			cfg.BatchSize = bs
-			i++
 		case strings.HasPrefix(arg, "--discover-"):
 			parseStepOverride(&cfg.Discover, strings.TrimPrefix(arg, "--discover-"), &i, restArgs)
 		case strings.HasPrefix(arg, "--execute-"):
@@ -957,7 +899,6 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 		cfg.Steps = 3
 		cfg.Commit.Enabled = false
 		cfg.Mode = "feature"
-		cfg.Fresh = true
 		if mission != "" {
 			cfg.Mission = mission
 		}
@@ -971,10 +912,6 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 	normalizeSolo(cfg)
 
 	return command, cfg, nil
-}
-
-func nilVal() string {
-	return ""
 }
 
 func parseStepOverride(sc *StepConfig, field string, idx *int, args []string) {

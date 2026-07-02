@@ -129,7 +129,7 @@ func RunSeed(cfg *config.LoopConfig) int {
 	prompt := prompts.RenderPrompt(template, ctx)
 	l.WriteText(filepath.Join(l.state, "seed_prompt.md"), prompt)
 
-	run, err := agents.BuildCommand(agent, prompt, cfg.Repo, cfg.Discover.Model, cfg.Yolo, nil, binary)
+	run, err := agents.BuildCommand(agent, prompt, cfg.Repo, cfg.Discover.Model, nil, binary)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, colors.Colored("✗ "+err.Error(), colors.Red))
 		return 1

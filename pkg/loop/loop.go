@@ -423,7 +423,6 @@ func (l *MiddleManagerLoop) RunStep(step string, iteration int, issueData map[st
 		prompt,
 		l.cfg.Repo,
 		model,
-		l.cfg.Yolo,
 		sc.ExtraArgs,
 		binary,
 	)
@@ -909,13 +908,6 @@ func (l *MiddleManagerLoop) RunOnce(iteration int, issueData map[string]string) 
 			break
 		}
 
-		// Interactive mode: pause after each step so the operator can inspect /
-		// interject before the next one runs.
-		if l.cfg.Interactive && !l.cfg.StreamOutput {
-			l.Log("⏸️  Interactive pause — type /resume in the input box (then Enter) to continue.", colors.Yellow)
-			tui.RequestPause()
-			l.checkTUIPause()
-		}
 	}
 
 	// Persist the verifier's report every iteration (pass or fail) so the next

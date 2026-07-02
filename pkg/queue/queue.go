@@ -579,7 +579,7 @@ func (r *IssueQueueRunner) resolveConflictWithAgent(intPath, branch string, file
 		"conflict_files": strings.Join(files, "\n"),
 		"agent_memory":   r.agentMemory(),
 	})
-	run, err := agents.BuildCommand(agent, prompt, intPath, "", r.cfg.Yolo, nil, bin)
+	run, err := agents.BuildCommand(agent, prompt, intPath, "", nil, bin)
 	if err != nil {
 		r.Log(fmt.Sprintf("Could not build conflict-resolution command: %v", err), colors.Red)
 		return false

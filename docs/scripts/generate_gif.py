@@ -203,28 +203,22 @@ def main():
     events = events + [
         (t, b"\r"),        # mission entered
         (t + 1.4, b"\r"),  # loop shape: 4 steps
-        # Agents: customize one seat so the Models screen has a row to show.
-        (t + 2.8, b"c"),  # open the per-seat carousel
-        (t + 3.6, b"j"),  # cursor to the execute row
-        (t + 4.2, b"l"),  # cycle: random → grok
-        (t + 4.7, b"l"),  # cycle: grok → claude
-        (t + 6.0, b"\r"),  # commit agents → Models screen
-        (t + 7.4, b"l"),   # pin execute's model: (CLI default) → fable
-        (t + 9.0, b"\r"),  # commit models → options
-    ]
-    t += 10.0
-    events += [(t + 0.4 * i, b"j") for i in range(7)]  # cursor to the spend toggle
-    t += 0.4 * 7
-    events += [
-        (t + 0.6, b" "),   # toggle "Track estimated spend" ON
-        (t + 1.8, b"\r"),  # options → strength screen
-        (t + 2.8, b"j"),   # strength: cursor to grok…
-        (t + 4.0, b"\x1b[1;2A"),  # …shift+up: crown it strongest (execute=claude gains a grok rung)
-        (t + 5.4, b"\r"),  # commit the ordering → Spend screen
-        (t + 7.0, b"l"),   # bump the highlighted agent's $/min one preset
-        (t + 8.6, b"\r"),  # commit spend rates
-        (t + 9.6, b"\r"),  # max iterations (default)
-        (t + 12.4, b"\r"),  # review & launch (pause on the summary)
+        # Agents: briefly customize one seat to show the per-seat carousel.
+        (t + 2.8, b"c"),   # open the per-seat carousel
+        (t + 3.6, b"j"),   # cursor to the execute row
+        (t + 4.2, b"l"),   # cycle: random → first concrete agent
+        (t + 5.6, b"h"),   # …and back to random (spread work across CLIs)
+        (t + 6.8, b"\r"),  # commit agents → options
+        # Options: walk the checkboxes so the quality levers are visible.
+        (t + 8.0, b"j"),
+        (t + 8.6, b"j"),
+        (t + 9.2, b"j"),
+        (t + 10.4, b"\r"),  # options → strength screen (escalation is on)
+        (t + 11.4, b"j"),   # strength: cursor to the second agent…
+        (t + 12.6, b"\x1b[1;2A"),  # …shift+up: drag it to strongest
+        (t + 14.0, b"\r"),  # commit the ordering → max iterations
+        (t + 15.0, b"\r"),  # max iterations (default)
+        (t + 17.8, b"\r"),  # review & launch (pause on the summary)
     ]
 
     master_fd, slave_fd = pty.openpty()

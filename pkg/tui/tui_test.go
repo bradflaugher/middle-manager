@@ -58,12 +58,6 @@ func TestSlashCommands(t *testing.T) {
 	if IsTUISkipStep() {
 		t.Fatal("/skip should be a one-shot flag (cleared after read)")
 	}
-
-	// RequestPause is how interactive mode pauses before the next step.
-	RequestPause()
-	if !IsTUIPaused() {
-		t.Fatal("RequestPause did not pause")
-	}
 }
 
 // TestInterjectionNoTUIIsNoop documents that without an active monitor (e.g.
@@ -561,13 +555,13 @@ func TestWizardFactoryOptions(t *testing.T) {
 	cfg.Execute.Agent = "opencode"
 	m := NewWizardModel(cfg)
 	m.state = stateOptions
-	if len(m.optionsList) != 8 || len(m.optionsValues) != 8 {
-		t.Fatalf("options screen has %d/%d entries, want 8", len(m.optionsList), len(m.optionsValues))
+	if len(m.optionsList) != 4 || len(m.optionsValues) != 4 {
+		t.Fatalf("options screen has %d/%d entries, want 4", len(m.optionsList), len(m.optionsValues))
 	}
 
-	m.optionsValues[5] = true // distinct verifier
-	m.optionsValues[6] = true // escalation
-	m = sendW(m, keyEnter())  // commit options → strength screen
+	m.optionsValues[optDistinctVerifier] = true
+	m.optionsValues[optEscalate] = true
+	m = sendW(m, keyEnter()) // commit options → strength screen
 
 	if !m.cfg.DistinctVerifier {
 		t.Error("distinct-verifier checkbox not applied")
@@ -607,7 +601,7 @@ func TestWizardFactoryOptions(t *testing.T) {
 	m2 := NewWizardModel(cfg2)
 	m2.state = stateOptions
 	m2.cfg.Execute.Escalate = []config.AgentRef{{Agent: "claude"}}
-	m2.optionsValues[6] = false
+	m2.optionsValues[optEscalate] = false
 	m2 = sendW(m2, keyEnter())
 	if m2.state != stateMaxIters || len(m2.cfg.Execute.Escalate) != 0 {
 		t.Errorf("escalation OFF: state=%d ladder=%+v", m2.state, m2.cfg.Execute.Escalate)
@@ -619,7 +613,7 @@ func TestWizardFactoryOptions(t *testing.T) {
 	cfg3.Execute.Escalate = []config.AgentRef{{Agent: "claude", Model: "opus"}, {Agent: "codex"}}
 	m3 := NewWizardModel(cfg3)
 	m3.state = stateOptions
-	m3.optionsValues[6] = true
+	m3.optionsValues[optEscalate] = true
 	m3 = sendW(m3, keyEnter())
 	if m3.state != stateMaxIters {
 		t.Errorf("config-ladder path should skip the strength screen, got state %d", m3.state)
@@ -682,113 +676,28 @@ func TestWizardPlaybookGuidance(t *testing.T) {
 	}
 }
 
-// The Models screen appears only for concrete, model-capable seats; cycling a
-// row pins that step's Model, "(CLI default)" clears it; random-only
-// configurations skip the screen entirely.
-func TestWizardModelsScreen(t *testing.T) {
+// The agents screen commits its seats and goes straight to options — no
+// intermediate screens.
+func TestWizardAgentsRouteToOptions(t *testing.T) {
 	cfg := config.NewDefaultConfig()
 	cfg.BinaryOverrides = fakeInstalled("claude", "codex")
 	m := NewWizardModel(cfg)
 	m.state = stateAgents
 	for _, step := range []string{"discover", "execute", "verify", "commit"} {
-		m.stepToAgent[step] = "claude"
+		m.stepToAgent[step] = "codex"
 	}
 	m = sendW(m, keyEnter())
-	if m.state != stateModels {
-		t.Fatalf("concrete model-capable seats should route to stateModels, got %d", m.state)
-	}
-	if len(m.modelRowsCache) != 4 {
-		t.Fatalf("modelRows = %v, want 4 claude rows", m.modelRowsCache)
-	}
-	// Row 0 = discover; claude's curated suggestions start with "fable".
-	m = sendW(m, tea.KeyPressMsg{Code: tea.KeyRight})
-	m = sendW(m, keyEnter()) // commit models -> options
 	if m.state != stateOptions {
-		t.Fatalf("models commit should land on options, got %d", m.state)
+		t.Fatalf("agents commit should land on options, got %d", m.state)
 	}
-	if m.cfg.Discover.Model != "fable" {
-		t.Errorf("discover model = %q, want fable", m.cfg.Discover.Model)
+	if m.cfg.Execute.Agent != "codex" {
+		t.Errorf("execute agent = %q, want codex", m.cfg.Execute.Agent)
 	}
-	if m.cfg.Execute.Model != "" {
-		t.Errorf("untouched rows must keep the CLI default, got %q", m.cfg.Execute.Model)
-	}
-
-	// All-random seats: no models screen. (Fresh config — the first wizard
-	// committed concrete agents into the shared one.)
-	cfg2 := config.NewDefaultConfig()
-	cfg2.BinaryOverrides = fakeInstalled("claude", "codex")
-	m2 := NewWizardModel(cfg2)
-	m2.state = stateAgents
-	m2 = sendW(m2, keyEnter())
-	if m2.state != stateOptions {
-		t.Errorf("random seats should skip stateModels, got %d", m2.state)
-	}
-
-	// A live listing arriving grows the carousel without breaking choices.
-	model, _ := m.Update(wizardModelsMsg{agent: "claude", models: []string{"claude-x-test"}})
-	m = model.(*WizardModel)
-	found := false
-	for _, o := range m.modelOptionsFor("discover") {
-		if o == "claude-x-test" {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("fetched models did not join the carousel")
-	}
-}
-
-// The Spend screen is gated by the options toggle, lists every agent the
-// configuration could run, defaults from DefaultSpendRates (zero for the free
-// seat), and commits cfg.SpendRates.
-func TestWizardSpendScreen(t *testing.T) {
-	cfg := config.NewDefaultConfig()
-	cfg.BinaryOverrides = fakeInstalled("claude", "opencode")
-	m := NewWizardModel(cfg)
-	m.state = stateOptions
-	m.optionsValues[6] = false // no escalation -> no strength screen in between
-	m.optionsValues[7] = true  // track spend
-	m.cfg.Execute.Agent = "opencode"
-	m.cfg.Discover.Agent = "claude"
-	m.cfg.Verify.Agent = "claude"
-	m.cfg.Commit.Agent = "claude"
-	m.stepToAgent = map[string]string{"discover": "claude", "execute": "opencode", "verify": "claude", "commit": "claude"}
-
+	// No escalation -> options goes straight to maxIters.
+	m.optionsValues[optEscalate] = false
 	m = sendW(m, keyEnter())
-	if m.state != stateSpend {
-		t.Fatalf("spend toggle should route to stateSpend, got %d", m.state)
-	}
-	rows := map[string]bool{}
-	for _, r := range m.spendRowsCache {
-		rows[r] = true
-	}
-	if !rows["claude"] || !rows["opencode"] {
-		t.Fatalf("spend rows = %v, want claude+opencode", m.spendRowsCache)
-	}
-	// Defaults: opencode seeds at the $0.00 (free/subscription/local) preset.
-	if spendPresets[m.spendChoice["opencode"]] != 0 {
-		t.Errorf("opencode should default to $0.00, got %v", spendPresets[m.spendChoice["opencode"]])
-	}
-
-	m = sendW(m, keyEnter()) // commit spend -> maxIters
 	if m.state != stateMaxIters {
-		t.Fatalf("spend commit should land on maxIters, got %d", m.state)
-	}
-	if m.cfg.SpendRates["opencode"] != 0 {
-		t.Errorf("SpendRates[opencode] = %v, want 0", m.cfg.SpendRates["opencode"])
-	}
-	if m.cfg.SpendRates["claude"] != config.DefaultSpendRates["claude"] {
-		t.Errorf("SpendRates[claude] = %v, want default %v", m.cfg.SpendRates["claude"], config.DefaultSpendRates["claude"])
-	}
-
-	// Toggle off -> screen skipped, straight to maxIters.
-	m3 := NewWizardModel(cfg)
-	m3.state = stateOptions
-	m3.optionsValues[6] = false
-	m3.optionsValues[7] = false
-	m3 = sendW(m3, keyEnter())
-	if m3.state != stateMaxIters {
-		t.Errorf("spend off should skip stateSpend, got %d", m3.state)
+		t.Fatalf("options commit (no escalation) should land on maxIters, got %d", m.state)
 	}
 }
 

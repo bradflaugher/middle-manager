@@ -108,24 +108,13 @@ mm
 ```
 
 The wizard (shown in the GIF above) walks you through: **repo → base branch →
-what to do → mission/issue/queue → loop shape → agents → models → options →
-agent strength order → spend rates → iteration budget → review & launch**
-(the models, strength, and spend screens appear only when relevant). Every
-screen has a sensible default, so mashing Enter gives you a working 4-step
-loop on `random` agents with the quality levers (distinct verifier +
-escalation) already on.
+what to do → mission/issue/queue → loop shape → agents → options →
+agent strength order → iteration budget → review & launch** (the strength
+screen appears only when escalation is on). Every screen has a sensible
+default, so mashing Enter gives you a working 4-step loop on `random` agents
+with the quality levers (distinct verifier + escalation) already on.
 
 Screens worth knowing about:
-
-- **Models** — appears when a seat has a concrete, model-capable agent: pin a
-  model per seat from a carousel of the CLI's own default, curated aliases
-  (e.g. claude's `fable`/`opus`/`sonnet`/`haiku`), and the CLI's **live model
-  listing**. Playbook hint included: pin a cheap model on execute, leave
-  verify/discover on the default.
-- **Spend rates** — toggle "Track estimated spend" on the options screen to
-  set `$/min` per agent (seeded with rough defaults; `$0.00` is first-class
-  for free tiers, flat-rate subscriptions, and local models). Saved to your
-  config so `mm status` prices every future run.
 
 - **Agents** — the default for every seat is `random` (rainbow shimmer): each
   iteration rolls one installed agent and uses it for the whole iteration,
@@ -135,6 +124,10 @@ Screens worth knowing about:
   strongest-first (shift+↑/↓ to drag); escalation climbs your ranking, and the
   ranking is saved to `~/.config/middle-manager/config.json` so you only ever
   set it once.
+
+Agents always run in their headless auto-approve mode — an unattended loop
+cannot answer permission prompts, so there is nothing to configure there.
+Every run starts fresh: stale plans from a previous mission are never reused.
 
 ## CLI Reference
 
@@ -157,10 +150,10 @@ Screens worth knowing about:
 | Bound one agent invocation | `mm "…" --step-timeout 30` (per-step: `--execute-timeout 90`) |
 | Bound the whole run / drain | `mm --label bug --max-wall-minutes 120` |
 | Point at another repo | `mm quick "…" --repo ~/other-project` |
-| Pause between steps | `mm quick "…" -i` |
 | See agents, state & the run ledger | `mm agents` · `mm status` |
-| List every CLI's available models | `mm models` (one agent: `mm models opencode`) |
-| Check which CLIs actually honor `--model` | `mm models --check` |
+
+While a loop runs, the monitor dashboard takes live commands: type a note to
+steer the next step, or `/pause` `/resume` `/skip` `/quit`.
 
 ---
 
@@ -190,6 +183,11 @@ In JSON config, ladders take strings or objects:
 { "execute": { "agent": "opencode",
                "escalate": ["claude:opus", {"agent": "codex", "model": "gpt-5"}] } }
 ```
+
+A note on models: a `model` (anywhere — a step, a ladder rung) is passed to
+the CLI's model flag **verbatim and unvalidated**; support depends on that
+CLI, and some silently ignore the flag in headless mode. Omit it and each CLI
+runs its own default — the recommended starting point.
 
 **You define what "stronger" means.** Your ranking — set on the wizard's
 strength screen, via `"strength_order"` in config, or `--strength-order` —
@@ -242,35 +240,17 @@ without waiting for an mm release.
 - **Mechanical shortcuts** — an execute step that crashed leaving no changes
   skips the verifier entirely (nothing to audit, no tokens spent).
 
-### The ledger: know where your time and money go
+### The ledger: know where your time goes
 
 Every step attempt is appended to `<state>/ledger.jsonl` — agent, model, tier,
 attempt, duration, exit code, timeout flag — plus per-iteration verdicts and
 run outcomes. `mm status` aggregates it into a per-agent scoreboard (steps /
 time / retries / timeouts / **escalations**) **across a whole queue drain** —
 each issue's ledger rolls up into one table, so a 50-issue drain answers
-"where did my time/money go" in one command. The ESCAL column is the number
-the playbook tunes on: how often the cheap seat actually needed rescuing.
-
-**Estimated spend, without the hacks.** mm never parses CLI billing output —
-formats churn with every release and half the CLIs report nothing. Instead
-you calibrate once: run a drain, check your provider dashboards, and declare
-each agent's `$ per minute` of wall-clock in your config:
-
-```json
-{ "spend_rates": { "claude": 0.40, "opencode": 0.00, "grok": 0.15 } }
-```
-
-`mm status` then adds an EST SPEND column and total (labeled as the estimate
-it is). Flat-rate subscription? Set the rate to what the seat costs *you* —
-`0.00` is a legitimate answer, and seeing `opencode: 19m — ~$0.00` next to
-`claude: 18m — ~$7.35` is the whole playbook in one line.
-
-**Finding model names.** `mm models` asks each installed CLI to list its own
-models (falling back to a hint for CLIs that can't list headlessly), and
-`mm models --check` probes whether each CLI actually *honors* its model flag
-by requesting a model that cannot exist — a CLI that answers anyway is
-silently running its default model, and your "cheap" seat isn't cheap.
+"where did my time go" in one command. The ESCAL column is the number the
+playbook tunes on: how often the cheap seat actually needed rescuing.
+Wall-clock per agent is your cost proxy: multiply by what each seat costs you
+and the scoreboard is a bill.
 
 ### The playbook: where the strong models go (and where they don't)
 
@@ -309,12 +289,12 @@ mm status   # per-agent scoreboard for the whole drain: time, retries, escalatio
 
 Two habits that keep it honest:
 
-- **Sanity-check your cheap seat once.** mm passes each CLI's model flag
-  faithfully but cannot verify the CLI honored it — some agents silently
-  ignore `--model` in headless mode. `mm models --check` probes every
-  installed CLI with a model that cannot exist: one that answers anyway has a
-  decorative model flag, and your "cheap" seat may be billing you for the
-  default model. (`mm models` also lists what names each CLI accepts.)
+- **Sanity-check your cheap seat once.** mm passes a configured model to each
+  CLI's model flag faithfully but cannot verify the CLI honored it — some
+  agents silently ignore the flag in headless mode. After your first drain,
+  check the provider dashboard: if the "cheap" seat billed like the default
+  model, the CLI ignored you — pick a different CLI for that seat instead of
+  fighting it.
 - **Let issues carry their own acceptance criteria.** The verifier checks the
   mission; a mission that says "make X better" gets you an unfalsifiable PASS.
   Issues that state what must be true when done are what make the cheap

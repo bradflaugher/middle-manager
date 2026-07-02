@@ -226,10 +226,8 @@ const (
 	stateStrategy // queue-only: per-issue PRs vs worktree collapse
 	stateSteps    // loop shape (asked before agents so agents can adapt)
 	stateAgents
-	stateModels   // pick a model per concrete seat (CLI default · curated · live-listed)
 	stateOptions
 	stateStrength // rank YOUR agents strongest-first; feeds the escalation ladder
-	stateSpend    // optional $/min per agent for the ledger's spend estimate
 	stateMaxIters
 	stateConfirm
 )
@@ -257,26 +255,16 @@ type WizardModel struct {
 	// first) on the strength screen; strengthIndex is its cursor.
 	strengthOrder []string
 	strengthIndex int
-	// Models screen: rows are the active steps with a concrete, model-capable
-	// agent; each row cycles "(CLI default)" + curated + live-fetched models.
-	modelRowsCache []string
-	modelIndex     int
-	modelChoice    map[string]int      // step → option index (0 = CLI default)
-	fetchedModels  map[string][]string // agent → parsed live listing
-	// Spend screen: $/min preset per agent that could run this configuration.
-	spendRowsCache []string
-	spendIndex     int
-	spendChoice    map[string]int // agent → index into spendPresets
 	// hasConfigLadder notes an escalation ladder shaped explicitly in config —
 	// the wizard respects it and skips the strength-preset screen.
 	hasConfigLadder bool
-	queueLabel    string
-	queueAuthor   string
-	queueLimit    string
-	queueSub      int // 0=label, 1=author, 2=max-issues
-	width         int
-	height        int
-	confirmed     bool
+	queueLabel      string
+	queueAuthor     string
+	queueLimit      string
+	queueSub        int // 0=label, 1=author, 2=max-issues
+	width           int
+	height          int
+	confirmed       bool
 }
 
 func NewWizardModel(initialCfg *config.LoopConfig) *WizardModel {
@@ -328,175 +316,31 @@ func NewWizardModel(initialCfg *config.LoopConfig) *WizardModel {
 		stepToAgent:   stepToAgent,
 		strategyIndex: boolToIndex(initialCfg.Worktree),
 		optionsList: []string{
-			"YOLO mode (auto-approve)",
-			"Interactive pause between steps",
 			"Allow fixing unrelated test failures",
-			"Fresh run (reset loop state)",
 			"Auto-merge PRs when green",
 			"Distinct verifier — a different agent audits the work",
 			"Escalate to a stronger agent after repeated failures",
-			"Track estimated spend (set $/min per agent next; $0 = free/local)",
 		},
 		optionsValues: []bool{
-			initialCfg.Yolo, initialCfg.Interactive, initialCfg.FixUnrelatedTests,
-			initialCfg.Fresh, !initialCfg.NoMerge,
+			initialCfg.FixUnrelatedTests, !initialCfg.NoMerge,
 			// Both quality levers default ON in the guided flow: an independent
 			// critic and a failure-triggered escalation ladder cost nothing when
 			// everything passes, and they're the two patterns with the strongest
 			// evidence behind them. Both no-op gracefully with one installed agent.
 			initialCfg.DistinctVerifier || len(agents.AvailableAgents(initialCfg.BinaryOverrides)) >= 2,
 			len(initialCfg.Execute.Escalate) > 0 || len(agents.AvailableAgents(initialCfg.BinaryOverrides)) >= 2,
-			// Spend tracking defaults ON only when rates are already configured.
-			len(initialCfg.SpendRates) > 0,
 		},
 		hasConfigLadder: len(initialCfg.Execute.Escalate) > 0,
-		modelChoice:     map[string]int{},
-		fetchedModels:   map[string][]string{},
-		spendChoice:     map[string]int{},
 	}
 }
 
-// spendPresets are the $/minute values the spend screen cycles through. $0.00
-// leads on purpose: free tiers, flat-rate subscriptions, and local models are
-// all legitimately zero-marginal-cost seats.
-var spendPresets = []float64{0, 0.02, 0.05, 0.10, 0.15, 0.20, 0.30, 0.40, 0.60, 1.00, 2.00}
-
-// modelRows returns the active steps whose chosen agent is concrete and can
-// take a model flag — the rows of the Models screen. Random seats are skipped
-// (a per-iteration roll has no single model to pin).
-func (m *WizardModel) modelRows() []string {
-	var rows []string
-	for _, step := range m.agentStepKeys() {
-		name := m.stepToAgent[step]
-		if agents.IsRandom(name) {
-			continue
-		}
-		if spec, ok := agents.AgentSpecs[name]; ok && spec.ModelFlag != "" {
-			rows = append(rows, step)
-		}
-	}
-	return rows
-}
-
-// modelOptionsFor builds one row's carousel: the CLI's own default first,
-// then curated suggestions, then whatever the CLI's live listing reported.
-func (m *WizardModel) modelOptionsFor(step string) []string {
-	name := m.stepToAgent[step]
-	opts := []string{"(CLI default)"}
-	seen := map[string]bool{}
-	spec := agents.AgentSpecs[name]
-	for _, s := range append(append([]string{}, spec.SuggestedModels...), m.fetchedModels[name]...) {
-		if s == "" || seen[s] {
-			continue
-		}
-		seen[s] = true
-		opts = append(opts, s)
-		if len(opts) >= 14 {
-			break
-		}
-	}
-	return opts
-}
-
-// wizardModelsMsg delivers one agent's live model listing, fetched off-thread
-// so the wizard never blocks on a subprocess.
-type wizardModelsMsg struct {
-	agent  string
-	models []string
-}
-
-func fetchModelsCmd(name, override string) tea.Cmd {
-	return func() tea.Msg {
-		out, err := agents.ListModels(name, override)
-		if err != nil {
-			return wizardModelsMsg{agent: name}
-		}
-		return wizardModelsMsg{agent: name, models: agents.ParseModelList(out)}
-	}
-}
-
-// enterModels caches the rows and kicks off one live listing per distinct
-// agent that supports it. Returns the batched fetch commands.
-func (m *WizardModel) enterModels() tea.Cmd {
-	m.modelRowsCache = m.modelRows()
-	m.modelIndex = 0
-	var cmds []tea.Cmd
-	started := map[string]bool{}
-	for _, step := range m.modelRowsCache {
-		name := m.stepToAgent[step]
-		if started[name] {
-			continue
-		}
-		started[name] = true
-		if _, fetched := m.fetchedModels[name]; fetched {
-			continue
-		}
-		if spec, ok := agents.AgentSpecs[name]; ok && len(spec.ModelsArgs) > 0 && agents.AgentAvailable(name, m.cfg.BinaryOverrides[name]) {
-			cmds = append(cmds, fetchModelsCmd(name, m.cfg.BinaryOverrides[name]))
-		}
-	}
-	return tea.Batch(cmds...)
-}
-
-// spendRows returns every agent this configuration could possibly run: the
-// concrete seats, every ladder rung, and — when any seat is random — every
-// installed agent (a roll can land on any of them).
-func (m *WizardModel) spendRows() []string {
-	seen := map[string]bool{}
-	var rows []string
-	add := func(n string) {
-		if n != "" && !agents.IsRandom(n) && !seen[n] {
-			seen[n] = true
-			rows = append(rows, n)
-		}
-	}
-	anyRandom := false
-	for _, step := range m.agentStepKeys() {
-		if agents.IsRandom(m.stepToAgent[step]) {
-			anyRandom = true
-		} else {
-			add(m.stepToAgent[step])
-		}
-	}
-	for _, sc := range []*config.StepConfig{&m.cfg.Discover, &m.cfg.Execute, &m.cfg.Verify, &m.cfg.Commit} {
-		for _, ref := range sc.Escalate {
-			add(ref.Agent)
-		}
-	}
-	if anyRandom {
-		for _, n := range agents.AvailableAgents(m.cfg.BinaryOverrides) {
-			add(n)
-		}
-	}
-	return rows
-}
-
-// enterSpend caches the rows and seeds each agent's preset from the operator's
-// existing rate, falling back to the built-in rough defaults.
-func (m *WizardModel) enterSpend() {
-	m.spendRowsCache = m.spendRows()
-	m.spendIndex = 0
-	for _, name := range m.spendRowsCache {
-		if _, ok := m.spendChoice[name]; ok {
-			continue
-		}
-		rate, ok := m.cfg.SpendRates[name]
-		if !ok {
-			rate = config.DefaultSpendRates[name] // missing (custom agents) → 0
-		}
-		best, bestDiff := 0, -1.0
-		for i, p := range spendPresets {
-			diff := p - rate
-			if diff < 0 {
-				diff = -diff
-			}
-			if bestDiff < 0 || diff < bestDiff {
-				best, bestDiff = i, diff
-			}
-		}
-		m.spendChoice[name] = best
-	}
-}
+// Indexes into optionsList/optionsValues — keep in sync with NewWizardModel.
+const (
+	optFixTests = iota
+	optAutoMerge
+	optDistinctVerifier
+	optEscalate
+)
 
 // escalationLadder builds the executor's escalation ladder from a strength
 // ranking (strongest first): every installed agent STRONGER than the base, as
@@ -571,27 +415,16 @@ func (m *WizardModel) moveStrengthItem(dir int) {
 // strengthScreenInPlay reports whether the flow includes the strength screen:
 // only when escalation is toggled on and config didn't already shape a ladder.
 func (m *WizardModel) strengthScreenInPlay() bool {
-	return m.optionsValues[6] && !m.hasConfigLadder
+	return m.optionsValues[optEscalate] && !m.hasConfigLadder
 }
 
 // gotoMaxIters transitions to the iteration-budget screen (shared tail of the
-// options/strength/spend chain).
+// options/strength chain).
 func (m *WizardModel) gotoMaxIters() tea.Cmd {
 	m.state = stateMaxIters
 	cmd := m.resetInput("Max iterations per task (default 10)")
 	m.textInput.SetValue("10")
 	return cmd
-}
-
-// afterStrength routes to the spend screen when tracking is toggled on,
-// otherwise straight to the iteration budget.
-func (m *WizardModel) afterStrength() tea.Cmd {
-	if m.optionsValues[7] {
-		m.enterSpend()
-		m.state = stateSpend
-		return nil
-	}
-	return m.gotoMaxIters()
 }
 
 func boolToIndex(b bool) int {
@@ -677,11 +510,6 @@ func (m *WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			tiw = 400
 		}
 		m.textInput.SetWidth(tiw)
-	case wizardModelsMsg:
-		// A live model listing arrived; carousels only ever grow, so existing
-		// row choices stay valid.
-		m.fetchedModels[msg.agent] = msg.models
-		return m, nil
 	// Match KeyPressMsg, not the tea.KeyMsg interface: the latter is also
 	// satisfied by KeyReleaseMsg, so if release reporting is ever negotiated
 	// (Kitty protocol) every binding would fire twice. Presses only.
@@ -707,12 +535,10 @@ func (m *WizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.state == stateAgents && m.customAgents {
 				m.cycleAgent(m.agentIndex, -1)
 			}
-			m.cycleModelOrSpend(-1)
 		case "right", "l":
 			if m.state == stateAgents && m.customAgents {
 				m.cycleAgent(m.agentIndex, 1)
 			}
-			m.cycleModelOrSpend(1)
 		case " ", "space":
 			if m.state == stateOptions {
 				m.optionsValues[m.optionsIndex] = !m.optionsValues[m.optionsIndex]
@@ -754,33 +580,9 @@ func (m *WizardModel) moveCursor(dir int) {
 		m.optionsIndex = wrap(m.optionsIndex+dir, len(m.optionsList))
 	case stateStrength:
 		m.strengthIndex = wrap(m.strengthIndex+dir, len(m.strengthOrder))
-	case stateModels:
-		m.modelIndex = wrap(m.modelIndex+dir, len(m.modelRowsCache))
-	case stateSpend:
-		m.spendIndex = wrap(m.spendIndex+dir, len(m.spendRowsCache))
 	case stateAgents:
 		if m.customAgents {
 			m.agentIndex = wrap(m.agentIndex+dir, len(m.agentStepKeys()))
-		}
-	}
-}
-
-// cycleModelOrSpend advances the carousel under the cursor on the Models or
-// Spend screen (no-op elsewhere).
-func (m *WizardModel) cycleModelOrSpend(dir int) {
-	switch m.state {
-	case stateModels:
-		if m.modelIndex < len(m.modelRowsCache) {
-			step := m.modelRowsCache[m.modelIndex]
-			n := len(m.modelOptionsFor(step))
-			if n > 0 {
-				m.modelChoice[step] = wrap(m.modelChoice[step]+dir, n)
-			}
-		}
-	case stateSpend:
-		if m.spendIndex < len(m.spendRowsCache) {
-			name := m.spendRowsCache[m.spendIndex]
-			m.spendChoice[name] = wrap(m.spendChoice[name]+dir, len(spendPresets))
 		}
 	}
 }
@@ -914,59 +716,28 @@ func (m *WizardModel) nextStep() (tea.Model, tea.Cmd) {
 		m.cfg.Execute.Agent = m.stepToAgent["execute"]
 		m.cfg.Verify.Agent = m.stepToAgent["verify"]
 		m.cfg.Commit.Agent = m.stepToAgent["commit"]
-		if len(m.modelRows()) > 0 {
-			m.state = stateModels
-			cmd = m.enterModels()
-		} else {
-			m.state = stateOptions
-		}
-
-	case stateModels:
-		for _, step := range m.modelRowsCache {
-			sc := m.cfg.StepFor(step)
-			if sc == nil {
-				continue
-			}
-			opts := m.modelOptionsFor(step)
-			if idx := m.modelChoice[step]; idx > 0 && idx < len(opts) {
-				sc.Model = opts[idx]
-			} else {
-				sc.Model = "" // (CLI default)
-			}
-		}
 		m.state = stateOptions
 
 	case stateOptions:
-		m.cfg.Yolo = m.optionsValues[0]
-		m.cfg.Interactive = m.optionsValues[1]
-		m.cfg.FixUnrelatedTests = m.optionsValues[2]
-		m.cfg.Fresh = m.optionsValues[3]
-		m.cfg.NoMerge = !m.optionsValues[4]
-		m.cfg.DistinctVerifier = m.optionsValues[5]
+		m.cfg.FixUnrelatedTests = m.optionsValues[optFixTests]
+		m.cfg.NoMerge = !m.optionsValues[optAutoMerge]
+		m.cfg.DistinctVerifier = m.optionsValues[optDistinctVerifier]
 		// Escalation OFF means "never escalate" and clears any ladder; ON with a
 		// config-shaped ladder keeps it verbatim; otherwise the strength screen
 		// is next and builds the ladder from the user's own ranking.
-		if !m.optionsValues[6] {
+		if !m.optionsValues[optEscalate] {
 			m.cfg.Execute.Escalate = nil
 		}
 		if m.strengthScreenInPlay() {
 			m.seedStrengthOrder()
 			m.state = stateStrength
 		} else {
-			cmd = m.afterStrength()
+			cmd = m.gotoMaxIters()
 		}
 
 	case stateStrength:
 		m.cfg.StrengthOrder = append([]string{}, m.strengthOrder...)
 		m.cfg.Execute.Escalate = escalationLadder(m.cfg.Execute.Agent, m.cfg.BinaryOverrides, m.strengthOrder)
-		cmd = m.afterStrength()
-
-	case stateSpend:
-		rates := map[string]float64{}
-		for _, name := range m.spendRowsCache {
-			rates[name] = spendPresets[m.spendChoice[name]]
-		}
-		m.cfg.SpendRates = rates
 		cmd = m.gotoMaxIters()
 
 	case stateMaxIters:
@@ -984,9 +755,6 @@ func (m *WizardModel) nextStep() (tea.Model, tea.Cmd) {
 		persist := map[string]interface{}{}
 		if len(m.strengthOrder) > 0 {
 			persist["strength_order"] = m.strengthOrder
-		}
-		if m.optionsValues[7] && len(m.cfg.SpendRates) > 0 {
-			persist["spend_rates"] = m.cfg.SpendRates
 		}
 		if len(persist) > 0 {
 			_ = config.SaveConfigValues(persist)
@@ -1055,31 +823,14 @@ func (m *WizardModel) prevStep() (tea.Model, tea.Cmd) {
 		}
 	case stateAgents:
 		m.state = stateSteps
-	case stateModels:
-		m.state = stateAgents
 	case stateOptions:
-		if len(m.modelRows()) > 0 {
-			m.modelRowsCache = m.modelRows()
-			m.state = stateModels
-		} else {
-			m.state = stateAgents
-		}
+		m.state = stateAgents
 	case stateStrength:
 		m.state = stateOptions
-	case stateSpend:
+	case stateMaxIters:
 		if m.strengthScreenInPlay() {
 			m.state = stateStrength
 		} else {
-			m.state = stateOptions
-		}
-	case stateMaxIters:
-		switch {
-		case m.optionsValues[7]:
-			m.enterSpend()
-			m.state = stateSpend
-		case m.strengthScreenInPlay():
-			m.state = stateStrength
-		default:
 			m.state = stateOptions
 		}
 	case stateConfirm:
@@ -1200,53 +951,12 @@ func (m *WizardModel) View() tea.View {
 			s.WriteString("\n" + stDim.Render("  c: customize"))
 		}
 		s.WriteString("\n")
-	case stateModels:
-		s.WriteString(stepHeader("Models"))
-		s.WriteString("  Pin a model per seat, or keep each CLI's own default (←/→ to change):\n\n")
-		for i, step := range m.modelRowsCache {
-			cursor := "  "
-			st := stFg
-			if i == m.modelIndex {
-				cursor = stMag.Render("❯ ")
-				st = stMag
-			}
-			opts := m.modelOptionsFor(step)
-			choice := m.modelChoice[step]
-			if choice >= len(opts) {
-				choice = 0
-			}
-			label := fmt.Sprintf("%s (%s)", m.agentRowLabel(step), m.stepToAgent[step])
-			s.WriteString(fmt.Sprintf("  %s%-22s %s\n", cursor, label+":", st.Render("◄ "+opts[choice]+" ►")))
-		}
-		s.WriteString("\n" + stDim.Render("  Playbook: pin a CHEAP model on execute — escalation covers failures;") + "\n" +
-			stDim.Render("  leave verify & discover on the CLI default (usually its best model).") + "\n" +
-			stDim.Render("  Lists load live from each CLI; `mm models --check` audits flag honesty.") + "\n")
 	case stateOptions:
 		s.WriteString(stepHeader("Options"))
 		for i, name := range m.optionsList {
 			s.WriteString(checkbox(i == m.optionsIndex, m.optionsValues[i], name))
 		}
 		s.WriteString("\n" + stDim.Render("  space: toggle") + "\n")
-	case stateSpend:
-		s.WriteString(stepHeader("Estimated spend rates"))
-		s.WriteString("  What each agent costs YOU, $ per minute of wall-clock (←/→ to change):\n\n")
-		for i, name := range m.spendRowsCache {
-			cursor := "  "
-			st := stFg
-			if i == m.spendIndex {
-				cursor = stMag.Render("❯ ")
-				st = stMag
-			}
-			rate := spendPresets[m.spendChoice[name]]
-			value := fmt.Sprintf("◄ $%.2f/min ►", rate)
-			if rate == 0 {
-				value = "◄ $0.00/min (free · subscription · local) ►"
-			}
-			s.WriteString(fmt.Sprintf("  %s%-12s %s\n", cursor, name+":", st.Render(value)))
-		}
-		s.WriteString("\n" + stDim.Render("  Estimates, not billing: mm status multiplies these by ledger minutes.") + "\n" +
-			stDim.Render("  Calibrate against your provider dashboard (or openrouter.ai pricing)") + "\n" +
-			stDim.Render("  and refine later — saved to ~/.config/middle-manager/config.json.") + "\n")
 	case stateStrength:
 		s.WriteString(stepHeader("Agent strength order"))
 		if len(m.strengthOrder) == 0 {
@@ -1345,17 +1055,7 @@ func (m *WizardModel) confirmView() string {
 	if len(modelBits) > 0 {
 		b.WriteString(row("models", truncate(strings.Join(modelBits, " · "), 56)))
 	}
-	if len(m.cfg.SpendRates) > 0 {
-		var rateBits []string
-		for _, name := range m.spendRowsCache {
-			rateBits = append(rateBits, fmt.Sprintf("%s $%.2f/m", name, m.cfg.SpendRates[name]))
-		}
-		b.WriteString(row("spend est.", truncate(strings.Join(rateBits, " · "), 56)))
-	}
-	b.WriteString(row("yolo", boolStr(m.cfg.Yolo)))
-	b.WriteString(row("interactive", boolStr(m.cfg.Interactive)))
 	b.WriteString(row("fix tests", boolStr(m.cfg.FixUnrelatedTests)))
-	b.WriteString(row("fresh", boolStr(m.cfg.Fresh)))
 	b.WriteString(row("auto-merge", boolStr(!m.cfg.NoMerge)))
 	b.WriteString(row("distinct ✓", boolStr(m.cfg.DistinctVerifier)))
 	if len(m.cfg.Execute.Escalate) > 0 {
@@ -1404,16 +1104,9 @@ func (m *WizardModel) flow() []wizardState {
 	default:
 		seq = append(seq, stateMission)
 	}
-	seq = append(seq, stateSteps, stateAgents)
-	if len(m.modelRows()) > 0 {
-		seq = append(seq, stateModels)
-	}
-	seq = append(seq, stateOptions)
+	seq = append(seq, stateSteps, stateAgents, stateOptions)
 	if m.strengthScreenInPlay() {
 		seq = append(seq, stateStrength)
-	}
-	if m.optionsValues[7] {
-		seq = append(seq, stateSpend)
 	}
 	return append(seq, stateMaxIters, stateConfirm)
 }
@@ -1902,9 +1595,9 @@ func (m *MonitorModel) View() tea.View {
 func (m *MonitorModel) titleRow(width int) string {
 	left := stMag.Render("▌") + stViol.Render("▐ ") + synthGradient("middle-manager") + " " + stDim.Render(filepath.Base(m.cfg.Repo))
 	// m.state is driven by the loop and only ever reports running/completed/
-	// failed; pause lives in the separate m.paused flag (set by /pause and by
-	// interactive RequestPause), so fold it into an effective state here. Read
-	// race-free: View()/titleRow() already hold m.mu.
+	// failed; pause lives in the separate m.paused flag (set by /pause), so
+	// fold it into an effective state here. Read race-free: View()/titleRow()
+	// already hold m.mu.
 	effState := m.state
 	if m.paused && m.state != "completed" && m.state != "failed" {
 		effState = "paused"
@@ -2141,16 +1834,6 @@ func IsTUIPaused() bool {
 	GlobalModel.mu.Lock()
 	defer GlobalModel.mu.Unlock()
 	return GlobalModel.paused
-}
-
-// RequestPause asks the monitor to pause before the next step (interactive mode).
-func RequestPause() {
-	if GlobalModel == nil {
-		return
-	}
-	GlobalModel.mu.Lock()
-	GlobalModel.paused = true
-	GlobalModel.mu.Unlock()
 }
 
 func IsTUISkipStep() bool {

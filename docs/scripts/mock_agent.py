@@ -4,44 +4,35 @@ import os
 import time
 
 def main():
+    # The prompt arrives either as the value of a print flag (-p) or as the
+    # TRAILING positional argument (opencode/codex/crush style). Scanning
+    # forward would grab the subcommand ("run"/"exec") instead — scan backward.
     prompt = ""
     for i, arg in enumerate(sys.argv):
         if arg == "-p" and i + 1 < len(sys.argv):
             prompt = sys.argv[i + 1]
             break
-    
     if not prompt:
-        for arg in sys.argv[1:]:
+        for arg in reversed(sys.argv[1:]):
             if not arg.startswith("-"):
                 prompt = arg
                 break
 
-    if "Planner" in prompt or "Discover" in prompt or "discover" in sys.argv[0]:
-        run_discover()
-    elif "Programmer" in prompt or "Generate" in prompt or "opencode" in sys.argv[0]:
-        run_execute()
-    elif "Critic" in prompt or "Audit" in prompt or "verify" in sys.argv[0]:
+    # Identify the step from the prompt's TITLE line only. The body is
+    # ambiguous — e.g. the execute prompt embeds a "Discovery Scoping Summary"
+    # section and the verify prompt embeds the programmer's report — so a
+    # whole-prompt keyword scan misroutes steps and breaks the demo loop.
+    title = prompt.splitlines()[0] if prompt else ""
+    if "Verifier" in title:
         run_verify()
-    elif "Ship" in prompt or "Commit" in prompt or "grok" in sys.argv[0]:
+    elif "Commit" in title:
         run_commit()
+    elif "Discover" in title or "Scoping" in title or "Audit" in title:
+        run_discover()
+    elif "Execute" in title or "Solo" in title:
+        run_execute()
     else:
-        prompt_lower = prompt.lower()
-        if "planning" in prompt_lower or "planner" in prompt_lower or "discover" in prompt_lower:
-            run_discover()
-        elif "programmer" in prompt_lower or "generate" in prompt_lower or "execute" in prompt_lower:
-            run_execute()
-        elif "critic" in prompt_lower or "audit" in prompt_lower or "verify" in prompt_lower:
-            run_verify()
-        else:
-            argv_str = " ".join(sys.argv).lower()
-            if "discover" in argv_str:
-                run_discover()
-            elif "execute" in argv_str or "opencode" in argv_str:
-                run_execute()
-            elif "verify" in argv_str:
-                run_verify()
-            else:
-                run_commit()
+        run_commit()  # unknown prompt: the safe no-op-ish step
 
 def stream_print(text, delay=0.18, final_sleep=1.5):
     for line in text.splitlines(keepends=True):

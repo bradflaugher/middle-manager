@@ -46,7 +46,7 @@ func TestBuildCommand(t *testing.T) {
 	}
 
 	for agent, want := range cases {
-		run, err := BuildCommand(agent, p, dir, "", true, nil, "")
+		run, err := BuildCommand(agent, p, dir, "", nil, "")
 		if err != nil {
 			t.Fatalf("%s: BuildCommand error: %v", agent, err)
 		}
@@ -56,19 +56,21 @@ func TestBuildCommand(t *testing.T) {
 	}
 }
 
-func TestBuildCommandModelAndNoYolo(t *testing.T) {
-	run, err := BuildCommand("grok", "x", "/repo", "grok-4", false, nil, "")
+// A configured model is passed through verbatim via the agent's model flag —
+// alongside the always-on yolo flags.
+func TestBuildCommandModelPassthrough(t *testing.T) {
+	run, err := BuildCommand("grok", "x", "/repo", "grok-4", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"grok", "-p", "x", "-m", "grok-4", "--cwd", "/repo"}
+	want := []string{"grok", "-p", "x", "--always-approve", "-m", "grok-4", "--cwd", "/repo"}
 	if !reflect.DeepEqual(run.Command, want) {
 		t.Errorf("argv = %v, want %v", run.Command, want)
 	}
 }
 
 func TestBuildCommandUnknownAgent(t *testing.T) {
-	if _, err := BuildCommand("bogus", "x", "/repo", "", true, nil, ""); err == nil {
+	if _, err := BuildCommand("bogus", "x", "/repo", "", nil, ""); err == nil {
 		t.Error("expected error for unknown agent")
 	}
 }
@@ -156,7 +158,7 @@ func TestRegisterAgent(t *testing.T) {
 		t.Fatal("custom agent not appended to AgentNames")
 	}
 
-	run, err := BuildCommand("aider", "fix it", "/repo", "", true, nil, "")
+	run, err := BuildCommand("aider", "fix it", "/repo", "", nil, "")
 	if err != nil {
 		t.Fatalf("BuildCommand for custom agent: %v", err)
 	}
@@ -207,31 +209,5 @@ func TestWithRootSandbox(t *testing.T) {
 	got := withRootSandbox([]string{"IS_SANDBOX=0"}, 0)
 	if has(got, "IS_SANDBOX=1") {
 		t.Error("explicit IS_SANDBOX must be respected")
-	}
-}
-
-// ParseModelList must extract ids from heterogeneous CLI listings: opencode's
-// bare lines, grok's bulleted "(default)" entries — and wash out prose,
-// headers, and display names with spaces (agy) rather than guess.
-func TestParseModelList(t *testing.T) {
-	out := `
-You are logged in with grok.com.
-
-Default model: grok-composer-2.5-fast
-
-Available models:
-  - grok-build
-  * grok-composer-2.5-fast (default)
-opencode/big-pickle
-openrouter/~anthropic/claude-fable-latest
-Gemini 3.5 Flash (Low)
-`
-	got := ParseModelList(out)
-	want := []string{"grok-build", "grok-composer-2.5-fast", "opencode/big-pickle", "openrouter/~anthropic/claude-fable-latest"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("ParseModelList = %v, want %v", got, want)
-	}
-	if ParseModelList("no models here, just words") != nil {
-		t.Error("prose must not produce models")
 	}
 }

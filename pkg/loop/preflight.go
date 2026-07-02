@@ -117,4 +117,3 @@ func AcquireRepoLock(stateDir string) (release func(), err error) {
 	}
 	return func() { _ = os.Remove(path) }, nil
 }
-

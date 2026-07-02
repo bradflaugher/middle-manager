@@ -147,6 +147,8 @@ Two screens are worth knowing about:
 | Point at another repo | `mm quick "…" --repo ~/other-project` |
 | Pause between steps | `mm quick "…" -i` |
 | See agents, state & the run ledger | `mm agents` · `mm status` |
+| List every CLI's available models | `mm models` (one agent: `mm models opencode`) |
+| Check which CLIs actually honor `--model` | `mm models --check` |
 
 ---
 
@@ -228,15 +230,35 @@ without waiting for an mm release.
 - **Mechanical shortcuts** — an execute step that crashed leaving no changes
   skips the verifier entirely (nothing to audit, no tokens spent).
 
-### The ledger: know where your time goes
+### The ledger: know where your time and money go
 
 Every step attempt is appended to `<state>/ledger.jsonl` — agent, model, tier,
 attempt, duration, exit code, timeout flag — plus per-iteration verdicts and
 run outcomes. `mm status` aggregates it into a per-agent scoreboard (steps /
-time / retries / timeouts) **across a whole queue drain** — each issue's
-ledger rolls up into one table, so a 50-issue drain answers "where did my
-time/money go" in one command. Headless CLIs don't report token spend
-uniformly, so wall-clock per agent is the cost proxy.
+time / retries / timeouts / **escalations**) **across a whole queue drain** —
+each issue's ledger rolls up into one table, so a 50-issue drain answers
+"where did my time/money go" in one command. The ESCAL column is the number
+the playbook tunes on: how often the cheap seat actually needed rescuing.
+
+**Estimated spend, without the hacks.** mm never parses CLI billing output —
+formats churn with every release and half the CLIs report nothing. Instead
+you calibrate once: run a drain, check your provider dashboards, and declare
+each agent's `$ per minute` of wall-clock in your config:
+
+```json
+{ "spend_rates": { "claude": 0.40, "opencode": 0.00, "grok": 0.15 } }
+```
+
+`mm status` then adds an EST SPEND column and total (labeled as the estimate
+it is). Flat-rate subscription? Set the rate to what the seat costs *you* —
+`0.00` is a legitimate answer, and seeing `opencode: 19m — ~$0.00` next to
+`claude: 18m — ~$7.35` is the whole playbook in one line.
+
+**Finding model names.** `mm models` asks each installed CLI to list its own
+models (falling back to a hint for CLIs that can't list headlessly), and
+`mm models --check` probes whether each CLI actually *honors* its model flag
+by requesting a model that cannot exist — a CLI that answers anyway is
+silently running its default model, and your "cheap" seat isn't cheap.
 
 ### The playbook: where the strong models go (and where they don't)
 
@@ -277,9 +299,10 @@ Two habits that keep it honest:
 
 - **Sanity-check your cheap seat once.** mm passes each CLI's model flag
   faithfully but cannot verify the CLI honored it — some agents silently
-  ignore `--model` in headless mode. Run the CLI by hand with a deliberately
-  invalid model name: if it doesn't error, its model flag is decorative and
-  your "cheap" seat may be billing you for the default model.
+  ignore `--model` in headless mode. `mm models --check` probes every
+  installed CLI with a model that cannot exist: one that answers anyway has a
+  decorative model flag, and your "cheap" seat may be billing you for the
+  default model. (`mm models` also lists what names each CLI accepts.)
 - **Let issues carry their own acceptance criteria.** The verifier checks the
   mission; a mission that says "make X better" gets you an unfalsifiable PASS.
   Issues that state what must be true when done are what make the cheap

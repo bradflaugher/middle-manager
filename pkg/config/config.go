@@ -61,6 +61,7 @@ type AgentDef struct {
 	ModelFlag  string   `json:"model_flag"`
 	CwdFlag    string   `json:"cwd_flag"`
 	ExtraArgs  []string `json:"extra_args"`
+	ModelsArgs []string `json:"models_args"`
 	Notes      string   `json:"notes"`
 }
 
@@ -160,6 +161,15 @@ type LoopConfig struct {
 	NoSecretScan bool `json:"no_secret_scan"`
 	// SeedCount is how many issues `mm seed` asks the auditor to propose.
 	SeedCount int `json:"seed_count"`
+	// SpendRates maps agent name → operator-calibrated $ per MINUTE of agent
+	// wall-clock. mm never parses CLI billing output (formats churn, half
+	// report nothing); you calibrate once against your provider dashboard and
+	// `mm status` multiplies by the ledger's recorded durations. Estimates,
+	// labeled as such.
+	SpendRates map[string]float64 `json:"spend_rates"`
+	// CheckModels makes `mm models` also probe whether each CLI honors its
+	// model flag (costs one trivial prompt per dishonest CLI).
+	CheckModels bool
 
 	// Interactive Wizard overrides
 	Wizard   bool
@@ -429,6 +439,14 @@ func ConfigFromMap(data map[string]interface{}, repo string) *LoopConfig {
 	if defs, ok := data["agents"].(map[string]interface{}); ok {
 		cfg.CustomAgents = parseAgentDefs(defs)
 	}
+	if rates, ok := data["spend_rates"].(map[string]interface{}); ok {
+		cfg.SpendRates = map[string]float64{}
+		for k, v := range rates {
+			if f, ok := v.(float64); ok && f >= 0 {
+				cfg.SpendRates[k] = f
+			}
+		}
+	}
 	if v, ok := data["strength_order"]; ok {
 		cfg.StrengthOrder = parseStringList(v)
 	}
@@ -625,7 +643,7 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 	var restArgs []string
 
 	cliCommands := map[string]bool{
-		"run": true, "quick": true, "agents": true, "init": true, "status": true, "issues": true, "install-path": true, "merge": true, "seed": true,
+		"run": true, "quick": true, "agents": true, "init": true, "status": true, "issues": true, "install-path": true, "merge": true, "seed": true, "models": true,
 	}
 
 	if len(args) > 0 {
@@ -858,6 +876,8 @@ func ParseArgs(args []string) (string, *LoopConfig, error) {
 			cfg.NoSecretScan = true
 		case arg == "--secret-scan":
 			cfg.NoSecretScan = false
+		case arg == "--check":
+			cfg.CheckModels = true
 		case arg == "--count" && i+1 < len(restArgs):
 			if n, err := strconv.Atoi(restArgs[i+1]); err == nil && n > 0 {
 				cfg.SeedCount = n

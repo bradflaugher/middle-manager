@@ -58,6 +58,8 @@ func main() {
 		os.Exit(cmdRun(cfg))
 	case "seed":
 		os.Exit(loop.RunSeed(cfg))
+	case "models":
+		cmdModels(cfg)
 	case "merge":
 		cmdMerge(cfg)
 	default:
@@ -93,6 +95,7 @@ func registerCustomAgents(cfg *config.LoopConfig) {
 			ModelFlag:  def.ModelFlag,
 			CwdFlag:    def.CwdFlag,
 			ExtraArgs:  def.ExtraArgs,
+			ModelsArgs: def.ModelsArgs,
 			Notes:      notes,
 		}
 		if err := agents.RegisterAgent(name, spec); err != nil {
@@ -126,6 +129,48 @@ func cmdAgents(cfg *config.LoopConfig) {
 		if row["notes"] != "" {
 			fmt.Println(colors.Colored("           "+row["notes"], colors.Yellow))
 		}
+	}
+}
+
+// cmdModels lists each installed agent's available models via the CLI's own
+// listing command (`mm models`, or `mm models opencode` for one agent). With
+// --check it also probes whether each CLI actually honors its model flag —
+// automating the sanity check the playbook tells operators to run by hand.
+func cmdModels(cfg *config.LoopConfig) {
+	only := strings.TrimSpace(cfg.Mission) // `mm models opencode` lands here
+	names := agents.AvailableAgents(cfg.BinaryOverrides)
+	if only != "" {
+		names = []string{only}
+	}
+	if len(names) == 0 {
+		fmt.Println("No agent CLIs installed.")
+		return
+	}
+	for _, name := range names {
+		fmt.Println(colors.Colored("── "+name+" ", colors.Cyan+colors.Bold))
+		out, err := agents.ListModels(name, cfg.BinaryOverrides[name])
+		switch {
+		case err != nil:
+			fmt.Println(colors.Colored("   "+err.Error(), colors.Yellow))
+		case out == "":
+			fmt.Println(colors.Colored("   (no models reported)", colors.Dim))
+		default:
+			for _, line := range strings.Split(out, "\n") {
+				fmt.Println("   " + line)
+			}
+		}
+		if cfg.CheckModels {
+			verdict := agents.CheckModelFlag(name, cfg.BinaryOverrides[name], cfg.Repo)
+			style := colors.Green
+			if strings.Contains(verdict, "IGNORES") {
+				style = colors.Red
+			}
+			fmt.Println(colors.Colored("   model flag: "+verdict, style))
+		}
+		fmt.Println()
+	}
+	if !cfg.CheckModels {
+		fmt.Println(colors.Colored("Tip: `mm models --check` probes whether each CLI actually honors its model flag.", colors.Dim))
 	}
 }
 
@@ -190,7 +235,7 @@ func cmdStatus(cfg *config.LoopConfig) {
 		fmt.Printf("  %-16s: %s\n", name, status)
 	}
 
-	printLedgerSummary(state)
+	printLedgerSummary(state, cfg.SpendRates)
 }
 
 // printLedgerSummary aggregates run ledgers into a per-agent scoreboard —
@@ -198,7 +243,7 @@ func cmdStatus(cfg *config.LoopConfig) {
 // run's outcome, so `mm status` answers "where is my time/money going". A
 // queue drain writes one ledger per issue under issues/<n>/, so the whole
 // drain (and the base dir's single runs) roll up into one table.
-func printLedgerSummary(stateDir string) {
+func printLedgerSummary(stateDir string, spendRates map[string]float64) {
 	ledgers := []string{filepath.Join(stateDir, "ledger.jsonl")}
 	if entries, err := os.ReadDir(filepath.Join(stateDir, "issues")); err == nil {
 		for _, e := range entries {
@@ -212,6 +257,7 @@ func printLedgerSummary(stateDir string) {
 		steps    int
 		retries  int
 		timeouts int
+		escals   int
 		seconds  float64
 	}
 	perAgent := map[string]*agg{}
@@ -251,6 +297,9 @@ func printLedgerSummary(stateDir string) {
 				if to, ok := rec["timed_out"].(bool); ok && to {
 					a.timeouts++
 				}
+				if tier, ok := rec["tier"].(float64); ok && tier > 0 {
+					a.escals++
+				}
 			case "run":
 				// "Last run" across many ledger files = latest timestamp wins.
 				if ts, _ := rec["ts"].(string); ts >= lastRunTS {
@@ -265,17 +314,32 @@ func printLedgerSummary(stateDir string) {
 		return
 	}
 
+	hasRates := len(spendRates) > 0
 	fmt.Println()
 	fmt.Println(colors.Colored("Ledger (all runs in this state dir):", colors.Bold+colors.Cyan))
-	fmt.Println(colors.Colored(fmt.Sprintf("  %-12s %6s %9s %8s %9s", "AGENT", "STEPS", "TIME", "RETRIES", "TIMEOUTS"), colors.Cyan))
+	header := fmt.Sprintf("  %-12s %6s %9s %8s %9s %6s", "AGENT", "STEPS", "TIME", "RETRIES", "TIMEOUTS", "ESCAL")
+	if hasRates {
+		header += fmt.Sprintf(" %11s", "EST SPEND")
+	}
+	fmt.Println(colors.Colored(header, colors.Cyan))
 	names := make([]string, 0, len(perAgent))
 	for name := range perAgent {
 		names = append(names, name)
 	}
 	sort.Slice(names, func(i, j int) bool { return perAgent[names[i]].seconds > perAgent[names[j]].seconds })
+	total := 0.0
 	for _, name := range names {
 		a := perAgent[name]
-		fmt.Printf("  %-12s %6d %9s %8d %9d\n", name, a.steps, (time.Duration(a.seconds) * time.Second).Round(time.Second), a.retries, a.timeouts)
+		row := fmt.Sprintf("  %-12s %6d %9s %8d %9d %6d", name, a.steps, (time.Duration(a.seconds) * time.Second).Round(time.Second), a.retries, a.timeouts, a.escals)
+		if hasRates {
+			spend := (a.seconds / 60) * spendRates[name]
+			total += spend
+			row += fmt.Sprintf(" %10s", fmt.Sprintf("~$%.2f", spend))
+		}
+		fmt.Println(row)
+	}
+	if hasRates {
+		fmt.Printf("  %-12s %s\n", "", colors.Colored(fmt.Sprintf("estimated total ~$%.2f (your spend_rates × ledger minutes — calibrate against your provider dashboard)", total), colors.Dim))
 	}
 	if lastRun != nil {
 		outcome := "failed"
